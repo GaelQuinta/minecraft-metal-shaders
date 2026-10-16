@@ -30,7 +30,7 @@ import java.util.Locale;
  * text (drawn after, on the window's target) are not affected. On a Retina screen "1080p" here costs the TAAU resolve and the
  * final pass about a quarter of their pixels; "Nativa" is the window's size (everything as before).
  *
- * <p>mcopt.shade.output = native | 1440 | 1200 | 1080 | 900 (an output height; the width follows the window's aspect), also
+ * <p>mcopt.shade.output = native | 2160 | 1440 | 1200 | 1080 | 900 (an output height; the width follows the window's aspect), also
  * cycled from the pause menu and saved to config/mcopt.properties.
  *
  * <p>Two ways (mcopt.shade.outputMode): <b>window</b> (default; Gael: "que todo se renderice a la resolución que se cambia"): the
@@ -41,7 +41,7 @@ import java.util.Locale;
  */
 public final class ShadeOutput {
 	/** The choices in menu order: -1 = native (the window), else an output height in pixels. */
-	private static final int[] CHOICES = {-1, 1440, 1200, 1080, 900};
+	private static final int[] CHOICES = {-1, 2160, 1440, 1200, 1080, 900};
 
 	private static volatile int index = parse(System.getProperty("mcopt.shade.output", "native"));
 
@@ -167,7 +167,7 @@ public final class ShadeOutput {
 				}
 			}
 			if (!found) {
-				lines.add("# Resolución de salida (también desde el menú de pausa): native, 1440, 1200, 1080, 900");
+				lines.add("# Resolución de salida (también desde el menú de pausa): native, 2160, 1440, 1200, 1080, 900");
 				lines.add("mcopt.shade.output=" + value);
 			}
 			Files.createDirectories(file.getParent());

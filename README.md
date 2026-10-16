@@ -128,7 +128,8 @@ also edit it by hand:
 | `mcopt.shade` | `true` / `false` (false = mcopt's plain Metal renderer) | `true` |
 | `mcopt.shade.preset` | `performance`, `balanced`, `quality`, `ultra` | `balanced` |
 | `mcopt.shade.look` | `epic`, `storybook`, `natural` | `epic` |
-| `mcopt.shade.output` | `native`, `1440`, `1200`, `1080`, `900` (also the **Output** button in the pause menu) | `native` |
+| `mcopt.shade.resolution` | `auto`, `native`, `2160`, `1800`, `1600`, `1440`, `1200`, `1080` (also the **Resolution** button in the pause menu) | `auto` |
+| `mcopt.shade.output` | `native`, `2160`, `1440`, `1200`, `1080`, `900` (also the **Output** button in the pause menu) | `native` |
 | `profile` | `indie` (mcopt's own terrain renderer, needed by the shaders), `none` | `indie` |
 
 For the most FPS: Video Settings → VSync off, Max Framerate unlimited. To see your FPS, press **F3**.

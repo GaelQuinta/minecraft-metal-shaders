@@ -26,7 +26,7 @@ import java.util.Locale;
  */
 public final class ShadeResolution {
 	/** The choices in menu order: 0 = auto (the preset), -1 = native, else a render height in pixels. */
-	private static final int[] CHOICES = {0, -1, 1800, 1600, 1440, 1200, 1080};
+	private static final int[] CHOICES = {0, -1, 2160, 1800, 1600, 1440, 1200, 1080};
 	/** The lowest scale a choice may ask for (TAAU still rebuilds a sharp frame from about half the pixels per axis). */
 	public static final float MIN_SCALE = 0.5f;
 	private static volatile int index = parse(System.getProperty("mcopt.shade.resolution", "auto"));
@@ -126,7 +126,7 @@ public final class ShadeResolution {
 				}
 			}
 			if (!found) {
-				lines.add("# Resolución del mundo (también desde el menú de pausa): auto, native, 1800, 1600, 1440, 1200, 1080");
+				lines.add("# Resolución del mundo (también desde el menú de pausa): auto, native, 2160, 1800, 1600, 1440, 1200, 1080");
 				lines.add("mcopt.shade.resolution=" + value);
 			}
 			Files.createDirectories(file.getParent());

@@ -23,7 +23,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
  * M3.1: a "Resolución del mundo" button at the bottom of the pause menu (with a world loaded): each click cycles the native
- * shading's render resolution (ShadeResolution: auto, native, 1800p ... 1080p), applied on the next frame and kept in
+ * shading's render resolution (ShadeResolution: auto, native, 2160p ... 1080p), applied on the next frame and kept in
  * config/mcopt.properties. Only with the native shading's TAAU (it owns the render scale). (M3.3's hidden frame generation
  * button went with upstream's frame generation in the mcopt 0.3 port.)
  * (1.1) Above them "Shaders..." opens ShadeSettingsScreen (look, light, sky and water settings); with
