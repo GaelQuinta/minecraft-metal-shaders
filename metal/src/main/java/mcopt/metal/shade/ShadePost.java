@@ -98,6 +98,8 @@ public final class ShadePost {
 	private static long library, psoDown0, psoDown, psoUp, psoFinal, psoEncode, psoDecode, psoHistogram, psoExposure, milkyWay;
 	/** M3 XDR (mcopt.shade.xdr, dims.ShadeXdr): the final pass with a second target, the highlights' excess above SDR white. */
 	private static long psoFinalXdr, xdrExcess;
+	private static long psoFinalHdr, psoFinalHdrDims, psoFinalHdrLean;
+	private static int xdrFormat;
 	// M3: the final pass with the Nether/End fog, End sky, shimmer and camera media compiled in (the plain ones carry none of it)
 	private static long psoFinalDims, psoFinalXdrDims;
 	/**
@@ -221,6 +223,9 @@ public final class ShadePost {
 			boolean dimsVariant = mcopt.metal.shade.dims.DimsConfig.DIMS || mcopt.metal.shade.dims.DimsConfig.MEDIA;
 			if (dimsVariant) psoFinalDims = ShadeRender.pipeline(library, "shade_fs_vs", "shade_final_dims", ShadeRender.RGBA8, 0);
 			if (mcopt.metal.shade.dims.ShadeXdr.active()) {
+				psoFinalHdr = mcopt.metal.shade.dims.ShadeXdr.pipeline2(ShadeBindings.ctx(), library, "shade_fs_vs", "shade_final_hdr", ShadeRender.RGBA8, ShadeRender.RGBA16F);
+				psoFinalHdrLean = mcopt.metal.shade.dims.ShadeXdr.pipeline2(ShadeBindings.ctx(), library, "shade_fs_vs", "shade_final_hdr_lean", ShadeRender.RGBA8, ShadeRender.RGBA16F);
+				if (dimsVariant) psoFinalHdrDims = mcopt.metal.shade.dims.ShadeXdr.pipeline2(ShadeBindings.ctx(), library, "shade_fs_vs", "shade_final_hdr_dims", ShadeRender.RGBA8, ShadeRender.RGBA16F);
 				psoFinalXdr = mcopt.metal.shade.dims.ShadeXdr.pipeline2(ShadeBindings.ctx(), library, "shade_fs_vs", "shade_final_xdr", ShadeRender.RGBA8,
 					ShadeRender.RG11B10F);
 				psoFinalXdrLean = mcopt.metal.shade.dims.ShadeXdr.pipeline2(ShadeBindings.ctx(), library, "shade_fs_vs", "shade_final_xdr_lean",
@@ -597,8 +602,10 @@ public final class ShadePost {
 		// position of the pixel's scene point (M2.2, mcopt.shade.vl.unjitter)
 		params.putFloat(liveWidth).putFloat(liveHeight).putFloat(sharpen)
 			.putFloat((bridgeUsed ? 1f : 0f) + (taa != null && depth != 0 && VL_UNJITTER ? 2f : 0f));
-		// x: XDR (M3): on, peak (x SDR white), knee, octaves to the peak
-		boolean xdr = psoFinalXdr != 0 && mcopt.metal.shade.dims.ShadeXdr.highlights();
+		// x: highlights = (1, peak, knee, range); full scene = (2, peak, curve b, curve beta)
+		boolean xdr = psoFinalXdr != 0 && mcopt.metal.shade.dims.ShadeXdr.highlights()
+			&& (!mcopt.metal.shade.dims.ShadeXdr.fullScene() || f.debug == 0f);
+		boolean fullHdr = xdr && mcopt.metal.shade.dims.ShadeXdr.fullSceneFrame();
 		// M3: the dims variant in the Nether / End and with the camera in lava or powder snow (anywhere)
 		boolean dimsPass = f.dimension != ShadeFrame.DIM_OVERWORLD || f.fogType == ShadeFrame.FOG_LAVA || f.fogType == ShadeFrame.FOG_POWDER_SNOW;
 		if (xdr) mcopt.metal.shade.dims.ShadeXdr.params(params);
@@ -612,7 +619,8 @@ public final class ShadePost {
 		// a mountain 30 % of that glow stayed, an orange halo through the mountain (Gael 2026-10-11)
 		float edgeFix = vl && vlAirFloor > 0f ? mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.vl.edgeFix", 0f) : 0f;
 		params.putFloat(vl ? vlAirFloor : 0f).putFloat(edgeFix)
-			.putFloat(vl && vlAirFloor > 0f && mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.vl.airClamp", 1f) > 0f ? 1f : 0f).putFloat(0f);
+			.putFloat(vl && vlAirFloor > 0f && mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.vl.airClamp", 1f) > 0f ? 1f : 0f)
+			.putFloat(fullHdr ? mcopt.metal.shade.dims.ShadeXdr.sceneBrightness() : 0f);
 		params.flip();
 		// (v12-opt) the lean final pass while it computes the same: no debug view (p.w), the upsample's mode 1 (q.y) and no edge fix
 		// (a.y, read as int(a.y) where a.x > 0): what shade_post.metal's LEAN variants hold constant
@@ -642,15 +650,19 @@ public final class ShadePost {
 		long[] finalInputs = {scene, n > 1 ? bloomAccum[1] : scene, depth, n > 1 ? bloomLevels[0] : scene, vl ? vlLight : scene, vl ? vlDist : scene};
 		if (xdr) {
 			int ow = targetW, oh = targetH;
-			if (xdrExcess == 0 || ow != xdrWidth || oh != xdrHeight) {
+			int format = fullHdr ? ShadeRender.RGBA16F : ShadeRender.RG11B10F;
+			if (xdrExcess == 0 || ow != xdrWidth || oh != xdrHeight || format != xdrFormat) {
 				retire(xdrExcess);
 				xdrWidth = ow;
 				xdrHeight = oh;
-				xdrExcess = ShadeRender.texture(ShadeRender.RG11B10F, ow, oh, false, "mcopt shade: XDR excess");
+				xdrFormat = format;
+				xdrExcess = ShadeRender.texture(format, ow, oh, false, fullHdr ? "mcopt shade: HDR world output" : "mcopt shade: XDR excess");
 			}
 			if (encoder != null && MetalBridge.tracing(encoder)) System.out.println("mcopt-metal trace: shade pass 'mcopt shade: final (XDR)'");
-			mcopt.metal.shade.dims.ShadeXdr.finalPass(enc, dimsPass && psoFinalXdrDims != 0 ? psoFinalXdrDims : lean && psoFinalXdrLean != 0 ? psoFinalXdrLean : psoFinalXdr,
-				finalTarget, xdrExcess, finalInputs, params, "mcopt shade: final (XDR)");
+			long finalPso = fullHdr ? (dimsPass && psoFinalHdrDims != 0 ? psoFinalHdrDims : lean ? psoFinalHdrLean : psoFinalHdr)
+				: (dimsPass && psoFinalXdrDims != 0 ? psoFinalXdrDims : lean ? psoFinalXdrLean : psoFinalXdr);
+			mcopt.metal.shade.dims.ShadeXdr.finalPass(enc, finalPso, finalTarget, xdrExcess, finalInputs, params,
+				fullHdr ? "mcopt shade: final (full HDR)" : "mcopt shade: final (XDR)");
 		} else {
 			pass(dimsPass && psoFinalDims != 0 ? psoFinalDims : lean && psoFinalLean != 0 ? psoFinalLean : psoFinal, finalTarget, ShadeRender.DONT_CARE, finalInputs,
 				params, "mcopt shade: final");
@@ -661,6 +673,7 @@ public final class ShadePost {
 			UPSCALE_PARAMS.putFloat(Math.max(mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.outputSharpen", 0.3f), 0f)).putFloat(0f).putFloat(0f).putFloat(0f).flip();
 			pass(psoUpscale, mainHandle, ShadeRender.DONT_CARE, new long[] {outScaled}, UPSCALE_PARAMS, "mcopt shade: upscale");
 		}
+		if (fullHdr) mcopt.metal.shade.dims.ShadeXdr.fullFrame(enc, xdrExcess, mainHandle);
 		// after the final pass: the kernel advances ShadeGpu.exposure.x to next frame's value, and everything this frame
 		// (world, TAA history, haze and VL in the final pass, Purkinje) must use this frame's
 		if (histogramSource != 0) {

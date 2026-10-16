@@ -39,7 +39,7 @@ import static java.lang.foreign.ValueLayout.JAVA_LONG;
  */
 public final class ShadeXdr {
 	private static final Linker LINKER = Linker.nativeLinker();
-	private static @Nullable MethodHandle enable, isOn, supported, headroom, frame, pso2, pass2, systemInfo, e5;
+	private static @Nullable MethodHandle enable, isOn, supported, headroom, frame, pso2, pass2, systemInfo, e5, fullFrame;
 	private static boolean decided, on, confirmed, edrHere = true;
 	private static long layer;
 	private static float loggedHeadroom = -1f, peak = 1f, sinceQuery = 1f, target = 1f, headroomNow = 1f, potential = 1f;
@@ -70,6 +70,7 @@ public final class ShadeXdr {
 		supported = fn("mc_xdr_supported", JAVA_INT);
 		headroom = fn("mc_xdr_headroom", JAVA_FLOAT, JAVA_LONG, JAVA_INT);
 		frame = fn("mc_xdr_frame", null, JAVA_LONG, JAVA_LONG);
+		fullFrame = fn("mc_xdr_full_frame", null, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_FLOAT, JAVA_FLOAT);
 		pso2 = fn("mc_xdr_pso2", JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_INT);
 		pass2 = fn("mc_xdr_pass2", null, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_LONG);
 		systemInfo = fn("mc_system_info", null, JAVA_LONG, JAVA_LONG, JAVA_INT);
@@ -158,8 +159,30 @@ public final class ShadeXdr {
 		if (on) updateSkip(dt);
 	}
 
-	/** Whether this frame's final pass writes highlights above SDR white (on, and the window's screen can show EDR). */
+	/** Live display transform selection; highlight-only remains the default. */
+	public static boolean fullScene() {
+		return mcopt.metal.shade.Live.s("mcopt.shade.hdrMode", "highlights").equals("scene");
+	}
+
+	/** No threshold/empty-highlight skipping: all world pixels use the HDR curve. */
+	public static boolean fullSceneFrame() {
+		var mc = net.minecraft.client.Minecraft.getInstance();
+		var screen = mc != null ? mc.gui.screen() : null;
+		return fullScene() && on && edrHere && displayPeak() > 1.00001f
+			&& (screen == null || screen instanceof net.minecraft.client.gui.screens.ChatScreen);
+	}
+
+	public static float sceneBrightness() {
+		return mcopt.metal.shade.Live.f("mcopt.shade.hdrSceneBrightness", 1f, 0.5f, 2f);
+	}
+
+	private static float displayPeak() {
+		// Respond immediately to shrinking headroom; ease increases without exceeding the display.
+		return Math.max(1f, Math.min(peak, headroomNow));
+	}
+
 	public static boolean highlights() {
+		if (fullScene()) return fullSceneFrame();
 		// (v12-opt, mcopt.shade.xdrPeakSkip, live, default true; false = 1.2) with a peak of SDR white (the screen reports no EDR
 		// headroom: maximumExtendedDynamicRangeColorComponentValue 1, as in many bench runs; or mcopt.shade.xdrPeak=1) the XDR final
 		// pass writes an excess of 0 (shade_final_xdr: boost = (peak - 1) x ... only where peak > 1) and the compose adds it: the SDR
@@ -179,7 +202,7 @@ public final class ShadeXdr {
 
 	/** The bloom's first downsample flags pixels above this (pre-exposed scene luminance), 0 = don't flag (ShadePost). */
 	public static float hotThreshold() {
-		if (!(on && edrHere && skip)) return 0f;
+		if (fullScene() || !(on && edrHere && skip)) return 0f;
 		asked = true;
 		return knee() * MARGIN; // (1.1) live
 	}
@@ -213,9 +236,22 @@ public final class ShadeXdr {
 		return headroomNow;
 	}
 
-	/** The final pass's XDR parameters (ShadeFinalParams.x): on, peak, knee, octaves to the peak. */
+	/** ShadeFinalParams.x: highlights (1, peak, knee, range), full scene (2, peak, curve b, curve beta). */
 	public static void params(ByteBuffer b) {
-		b.putFloat(on ? 1f : 0f).putFloat(peak).putFloat(knee()).putFloat(RANGE); // (1.1) knee live
+		if (fullScene()) {
+			b.putFloat(2f).putFloat(displayPeak());
+			mcopt.metal.shade.ShadeFrameUpdater.look().putHdrCurve(b, displayPeak());
+		} else b.putFloat(on ? 1f : 0f).putFloat(peak).putFloat(knee()).putFloat(RANGE);
+	}
+
+	/** Called after output upscaling, before the hand/HUD modify main. */
+	public static void fullFrame(long enc, long hdr, long main) {
+		try {
+			float ui = mcopt.metal.shade.Live.f("mcopt.shade.hdrUiBrightness", 1f, 0.25f, 2f);
+			fullFrame.invokeExact(enc, hdr, main, ui, displayPeak());
+		} catch (Throwable t) {
+			throw new IllegalStateException("Full-scene HDR compose setup", t);
+		}
 	}
 
 	/** A full-screen pipeline with two color targets (the final pass: main RGBA8 + the RG11B10F excess). */
@@ -247,7 +283,9 @@ public final class ShadeXdr {
 			// stays as it is, its text box is GUI coverage in main's alpha): highlights stay on, no brightness jump on opening it.
 			var mc = net.minecraft.client.Minecraft.getInstance();
 			var screen = mc != null ? mc.gui.screen() : null;
-			frame.invokeExact(enc, screen != null && !(screen instanceof net.minecraft.client.gui.screens.ChatScreen) ? 0L : t1);
+			// Full-scene registration happens after output upscaling has completed. Until
+			// then, never let the presenter treat the complete world image as excess.
+			frame.invokeExact(enc, fullScene() || screen != null && !(screen instanceof net.minecraft.client.gui.screens.ChatScreen) ? 0L : t1);
 		} catch (RuntimeException | Error e) {
 			throw e;
 		} catch (Throwable th) {

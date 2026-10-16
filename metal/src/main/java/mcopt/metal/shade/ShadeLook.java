@@ -107,6 +107,14 @@ public final class ShadeLook {
 	/** Sun and moon disc angular radius (radians). */
 	static final float SUN_RADIUS = (float) Math.toRadians(1.0), MOON_RADIUS = (float) Math.toRadians(0.65);
 
+	/** Full-scene EDR curve through the same mid-grey and a headroom-dependent white. */
+	public void putHdrCurve(ByteBuffer b, float peak) {
+		double white = WHITE * Math.sqrt(peak), a = this.contrast, d = SHOULDER;
+		double ma = Math.pow(MID_IN, a), mad = Math.pow(MID_IN, a * d);
+		double curveB = (Math.pow(white, a) / peak - ma / MID_OUT) / (Math.pow(white, a * d) - mad);
+		b.putFloat((float) curveB).putFloat((float) (ma / MID_OUT - mad * curveB));
+	}
+
 	// ---- per-frame values (read by tools and the debug log) --------------------------------------------------------------
 	public float elevation, rising, chromaGamma, lightMul, saturation, contrast, bloomMix, vlStrength, mistSigma, whiteBalance;
 	public final float[] ambientTint = new float[3], wbGain = new float[3];
@@ -212,6 +220,8 @@ public final class ShadeLook {
 		float skyK = Live.f(U + "skyLight", 1f, 0.2f, 3f);
 		for (int i = 0; i < 3; i++) this.ambientTint[i] *= skyK;
 		// grade the light (sun or moon) in place: chroma power keeps luminance, deepens the colour
+		// Shared sunlight keeps water, shadow tint, clouds and surfaces in the same radiometric scale.
+		if (f.naturalLighting > 0f) lightK *= 1f + 0.35f * f.naturalLighting;
 		gradeLight(f.sky.light, f.sky.sunLight ? this.chromaGamma : 1f, this.lightMul * lightK);
 		// white balance (mired shift from D65: positive = the image warmer), partial strength
 		float mired = 1e6f / 6504f + this.whiteBalance;
@@ -327,7 +337,14 @@ public final class ShadeLook {
 		float nightUp = EV_UP - (EV_UP - EV_UP_NIGHT) * (1f - smooth(-10f, -2f, this.elevation));
 		// (1.1) user.exposureSpeed: how fast the eye adapts (2 = twice as fast)
 		float speed = Live.f(U + "exposureSpeed", 1f, 0.2f, 5f);
-		put4(b, EXPOSURE_CFG, EV_DOWN, nightUp, TAU_UP / speed, TAU_DOWN / speed);
+		float tauUp = TAU_UP, tauDown = TAU_DOWN;
+		if (f.naturalLighting > 0f) {
+			float blend = Math.min(f.naturalLighting, 1f), extra = Math.max(f.naturalLighting - 1f, 0f);
+			nightUp += blend * (0.75f - 0.4f * extra - nightUp);
+			tauUp += blend * (2.5f + extra - tauUp);
+			tauDown += blend * (0.45f - 0.1f * extra - tauDown);
+		}
+		put4(b, EXPOSURE_CFG, EV_DOWN, nightUp, tauUp / speed, tauDown / speed);
 		put4(b, DT, this.dt, f.gameTimeSeconds, 0f, this.rising);
 		// (FT2.8, audit idx 78) x the aurora's, End sky's and Nether fog's clock; (FT2.9) mcopt.shade.caveAir (true; read every frame,
 		// false = FT2.8.1): y the sky light the air around the camera gets (from the eye's, smoothed: all of it from 10 of 15 up, none
@@ -359,9 +376,10 @@ public final class ShadeLook {
 		// user1: x Distant Horizons' far water: its reflections' strength (= the near water's, user waterReflect), y its screen-space
 		// part (1 on, 0 = the player's "sky only"), z the near water's foam (user.foam), w its refraction (user.refraction)
 		put4(b, USER1, ShadeSettings.reflect(), ShadeSettings.ssr() ? 1f : 0f, Live.f(U + "foam", 1f, 0f, 3f), Live.f(U + "refraction", 1f, 0f, 3f));
-		// user2: x the sun's glint on water (user.glint), yzw free
-		put4(b, USER2, Live.f(U + "glint", 1f, 0f, 3f), 0f, 0f, 0f);
-		put4(b, USER3, 0f, 0f, 0f, 0f);
+		// user2: x the sun's glint on water (user.glint), y beacon radiance, zw free
+		put4(b, USER2, Live.f(U + "glint", 1f, 0f, 3f), Live.f("mcopt.shade.beaconBrightness", 1f, 1f, 8f), 0f, 0f);
+		// x: daylight contrast strength 0..2. Zero preserves Current; 1 retains the original Natural look.
+		put4(b, USER3, f.naturalLighting, 0f, 0f, 0f);
 		mcopt.metal.shade.weather.ShadeWeather.pack(b); // M3 weather: wet, wind, flash
 	}
 

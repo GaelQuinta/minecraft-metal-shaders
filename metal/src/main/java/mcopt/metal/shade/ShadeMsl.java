@@ -349,7 +349,7 @@ public final class ShadeMsl {
 			if (!hdrTarget(colorFormats)) return msl;
 			if (registry) return "#define MCOPT_HDR\n" + leanDefines(colorFormats[0]) + msl; // (M3.1 lean terrain tags: canonical keeps them only for the terrain)
 			String lit = ShadeEntity.fragment(pipelineName, msl, false);
-			return lit != null ? lit : hdrFragment(msl);
+			return lit != null ? lit : ShadeBeacon.fragment(pipelineName, msl);
 		}
 
 		@Override

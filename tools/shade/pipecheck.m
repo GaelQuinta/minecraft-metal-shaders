@@ -79,7 +79,7 @@ int main(int argc, const char **argv) {
 		if (useVd) pd.vertexDescriptor = vd;
 		BOOL lut = [layout isEqualToString:@"lut"], mrt = [layout isEqualToString:@"mrt"];
 		pd.colorAttachments[0].pixelFormat = lut || getenv("PIPECHECK_HDR") ? MTLPixelFormatRGBA16Float : MTLPixelFormatRGBA8Unorm;
-		if (mrt) pd.colorAttachments[1].pixelFormat = MTLPixelFormatRG11B10Float; // the XDR final pass: main + excess, no depth
+		if (mrt) pd.colorAttachments[1].pixelFormat = (getenv("PIPECHECK_FULL_HDR") ? MTLPixelFormatRGBA16Float : MTLPixelFormatRG11B10Float); // the XDR final pass: main + excess, no depth
 		if (!lut && !mrt) pd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
 		NSError *e = nil;
 		MTLRenderPipelineReflection *refl = nil;

@@ -111,6 +111,7 @@ fragment half4 shade_bloom_up(ShadeFsOut in [[stage_in]], texture2d<half> level 
 // small float): 1 = Distant Horizons drew this frame (M3: the Nether fog leaves the pixels where depth is empty); 2 (TAAU,
 // M2.2; 0 = M2.1) depth and the volumetric light read where this frame's jittered raster shows the pixel's scene point;
 // x (M3 XDR, shade_final_xdr): x on, y highlight peak (x SDR white), z knee (exposed scene luminance), w octaves to the peak;
+// Full-scene mode uses x = (2, peak, curve b, curve beta), a.w = scene brightness.
 // a (godrays v3): x > 0 the volumetric light's air mode (vl.metal: the shadows take the haze's sunlit glow out of the air, so its
 // light is negative on surfaces too): the floor of a surface's light it may leave (share; the sky keeps 0.55), y (FT2.7) its edge
 // fix bits (audit idx 47: 1 read at the haze edge's keys, 2 the fallbacks' negative part uncapped), zw 0
@@ -490,6 +491,39 @@ static inline ShadeFinalXdrOut shadeFinalXdr(ShadeFsOut in, texture2d<half> scen
 	return o;
 }
 
+// Full-scene HDR uses a separate display curve; the SDR curve and its inverse stay
+// unchanged for screenshots, vanilla passes and the Distant Horizons bridge.
+// P.x = (2, peak, curve b, curve beta); P.a.w = scene exposure multiplier.
+static inline float3 shadeFullHdr(float3 scene, constant ShadeLook &L, constant ShadeFinalParams &P) {
+	float3 c = max(shadeRows(L.gradeIn, max(scene * P.a.w, 0.0)), 0.0);
+	c = shadeLottes(c, float4(L.tonemap.xy, P.x.zw));
+	float3 y = max(shadeRows(L.gradeOut, c), 0.0);
+	y = max(y * L.grade3.rgb + L.grade2.rgb, 0.0);
+	float phi = L.grade2.w;
+	if (any(y < 8.0 * phi)) y += phi * exp(-3.0 * y / max(phi, 1e-6));
+	// Hue-preserving peak bound after grading; never independently clip colour channels.
+	return y / max(1.0, max(max(y.r, y.g), y.b) / P.x.y);
+}
+
+template <bool DIMS, bool LEAN = false>
+static inline ShadeFinalXdrOut shadeFinalHdr(ShadeFsOut in, texture2d<half> scene, texture2d<half> bloom, depth2d<float> depth,
+                                             texture2d<half> bloom0, texture2d<half> vlT, texture2d<half> vlD,
+                                             constant ShadeFinalParams &P, constant ShadeFrame &f, constant ShadeLook &L,
+                                             constant ShadeGpu &g, constant ShadeResources &sr, texture2d<half> skyLut, sampler lutS) {
+	float lum;
+	float3 c = shadeFinalScene<DIMS, LEAN>(in, scene, bloom, depth, bloom0, vlT, vlD, P, f, L, g, sr, lum, skyLut, lutS);
+	ShadeFinalXdrOut o;
+	// Compatibility image, with alpha reserved for subsequent hand/HUD coverage.
+	o.sdr = float4(shadeFinalEncode<LEAN>(shadeDisplay(c, L), in.position, P, L, lum), 0.0);
+	// Unlike the highlights mode, this is the complete display-linear world image.
+	o.excess = half4(half3(shadeFullHdr(c, L, P)), 1.0h);
+	return o;
+}
+
+fragment ShadeFinalXdrOut shade_final_hdr(SHADE_FINAL_ARGS) { return shadeFinalHdr<false>(in, scene, bloom, depth, bloom0, vlT, vlD, P, f, L, g, sr, skyLut, lutS); }
+fragment ShadeFinalXdrOut shade_final_hdr_dims(SHADE_FINAL_ARGS) { return shadeFinalHdr<true>(in, scene, bloom, depth, bloom0, vlT, vlD, P, f, L, g, sr, skyLut, lutS); }
+fragment ShadeFinalXdrOut shade_final_hdr_lean(SHADE_FINAL_ARGS) { return shadeFinalHdr<false, true>(in, scene, bloom, depth, bloom0, vlT, vlD, P, f, L, g, sr, skyLut, lutS); }
+
 fragment ShadeFinalXdrOut shade_final_xdr(SHADE_FINAL_ARGS) { return shadeFinalXdr<false>(in, scene, bloom, depth, bloom0, vlT, vlD, P, f, L, g, sr, skyLut, lutS); }
 fragment ShadeFinalXdrOut shade_final_xdr_dims(SHADE_FINAL_ARGS) { return shadeFinalXdr<true>(in, scene, bloom, depth, bloom0, vlT, vlD, P, f, L, g, sr, skyLut, lutS); }
 fragment ShadeFinalXdrOut shade_final_xdr_lean(SHADE_FINAL_ARGS) { return shadeFinalXdr<false, true>(in, scene, bloom, depth, bloom0, vlT, vlD, P, f, L, g, sr, skyLut, lutS); }
@@ -546,8 +580,10 @@ kernel void shade_exposure(device ShadeGpu &g [[buffer(18)]], constant ShadeLook
 	float target = logRef;
 	float mean = g.scene.x;
 	if (total > 0.0) {
-		// weighted mean of log2 luminance between the 40th and 92nd percentiles (ignores the sun and black pockets)
-		float lo = total * 0.40, hi = total * 0.92, acc = 0.0, sum = 0.0, wsum = 0.0;
+		// Current meters the 40th..92nd percentiles. Natural includes more bright window detail,
+		// still ignoring the brightest 2% (sun/small emissives) and the darkest pockets.
+		float upper = L.user3.x > 0.0 ? mix(0.92, 0.98, min(L.user3.x, 1.0)) : 0.92;
+		float lo = total * 0.40, hi = total * upper, acc = 0.0, sum = 0.0, wsum = 0.0;
 		for (int i = 0; i < 64; i++) {
 			float n = float(g.histogram[i]);
 			float a = max(lo - acc, 0.0), b = min(hi - acc, n);

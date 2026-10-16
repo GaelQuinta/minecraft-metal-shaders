@@ -15,6 +15,8 @@
 //   - the hand, screen effects and the GUI then draw over main as usual (their blending writes alpha > 0: coverage);
 //   - at present (pqFill / mc_present in mcmetal.m) a compose pass writes linear extended P3 = M709toP3 (sRGB->linear(main.rgb)
 //     + excess x (1 - main.a)): SDR content at SDR white, the world's highlights above it, the GUI on top untouched.
+// Full-scene mode uses a complete RGBA16F world image instead of excess and a
+// pre-HUD SDR reference to recover overlay coverage without changing vanilla passes.
 // Screenshots read main, i.e. the SDR image. Headroom: NSScreen.maximumExtendedDynamicRangeColorComponentValue of the
 // layer's screen (mc_xdr_headroom), queried by the Java side a few times a second.
 #import <Metal/Metal.h>
@@ -24,7 +26,9 @@
 
 static int xdrOn;
 static id<MTLTexture> xdrExcess;  // retained; this frame's (valid while xdrValid)
-static int xdrValid;
+static int xdrValid, xdrFull;
+static id<MTLTexture> xdrBase; // SDR compatibility image before hand/HUD; exact window-sized snapshot
+static float xdrUiWhite = 1.0f, xdrPeak = 1.0f;
 static void *xdrCmd;  // the command buffer the final pass encoded into: the excess counts only for that frame's present
 static id<MTLLibrary> xdrLib;
 static id<MTLRenderPipelineState> xdrCompose, xdrCompose16, xdrPresent;
@@ -37,7 +41,7 @@ static const char *xdrSource =
 	"  float2 p = float2((id << 1) & 2, id & 2);\n"
 	"  V v; v.pos = float4(p * 2.0 - 1.0, 0.0, 1.0); v.uv = p; return v;\n"
 	"}\n"
-	"struct XdrParams { int flip; int valid; int e5; int pad1; };\n"
+	"struct XdrParams { int flip; int valid; int e5; int full; float uiWhite; float peak; float2 pad; };\n"
 	// (v12-opt) e5: the value as the RGB9E5 staging slot of the present queue stores it (shared exponent, mantissas truncated: the
 	// GPU's render-target encode, matched bit for bit on 3.1 M random channels), so a compose straight into the RGBA16Float drawable
 	// (presentQueue off) presents the same pixels as the queued path's slot + copy
@@ -50,7 +54,7 @@ static const char *xdrSource =
 	"static float3 srgbToLinear(float3 c) { return select(pow((c + 0.055) / 1.055, 2.4), c / 12.92, c <= 0.04045); }\n"
 	// linear Rec.709 -> linear Display P3 (both D65): every coefficient >= 0, so non-negative stays non-negative
 	"constant float3x3 M709toP3 = float3x3(float3(0.822462, 0.033194, 0.017083), float3(0.177538, 0.966806, 0.072397), float3(0.0, 0.0, 0.910520));\n"
-	"fragment float4 xdr_compose_fs(V v [[stage_in]], texture2d<float> src [[texture(0)]], texture2d<half> excess [[texture(1)]],\n"
+	"fragment float4 xdr_compose_fs(V v [[stage_in]], texture2d<float> src [[texture(0)]], texture2d<half> excess [[texture(1)]], texture2d<float> base [[texture(2)]],\n"
 	"                               constant XdrParams &p [[buffer(0)]]) {\n"
 	"  uint2 px = uint2(v.pos.xy);\n"
 	"  if (p.flip != 0) px.y = src.get_height() - 1 - px.y;\n"
@@ -61,7 +65,20 @@ static const char *xdrSource =
 	"  if (p.valid != 0) {\n"
 	"    constexpr sampler ls(filter::linear, address::clamp_to_edge);\n"
 	"    float2 euv = (float2(px) + 0.5) / float2(src.get_width(), src.get_height());\n"
-	"    lin += float3(excess.sample(ls, euv).rgb) * saturate(1.0 - m.a);\n"
+	"    float3 hdr = float3(excess.sample(ls, euv).rgb);\n"
+	"    if (p.full != 0) {\n"
+	"      float a = saturate(m.a); float3 b = base.read(px).rgb;\n"
+	// Reconstruct the aggregate overlay in the game's sRGB blending space, then
+	// composite it in linear light over the complete HDR world. No HDR world
+	// pixels pass through the 8-bit compatibility image. Alpha-zero colour edits
+	// (e.g. additive/inverted overlays) retain their display-linear difference.
+	"      if (a > 0.0) {\n"
+	"        float3 ui = saturate((m.rgb - b * (1.0 - a)) / a);\n"
+	"        lin = hdr * (1.0 - a) + srgbToLinear(ui) * (a * p.uiWhite);\n"
+	"      } else lin = hdr + (lin - srgbToLinear(b)) * p.uiWhite;\n"
+	"      lin = max(lin, 0.0);\n"
+	"      lin /= max(1.0, max(max(lin.r, lin.g), lin.b) / p.peak);\n"
+	"    } else lin += hdr * saturate(1.0 - m.a);\n"
 	"  }\n"
 	"  float3 o = M709toP3 * lin;\n"
 	"  return float4(p.e5 != 0 ? e5(o) : o, 1.0);\n"
@@ -144,6 +161,7 @@ float mc_xdr_headroom(CAMetalLayer *layer, int potential) {
 // From the final pass: this frame's excess image (nil: none this frame). Used by this frame's compose only (same command
 // buffer): a frame whose present was skipped or paced away leaves nothing for a later menu frame.
 void mc_xdr_frame(Enc *enc, id<MTLTexture> excess) {
+	xdrFull = 0;
 	xdrCmd = (void *) enc->cmd;
 	if (excess != xdrExcess) {
 		[excess retain];
@@ -151,6 +169,30 @@ void mc_xdr_frame(Enc *enc, id<MTLTexture> excess) {
 		xdrExcess = excess;
 	}
 	xdrValid = excess != nil;
+}
+
+// Snapshot after output upscaling, before the hand and HUD. The command buffer
+// retains resources in flight; replacing the snapshot on resize is safe.
+void mc_xdr_full_frame(Enc *enc, id<MTLTexture> hdr, id<MTLTexture> main, float uiWhite, float peak) {
+	mc_xdr_frame(enc, nil); // allocation failure must fall back to the SDR compatibility image
+	if (!hdr || !main) return;
+	if (!xdrBase || xdrBase.width != main.width || xdrBase.height != main.height || xdrBase.pixelFormat != main.pixelFormat) {
+		[xdrBase release];
+		MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:main.pixelFormat width:main.width height:main.height mipmapped:NO];
+		d.storageMode = MTLStorageModePrivate;
+		d.usage = MTLTextureUsageShaderRead;
+		xdrBase = [main.device newTextureWithDescriptor:d];
+		xdrBase.label = @"mcopt shade: SDR world reference";
+	}
+	if (!xdrBase) return;
+	id<MTLCommandBuffer> cb = mc_frame_cmd(enc);
+	id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder];
+	[b copyFromTexture:main toTexture:xdrBase];
+	[b endEncoding];
+	mc_xdr_frame(enc, hdr);
+	xdrFull = 1;
+	xdrUiWhite = fmaxf(0.25f, fminf(uiWhite, 2.0f));
+	xdrPeak = fmaxf(1.0f, fminf(peak, 16.0f));
 }
 
 static int ensurePipelines(id<MTLDevice> device) {
@@ -255,9 +297,12 @@ int mc_xdr_compose(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> d
 		// (v12-opt) straight into an RGBA16Float drawable (flip, presentQueue off): the staging slot's RGB9E5 rounding too, so both
 		// present paths show the same pixels (mc_xdr_e5(0), -Dmcopt.shade.xdrDirectE5=false: without it, as 1.2)
 		int e5 = flip && dst.pixelFormat == MTLPixelFormatRGBA16Float && xdrE5;
-		struct { int flip, valid, e5, pad1; } p = {flip, valid, e5, 0};
+		int full = valid && xdrFull && xdrBase && xdrBase.width == src.width && xdrBase.height == src.height;
+		if (xdrFull && !full) valid = 0; // never interpret a complete HDR image as highlight excess
+		struct { int flip, valid, e5, full; float uiWhite, peak, pad[2]; } p = {flip, valid, e5, full, xdrUiWhite, xdrPeak, {0, 0}};
 		[r setFragmentTexture:src atIndex:0];
 		[r setFragmentTexture:valid ? xdrExcess : src atIndex:1];
+		[r setFragmentTexture:full ? xdrBase : src atIndex:2];
 		[r setFragmentBytes:&p length:sizeof p atIndex:0];
 		[r drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
 		[r endEncoding];
