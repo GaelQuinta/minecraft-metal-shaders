@@ -2,7 +2,7 @@ plugins {
 	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 }
 
-version = '1.2.5-alpha-allocation-fix.1'
+version = '1.2.5-alpha'
 
 dependencies {
 	minecraft "com.mojang:minecraft:${minecraft_version}"
