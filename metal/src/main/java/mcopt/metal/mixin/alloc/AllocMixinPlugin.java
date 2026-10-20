@@ -6,7 +6,7 @@ import org.objectweb.asm.tree.ClassNode;
 import org.spongepowered.asm.mixin.extensibility.IMixinConfigPlugin;
 import org.spongepowered.asm.mixin.extensibility.IMixinInfo;
 
-/** Allocation-sweep mixins (-Dmcopt.alloc.*): each applies only with its flag; with none set the game is unchanged. */
+/** Allocation controls (-Dmcopt.alloc.*). Palette packing is enabled by default; profiles opt into the light map. */
 public final class AllocMixinPlugin implements IMixinConfigPlugin {
 	static {
 		mcopt.metal.Profile.apply(); // before any flag is read
@@ -16,6 +16,7 @@ public final class AllocMixinPlugin implements IMixinConfigPlugin {
 	@Override public String getRefMapperConfig() { return null; }
 	@Override public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
 		if (mixinClassName.endsWith("LightMapMixin")) return Boolean.getBoolean("mcopt.alloc.lightMap");
+		if (mixinClassName.endsWith("PalettePackingMixin")) return Boolean.parseBoolean(System.getProperty("mcopt.alloc.palettePacking", "true"));
 		return false;
 	}
 	@Override public void acceptTargets(Set<String> myTargets, Set<String> otherTargets) { }
