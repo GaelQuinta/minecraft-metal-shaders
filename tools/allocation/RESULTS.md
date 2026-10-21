@@ -32,3 +32,29 @@ The issue video showed roughly 1 GiB/s and much lower FPS. These disposable, sma
 No Prism instance, world or JVM configuration was modified. ProMotion experiments remain on their existing checkpoint. This candidate contains only the allocation changes on top of release 1.2.5.
 
 Final jar SHA-256: `a7ac62259a0c423a954acfadb83c833c4b904f5231c2297ea6cd203694309544`.
+
+## Lithium compatibility correction — 2026-10-20
+
+The first candidate failed with Lithium 0.26.2+mc26.3: Lithium replaces `PalettedContainer.pack`, removing the call targeted by our required `mcopt$packingIds` redirect. Fabric then rejects the class when joining a server or creating an integrated-server world. In the reported log, the multiplayer exception is presented as a network protocol error; the single-player crash has the same injection failure.
+
+The allocation mixin now yields to Lithium, which already caches its packing scratch arrays. Explicitly setting `mcopt.alloc.palettePacking=true` does not bypass this compatibility guard. Other allocation changes remain enabled, and builds without Lithium still use our packing optimization. The original allocation percentages above were measured without Lithium; they are not a performance claim for the combined stack.
+
+The new headless compatibility harness runs Fabric's actual client mixin transformation, verifies whether our redirect was applied, and exercises packing round trips, concurrent workers, nested calls and retained saved data. It exits before Minecraft opens a window. Results under `work/gc-investigation/lithium-compat`:
+
+| Build / companion mods | Result |
+| --- | --- |
+| Original candidate + Lithium | Reproduced the exact required-redirect failure |
+| Original candidate + Lithium, packing explicitly disabled | Passed; workaround confirmed |
+| Corrected candidate alone | Passed; packing mixin active |
+| Corrected candidate + Lithium | Passed; packing mixin skipped |
+| Corrected candidate + C2ME + Fabric API | Passed; packing mixin active |
+| Corrected candidate + Lithium + C2ME + Fabric API | Passed; packing mixin skipped |
+| Corrected candidate alone, packing explicitly disabled | Passed; opt-out preserved |
+| Corrected candidate + Lithium, packing explicitly enabled | Passed; compatibility guard preserved |
+| Corrected candidate + 23 installed companion mod jars | Passed; packing mixin skipped |
+
+C2ME was 0.4.2-alpha.0.90+26.3 and Fabric API was 0.162.0+26.3. Each run used a separate directory and `profile=none` with background class preloading disabled, to isolate transformation and packing without starting the renderer. Logs and manifests record exact jars and hashes. These checks reproduce and fix the shared class-loading failure; they are not live multiplayer login or single-player gameplay tests.
+
+The corrected Java/native build passed. Comparing jar entries with the first candidate shows changes only to `AllocMixinPlugin.class` and the two version metadata files; mesh-sorting code and native rendering binaries are identical. No existing worlds, Prism configuration or installed mods were modified.
+
+Test jar: `metal-1.2.5-alpha-allocation-fix.2.jar`. SHA-256: `cb59107f21807dd1b3bce862a27708b376e10f899151ad1aeb8cbf9fce09c31f`. The PR retains the release version in its build file; the distinct test version is applied by the local build configuration.

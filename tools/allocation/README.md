@@ -9,6 +9,8 @@ Based on `v1.2.5-alpha` (`a5b5a98ef6b1ea47b0e713b8bd3ae687f8d473e7`).
 - `PalettedContainer.pack` reuses worker-local temporary IDs instead of allocating an `int[4096]` for every block section and an `int[64]` for biomes. Vanilla still controls its locking, palette order, saved longs and returned stream. The scratch scope lasts until packing returns, is released in `finally`, and separates recursive calls. It retains at most four buffers of each standard size per thread (about 65 KiB); unusual sizes/deeper recursion use temporary arrays. `-Dmcopt.alloc.palettePacking=false` disables this mixin for comparison or compatibility diagnosis.
 - The mod's mesh sorter reuses its temporary metadata arrays across buckets and section rebuilds, retaining only the largest bucket's workspace per existing worker-local layer. Finished runs and mesh data keep independent storage. Compact quad record sorting shares the existing native vertex scratch buffer rather than allocating/freeing another buffer per bucket.
 
+When Lithium is installed, the palette-packing mixin automatically steps aside, including when `mcopt.alloc.palettePacking=true` is explicitly set. Lithium replaces `pack` and already reuses temporary IDs; applying our redirect to that replacement caused class loading to fail during server login and single-player world creation. The mesh-sorting changes remain active. On an older build, `-Dmcopt.alloc.palettePacking=false` avoids this conflict. The allocation measurements below were taken without Lithium and do not establish the same benefit with it installed.
+
 No renderer, lighting, world format, collector selection, heap size or view-distance behavior is changed.
 
 ## Profiling
@@ -46,5 +48,15 @@ python3 tools/allocation/check.py \
 Packing checks compare IDs and palette encounter order against Minecraft's unchanged reencoder, cover zero-bit/nonzero/global palettes, block/biome/unusual sizes, four concurrent workers, nested calls beyond the retention limit, and delayed consumption of saved data after scratch reuse. The in-game check also exercises the transformed `pack` method and round-trips actual saved sections.
 
 Mesh checks compare SHA-256 digests against the release jar for all seven ordering modes, with and without compact quad records. Fixtures repeatedly grow, shrink, empty and refill all facing buckets; digests include vertices, records, planes, bounds, materials, classes and draw runs.
+
+The compatibility check uses Fabric's real client mixin loader and the supplied mod jars, then exits before opening a game window. It verifies that the packing redirect is present without Lithium (unless explicitly disabled), absent with Lithium, and runs the packing correctness checks against the transformed classes. `--mod` can be repeated to include C2ME and its dependencies. Each run uses a separate disposable game directory; it does not connect to servers or open existing worlds.
+
+```sh
+python3 tools/allocation/compat-check.py /path/to/candidate.jar \
+  --manifest /tmp/profile-baseline/manifest.json --java-home "$JAVA_HOME" \
+  --mod /path/to/lithium.jar --output /tmp/palette-lithium-check
+```
+
+Omit `--mod` for the vanilla-packing path. `--palette-packing false` checks the opt-out; `--palette-packing true` checks that explicit enablement still respects the Lithium guard. `--expect-conflict` verifies that an older candidate reproduces the original `mcopt$packingIds` injection failure, rather than accepting an unrelated startup error as a successful reproduction.
 
 See `RESULTS.md` for the measured results and limitations.
