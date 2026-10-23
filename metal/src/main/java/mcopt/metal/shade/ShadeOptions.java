@@ -234,7 +234,7 @@ public final class ShadeOptions {
 				"Volumétricas: nubes realistas. Cuadradas: las nubes de Minecraft con volumen, luz y sombras. Minecraft: las normales del juego.",
 				"Volumetric: realistic clouds. Blocky: Minecraft's clouds with volume, light and shadows. Minecraft: the game's normal clouds.",
 				new String[] {"volumetric", "blocky", "vanilla", "off"}, new String[] {"Volumétricas", "Cuadradas", "Minecraft", "No"},
-				new String[] {"Volumetric", "Blocky", "Minecraft", "Off"}, () -> 0),
+				new String[] {"Volumetric", "Blocky", "Minecraft", "Off"}, ShadeSettings::defaultCloudMode),
 			custom(U + "cloudCoverage", "Cantidad", "Amount", "Más o menos nubes que el clima del día.", "More or fewer clouds than the day's weather.", -50, 50, () -> 0,
 				p -> ShadeOption.fmt(p / 100f), v -> ShadeOption.roundOr(ShadeOption.parse(v, Float.NaN) * 100f),
 				p -> p == 0 ? ShadeLang.t("Del clima", "Weather") : (p > 0 ? "+" : "") + p),

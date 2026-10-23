@@ -41,7 +41,7 @@ import java.util.Map;
  * ground mist is user.mist, ShadeLook).</li>
  * <li>{@code mcopt.shade.clouds.mode}: volumetric, blocky (12-block cells like vanilla's, ray-traced and lit), vanilla (the
  * game's own, lit by the shaders), off. Default: volumetric, or blocky with mcopt.shade.clouds.style=blocky or the storybook
- * look at startup.</li>
+ * look.</li>
  * <li>{@code mcopt.shade.aurora}: off, rare, auto, always.</li>
  * <li>{@code mcopt.shade.water.color}: natural (the biome's), blue, turquoise, green, clear.</li>
  * <li>{@code mcopt.shade.water.clarity} (100): percent, 25..300 (how far the eye sees into water).</li>
@@ -74,9 +74,8 @@ public final class ShadeSettings {
 	private static volatile float ev = clamp(floatProp(EV, 0f), -2f, 2f);
 	private static volatile int saturation = percent(SATURATION, 100, 0, 150), bloom = percent(BLOOM, 100, 0, 200),
 		godrays = percent(GODRAYS, 100, 0, 200), haze = percent(HAZE, 100, 0, 200), clarity = percent(WATER_CLARITY, 100, 25, 300);
-	/** The clouds' default (no mcopt.shade.clouds.mode): blocky with mcopt.shade.clouds.style=blocky or the storybook look at startup. */
-	private static final String DEFAULT_CLOUDS = defaultClouds();
-	private static volatile int clouds = indexOf(CLOUD_MODES, System.getProperty(CLOUDS, DEFAULT_CLOUDS), 0);
+	/** When no cloud mode is set, the default follows the current look (or the legacy cloud style override). */
+	private static volatile int clouds = indexOf(CLOUD_MODES, System.getProperty(CLOUDS, ""), defaultCloudMode());
 	private static volatile int aurora = indexOf(AURORAS, System.getProperty(AURORA, "auto"), 2);
 	private static volatile int waterColor = indexOf(WATER_COLORS, System.getProperty(WATER_COLOR, "natural"), 0);
 	private static volatile float waves = clamp(floatProp(WAVES, 1f), 0f, 2f), reflect = clamp(floatProp(REFLECT, 1f), 0f, 2f);
@@ -101,7 +100,7 @@ public final class ShadeSettings {
 		godrays = percent(GODRAYS, 100, 0, 200);
 		haze = percent(HAZE, 100, 0, 200);
 		clarity = percent(WATER_CLARITY, 100, 25, 300);
-		clouds = indexOf(CLOUD_MODES, System.getProperty(CLOUDS, DEFAULT_CLOUDS), 0);
+		clouds = indexOf(CLOUD_MODES, System.getProperty(CLOUDS, ""), defaultCloudMode());
 		aurora = indexOf(AURORAS, System.getProperty(AURORA, "auto"), 2);
 		waterColor = indexOf(WATER_COLORS, System.getProperty(WATER_COLOR, "natural"), 0);
 		waves = clamp(floatProp(WAVES, 1f), 0f, 2f);
@@ -221,10 +220,11 @@ public final class ShadeSettings {
 	}
 
 	// ---- parsing -------------------------------------------------------------------------------------------------------
-	private static String defaultClouds() {
+	/** The same fallback used by the renderer and the settings menu, including after a live look change. */
+	static int defaultCloudMode() {
 		String style = System.getProperty("mcopt.shade.clouds.style");
-		if (style != null) return style.trim().equalsIgnoreCase("blocky") ? "blocky" : "volumetric";
-		return "storybook".equalsIgnoreCase(System.getProperty(LOOK, "").trim()) ? "blocky" : "volumetric";
+		if (style != null) return style.trim().equalsIgnoreCase("blocky") ? CLOUDS_BLOCKY : CLOUDS_VOLUMETRIC;
+		return "storybook".equalsIgnoreCase(System.getProperty(LOOK, "").trim()) ? CLOUDS_BLOCKY : CLOUDS_VOLUMETRIC;
 	}
 
 	private static int indexOf(String[] names, String v, int fallback) {
