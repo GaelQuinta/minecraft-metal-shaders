@@ -387,6 +387,31 @@ id<MTLTexture> mc_shade_texture(Ctx *ctx, int format, int width, int height, int
 	}
 }
 
+// (1.2.6, PBR) A sampled RGBA8 texture with mips mips that the CPU fills (mc_shade_texture_upload): the labPBR normal and
+// specular atlases (ShadePbr). Shared storage: written once per resource reload, then only read.
+id<MTLTexture> mc_shade_texture_cpu(Ctx *ctx, int width, int height, int mips, const char *label) {
+	@autoreleasepool {
+		MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:width height:height mipmapped:NO];
+		td.mipmapLevelCount = mips < 1 ? 1 : mips;
+		td.storageMode = MTLStorageModeShared;
+		td.usage = MTLTextureUsageShaderRead;
+		id<MTLTexture> t = [ctx->device newTextureWithDescriptor:td];
+		if (t && label) t.label = [NSString stringWithUTF8String:label];
+		return t;
+	}
+}
+
+// Writes a w x h RGBA8 rectangle (rowBytes apart) at x, y of mip level mip.
+void mc_shade_texture_upload(id<MTLTexture> t, int mip, int x, int y, int w, int h, const void *bytes, int rowBytes) {
+	if (!t || !bytes || w <= 0 || h <= 0) return;
+	[t replaceRegion:MTLRegionMake2D(x, y, w, h) mipmapLevel:mip withBytes:bytes bytesPerRow:rowBytes];
+}
+
+// Drops a texture made by mc_shade_texture or mc_shade_texture_cpu (the ShadeResources ring keeps its own reference while named).
+void mc_shade_texture_release(id<MTLTexture> t) {
+	[t release];
+}
+
 // A shared buffer of size bytes, zeroed.
 id<MTLBuffer> mc_shade_buffer(Ctx *ctx, uint64_t size) {
 	id<MTLBuffer> b = [ctx->device newBufferWithLength:size options:MTLResourceStorageModeShared];
