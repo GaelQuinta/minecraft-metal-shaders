@@ -79,7 +79,7 @@ For reference, on the same Mac: Iris + Complementary Reimagined (OpenGL) at 3024
   corners), emissive blocks.
 - **Sky**: physically based atmosphere, sun and moon discs, stars and the Milky Way, **aurora** in cold biomes.
 - **An in-game settings menu** (pause menu → **Shaders...**): about 120 settings on 11 pages (lighting, shadows, colour and
-  camera, atmosphere, god rays, clouds, night sky, water, weather, Nether and End, performance), in English and Spanish, most
+  camera, atmosphere, god rays, clouds, night sky, water, weather, Nether and End, performance), in English, Spanish, Simplified Chinese and Traditional Chinese, most
   of them applied live while you watch.
 - **Volumetric clouds** with cloud shadows, lit by the sunset; or **blocky clouds**: Minecraft's own cloud shapes with volume,
   sunlight, shadows and reflections; or the game's normal clouds. Since 1.2.3, when you're up high (at the clouds' height or
@@ -87,6 +87,13 @@ For reference, on the same Mac: Iris + Complementary Reimagined (OpenGL) at 3024
 - **God rays** (volumetric light) through forests, cave mouths and clouds; morning mist and forest air.
 - **Water**: waves, screen-space reflections, refraction, absorption, caustics, foam, **waterfalls with white water**,
   underwater fog and light shafts. Since 1.2.4, torch light fades smoothly across water (no flat square per block).
+- **labPBR resource packs** (since 1.2.6): tangent-space normals, material AO, roughness/specular highlights,
+  metal reflections and emissive pixels on near-terrain blocks. Enable a labPBR pack in Minecraft's Resource Packs, then
+  **Shaders → Lighting → PBR (resource packs)** controls normals, specular and emission (0–200%). No change without a pack.
+  Requires the HDR shader pipeline (on by default). Height/parallax, porosity/SSS and animated material maps are not implemented;
+  material maps currently use their first frame. Predefined conductor IDs use an albedo-coloured F0 approximation.
+- **Motion blur** (since 1.2.6): optional camera-motion blur in **Shaders → Colour and camera → Effects** (0–200%, off by default).
+  Applied after TAA, before the hand and HUD; moving entities do not have their own blur vectors.
 - **Weather**: wet surfaces and puddles, rain ripples, lightning.
 - **HDR** pipeline with bloom, auto-exposure, a filmic tonemap, and **XDR/EDR** output on Liquid Retina XDR displays.
   Optional **Full scene** HDR is available under **Shaders → Colour and camera → HDR display → HDR mode**
@@ -225,6 +232,15 @@ Minecraft con volumen, luz y sombras), las normales del juego, o ninguna. **Gene
 **"Salida"** del menú de pausa, y la interna con **"Resolución"** (desde la 1.2.4, en % de la salida: 85, 75, 67, 59 o 50 %, o Auto; también en **Shaders... → Rendimiento**). Compatible con Distant Horizons 3.3.4 + Fabric API (opcional); desde la 1.2.2, en **Shaders... → Rendimiento → Distant Horizons** eliges presets de DH probados con los shaders (Rendimiento, Balanceado, Calidad, Ultra), y el agua lejana de DH siempre tiene los reflejos de los shaders. El preset gráfico **Fabulous** ya funciona (antes el agua se volvía invisible). Desde la 1.2.3, cuando estás alto (a la altura de las nubes o arriba de ellas), los bordes de las nubes ya no se ven a través de las lomas y los árboles que tienes enfrente; con DH, una nube detrás de una montaña lejana de DH, por debajo del horizonte, todavía puede verse encima de ella. Si con DH la mitad de
 abajo de la pantalla se ve oscura (versión 1.0-alpha): en `config/DistantHorizons.toml` pon `vanillaFadeMode = "NONE"` y
 reinicia el juego; desde la 1.0-alpha.2 el mod lo hace solo.
+
+**PBR y movimiento (1.2.6):** activa un pack **labPBR** en los paquetes de recursos de Minecraft. En
+**Shaders... → Iluminación → PBR (packs de texturas)** ajustas relieve, brillo especular y emisión (0–200%).
+Sin un pack compatible, la imagen se conserva. Se aplica a los bloques cercanos con HDR activado (de fábrica);
+no incluye altura/parallax, porosidad/SSS ni animación de los mapas (se usa el primer cuadro). Los metales predefinidos
+usan una aproximación de su reflectancia basada en el color del bloque. **Color y cámara → Efectos → Desenfoque de movimiento**
+añade motion blur de cámara (apagado de fábrica, 0–200%); la mano y la interfaz permanecen nítidas. Los objetos en movimiento
+no tienen desenfoque propio. **Resplandor / Bloom ya existía** en esa misma página.
+Los menús también están disponibles en chino simplificado y tradicional.
 
 Es una versión alfa: haz respaldo de tus mundos.
 
