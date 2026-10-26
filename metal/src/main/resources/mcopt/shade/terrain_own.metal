@@ -450,6 +450,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #endif
 #if defined(MCOPT_HDR) && defined(SHADE_PBR)
 		if (pbr) {
+			float3 materialLit = radiance;
 			radiance *= materialAo;
 			// G is linear F0 below 230, otherwise an albedo-coloured conductor.
 			bool metal = materialS.g * 255.0 > 229.5;
@@ -462,7 +463,13 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 				float3 R = reflect(V,N);
 				float3 env = mix(shadeSkyLookup(float3(R.x,max(R.y,0.0),R.z),skyLut,skyLutSmplr,sf),
 				    sf.ambientSky.rgb, saturate(rough*1.6));
-				env = mix(sf.ambientGround.rgb,env,smoothstep(-0.15,0.15,R.y))*float(shadeSkyCurve(skyLight));
+				float open = float(shadeSkyCurve(skyLight));
+				// Nether/End have their own ambient environment, even with zero vanilla skylight.
+				if (dims) env = mix(sf.ambientGround.rgb,sf.ambientSky.rgb,saturate(R.y*0.5+0.5));
+				else env = mix(sf.ambientGround.rgb,env,smoothstep(-0.15,0.15,R.y))*open;
+				// Approximate the local reflected fill from the lighting already evaluated above (torches, held lights,
+				// cave minimum). A conductor in a lit cave must not become black just because it sees no sky.
+				env += materialLit / max(float3(wetAlbedo),0.02) * ((1.0-open)*0.5);
 				float3 direct = dims ? float3(0.0) : sf.sunColor.rgb * min(soPbrGgx(N,V,sf.lightDirWorld.xyz,max(rough*rough,0.0025)),60.0)
 				    * float(shadow)*float(smoothstep(0.3h,0.8h,skyLight))*(1.0-sl.wet.w);
 				radiance = radiance*(1.0-min(sl.user3.z,1.0)*(metal ? float3(1.0) : F0))
