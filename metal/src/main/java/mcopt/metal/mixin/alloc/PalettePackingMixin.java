@@ -26,7 +26,8 @@ abstract class PalettePackingMixin<T> {
 		}
 	}
 
-	@Redirect(method = "pack", at = @At(value = "INVOKE", target =
+	// require = 0: another mod that replaces pack (as Lithium does) leaves no call to redirect; vanilla's copy then runs
+	@Redirect(method = "pack", require = 0, at = @At(value = "INVOKE", target =
 		"Lnet/minecraft/world/level/chunk/PalettedContainer;reencodeContents(Lnet/minecraft/util/BitStorage;Lnet/minecraft/world/level/chunk/Palette;Lnet/minecraft/world/level/chunk/Palette;)[I"))
 	private int[] mcopt$packingIds(BitStorage storage, Palette<T> from, Palette<T> to) {
 		return PalettePacking.reencode(storage, from, to);
