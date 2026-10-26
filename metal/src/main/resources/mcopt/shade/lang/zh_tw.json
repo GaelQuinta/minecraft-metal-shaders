@@ -396,5 +396,16 @@
   " (after restart)": "（重啟後）",
   "Off: the game runs plain mcopt 0.3 (Metal without effects, more FPS). On: the shaders. Applies after restarting the game; your settings are kept.": "關：遊戲只執行 mcopt 0.3（Metal 渲染，無光影效果，FPS 更高）。開：啟用光影。重啟遊戲後生效；你的設定會保留。",
   "☕ Support": "☕ 支援",
-  "Metal Shaders is free. If you enjoy it, you can buy me a coffee on Ko-fi.": "Metal Shaders 免費提供。如果你喜歡，可以在 Ko-fi 上請我喝杯咖啡。"
+  "Metal Shaders is free. If you enjoy it, you can buy me a coffee on Ko-fi.": "Metal Shaders 免費提供。如果你喜歡，可以在 Ko-fi 上請我喝杯咖啡。",
+  "PBR (resource packs)": "PBR（資源包）",
+  "labPBR materials": "labPBR 材質",
+  "Use a pack's labPBR normal, specular and emissive maps. No image change without a compatible pack.": "使用資源包的 labPBR 法線、反射和自發光貼圖。無相容資源包時畫面不變。",
+  "Normal strength": "法線強度",
+  "Normal-map strength; does not change the silhouette.": "法線貼圖強度；不改變物體輪廓。",
+  "Specular strength": "反射強度",
+  "Reflections and highlights from the pack's materials.": "資源包材質的反射和高光。",
+  "PBR emission": "PBR 自發光",
+  "Self-light from the pack's emissive pixels.": "資源包像素的自發光亮度。",
+  "Motion blur": "動態模糊",
+  "Blur camera motion. 0% is off; the hand and menus stay sharp.": "模糊相機運動。0% 為關閉；手部與選單保持清晰。"
 }

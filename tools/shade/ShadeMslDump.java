@@ -96,6 +96,7 @@ public class ShadeMslDump {
 		}
 		// M2 post chain (one library: bloom, final, bridge, exposure kernels, Milky Way bake)
 		Files.writeString(out.resolve("post.metal"), ShadeMsl.post());
+		Files.writeString(out.resolve("motion_blur.metal"), ShadeMsl.prelude() + ShadeMsl.resource("motion_blur.metal"));
 		// the water module's own passes (wave bake, SSR coarse depth): ShadeWater.library
 		Files.writeString(out.resolve("water_passes.metal"), ShadeMsl.post() + mcopt.metal.shade.water.ShadeWater.prelude());
 		// M3 weather: the puddle/snow noise bake (ShadeWeather.bakeNoise)

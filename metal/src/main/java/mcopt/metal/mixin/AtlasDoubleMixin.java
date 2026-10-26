@@ -13,6 +13,7 @@ public class AtlasDoubleMixin {
 	@Inject(method = "upload", at = @At("RETURN"))
 	private void mcopt$adUploaded(CallbackInfo ci) {
 		if (AtlasDouble.ON) AtlasDouble.uploaded((TextureAtlas) (Object) this);
+		mcopt.metal.shade.ShadePbr.atlasUploaded((TextureAtlas) (Object) this);
 	}
 
 	@Inject(method = "releaseTextures", at = @At("HEAD"))

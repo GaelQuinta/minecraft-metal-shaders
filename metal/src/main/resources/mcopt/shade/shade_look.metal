@@ -80,7 +80,7 @@ struct ShadeLook {
 	float4 user0;         // 1024 x soft shadows' sun radius (rad), y vignette strength (0.12), z leaves' / plants' light through them, w glowing blocks
 	float4 user1;         // 1040 x Distant Horizons' far water reflection strength, y its screen-space part on (1) / off (0), z foam, w refraction
 	float4 user2;         // 1056 x the sun's glint on water, y beacon radiance multiplier, zw free
-	float4 user3;         // 1072 x Natural lighting daylight strength 0..2 (0 = Current, 1 = original Natural), yzw free
+	float4 user3;         // 1072 x Natural lighting daylight strength 0..2 (0 = Current, 1 = original Natural), y signed normal strength (negative flips Y), z specular, w emission (0 without PBR)
 };
 
 // ShadeLook.tier.y feature bits
@@ -114,8 +114,8 @@ struct ShadeResources {
 	texture2d<half> weatherNoise;// 4  (M3 weather) RG16F 1024^2 tile of 256 blocks: r puddle field, g snow drift (baked once; weather_surface.metal)
 	texture2d<half> prevDepth;   // 5  (TAAU) linear view depth of prevScene (R16F, blocks along last frame's view axis, ~65000 = sky); valid when ssr.y == 1
 	texture2d<half> shadowTint;  // 6  (M3 weather) coloured shadows: near cascade tint map (RGBA16F, rgb transmittance, a reversed-Z light depth of the nearest translucent caster)
-	texture2d<half> reserved7;
-	texture2d<half> reserved8;
+	texture2d<float> pbrNormal;
+	texture2d<float> pbrSpecular;
 	texture2d<half> reserved9;
 	texture2d<half> reserved10;
 	texture2d<half> aurora;      // 11 (M3.3 dims) RGBA16F the aurora for this frame's view at a fraction of the output size (aurora.metal; read when ShadeLook bit SHADE_DIMS_AURORA_TEX)

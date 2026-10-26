@@ -286,6 +286,7 @@ public final class ShadeFrameUpdater {
 			mcopt.metal.shade.water.WaterFrame.update(ShadeBindings.ctx(), level, x, y, z, f.underwater, waterRain);
 		}
 		f.pack(ShadeBindings.nextSlot());
+		ShadePbr.frame();
 		LOOK.pack(ShadeBindings.currentLook(), f);
 		mcopt.metal.shade.dims.ShadeDims.pack(ShadeBindings.currentLook(), ShadeBindings.currentSlot(), f);
 		if (mcopt.metal.shade.dims.ShadeXdr.active()) mcopt.metal.shade.dims.ShadeXdr.frame(Math.min(dt, 0.25f));

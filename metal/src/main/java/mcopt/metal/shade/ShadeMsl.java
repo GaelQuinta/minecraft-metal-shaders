@@ -126,9 +126,13 @@ public final class ShadeMsl {
 	 * prelude, the weather module (its translucent form for the translucent layer), the water module (translucent layer only,
 	 * mcopt.shade.water), the stage.
 	 */
+	/** Own-terrain-only variant bit: no PBR instructions/registers at all without a loaded material pack. */
+	public static final int PBR_MATERIALS = 1 << 8;
+
 	public static String ownFragmentSource(boolean translucent, int leanBits) {
 		return (ShadeConfig.HDR ? "#define MCOPT_HDR\n" : "") + (OWN_NONCE != null ? "#define SHADE_OWN_NONCE " + OWN_NONCE + "\n" : "")
-			+ leanDefines(leanBits << LEAN_SHIFT) + LEAN_TEST
+			+ ((leanBits & PBR_MATERIALS) != 0 ? "#define SHADE_PBR\n" : "")
+			+ leanDefines((leanBits & ~PBR_MATERIALS) << LEAN_SHIFT) + LEAN_TEST
 			+ (translucent ? "#define SHADE_OWN_TRANSLUCENT\n" : "") + prelude() + ShadeWeather.prelude(translucent)
 			+ (translucent && ShadeWater.MODULE ? ShadeWater.prelude() : "") + resource("terrain_own.metal");
 	}

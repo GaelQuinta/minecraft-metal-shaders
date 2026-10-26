@@ -130,11 +130,13 @@ public final class ShadeTerrain {
 		if (own == 0 || shadeFs == null) return;
 		if (!prewarmed) prewarm();
 		int tag = ShadeLean.tag();
-		int opaqueBits = tag & ShadeMsl.LEAN_TERRAIN, translucentBits = tag & (ShadeMsl.LEAN_TERRAIN | ShadeMsl.LEAN_WATER);
+		int pbr = mcopt.metal.shade.ShadePbr.active() ? ShadeMsl.PBR_MATERIALS : 0;
+		int opaqueBits = (tag & ShadeMsl.LEAN_TERRAIN) | pbr, translucentBits = (tag & (ShadeMsl.LEAN_TERRAIN | ShadeMsl.LEAN_WATER)) | pbr;
 		long opaque = library(false, opaqueBits), translucent = library(true, translucentBits);
 		if (opaque == 0 && opaqueBits != 0) opaque = library(false, opaqueBits = 0); // (the variant failed: the full stage)
 		if (translucent == 0 && translucentBits != 0) translucent = library(true, translucentBits = 0);
-		int key = opaqueBits | translucentBits << 8 | (opaque != 0 ? 1 << 16 : 0) | (translucent != 0 ? 1 << 17 : 0);
+		int key = (opaqueBits & 255) | (translucentBits & 255) << 8 | (opaque != 0 ? 1 << 16 : 0)
+			| (translucent != 0 ? 1 << 17 : 0) | (pbr != 0 ? 1 << 18 : 0);
 		try {
 			shadeFs.invokeExact(own, opaque, translucent, key, ShadeConfig.HDR ? 1 : 0);
 		} catch (Throwable t) {

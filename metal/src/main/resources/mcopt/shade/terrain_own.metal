@@ -135,6 +135,17 @@ static float4 soSampleRgss(texture2d<float> source, sampler s, float2 uv, float2
 #undef SHADE_DYNLIGHT
 #endif
 
+static inline float soPbrGgx(float3 n, float3 v, float3 l, float alpha) {
+	float3 h = normalize(l - v);
+	float nh = saturate(dot(n, h)), nl = saturate(dot(n, l)), nv = max(dot(n, -v), 1e-3);
+	float a2 = alpha * alpha;
+	float dd = nh * nh * (a2 - 1.0) + 1.0;
+	float D = a2 / (3.14159265 * dd * dd);
+	float gv = nl * sqrt(nv * nv * (1.0 - a2) + a2), gl = nv * sqrt(nl * nl * (1.0 - a2) + a2);
+	return 3.14159265 * D * (0.5 / max(gv + gl, 1e-5)) * nl;
+}
+
+
 fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [[buffer(28)]], constant SoTerrain &t [[buffer(29)]],
 	constant SoFog &fog [[buffer(30)]], texture2d<float> atlas [[texture(26)]], sampler atlasSampler [[sampler(14)]],
 	texture2d<float> lightmap [[texture(27)]], sampler lightSampler [[sampler(15)]],
@@ -156,7 +167,9 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	float2 uv = in.texCoord0;
 	float2 pixelSize = 1.0 / float2(t.TextureSize);
 	float2 du = dfdx(uv);
+	float2 pbrDu = du;
 	float2 dv = dfdy(uv);
+	float2 pbrDv = dv;
 	float3 p = in.shadePos;
 	half blockLight = in.shadeLight.x, skyLight = in.shadeLight.y;
 	half fade = SO_RICH ? half(in.chunkVisibility) : half(1.0); // the chunk's fade-in (1: faded in)
@@ -287,6 +300,35 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #else
 	bool water = false;
 #endif
+	// labPBR: derivatives are captured before discard; shadows continue to use the geometric normal.
+	half3 materialN = n;
+	float4 materialS = float4(0.0);
+	float materialAo = 1.0;
+#if defined(MCOPT_HDR) && defined(SHADE_PBR)
+	bool pbr = any(abs(sl.user3.yzw) > 0.0) && !waterFull && !water;
+	if (pbr) {
+		if (abs(sl.user3.y) > 0.0) {
+			float4 nm = g.UseRgss == 1 ? soSampleRgss(sr.pbrNormal, atlasSampler, uv, pixelSize, du, dv)
+			    : soSampleNearestG(sr.pbrNormal, atlasSampler, uv, pixelSize, du, dv, sqrt(du*du+dv*dv));
+			float2 xy = nm.rg * 2.0 - 1.0;
+			// Make the canonical flat 128,128 exactly neutral.
+			if (all(abs(nm.rg - 128.0/255.0) < 0.001)) xy = float2(0.0);
+			if (sl.user3.y < 0.0) xy.y = -xy.y;
+			xy *= abs(sl.user3.y);
+			float3 nn = normalize(float3(xy, sqrt(max(1.0-dot(xy,xy), 0.001))));
+			float det = pbrDu.x*pbrDv.y - pbrDu.y*pbrDv.x;
+			float3 T = (dpx*pbrDv.y - dpy*pbrDu.y) * sign(det);
+			float3 B = (dpy*pbrDu.x - dpx*pbrDv.x) * sign(det);
+			T -= float3(n)*dot(T,float3(n)); B -= float3(n)*dot(B,float3(n));
+			if (dot(T,T)>1e-20 && dot(B,B)>1e-20)
+				materialN = half3(normalize(normalize(T)*nn.x + normalize(B)*nn.y + float3(n)*nn.z));
+			materialAo = mix(1.0, nm.b, min(abs(sl.user3.y),1.0));
+		}
+		if (sl.user3.z > 0.0 || sl.user3.w > 0.0)
+			materialS = g.UseRgss == 1 ? soSampleRgss(sr.pbrSpecular, atlasSampler, uv, pixelSize, du, dv)
+			    : soSampleNearestG(sr.pbrSpecular, atlasSampler, uv, pixelSize, du, dv, sqrt(du*du+dv*dv));
+	}
+#endif
 	float3 radiance;
 #ifdef SHADE_WATER
 	if (waterFull) {
@@ -401,10 +443,34 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		half3 wetAlbedo = albedo;
 #endif
 		// Nether/End (dims module): shadeLit2 without sky light and sun, plus the dimension's own light (shadeLitDimsExtra)
-		radiance = shadeLit2(wetAlbedo, n, dims ? half(0.0) : skyLight, blockLight, dims ? half(0.0) : shadow, thin, foliage, sf, sl);
-		if (dims) radiance += shadeLitDimsExtra(wetAlbedo, n, shadow, thin, foliage, p, sf, sl);
+		radiance = shadeLit2(wetAlbedo, materialN, dims ? half(0.0) : skyLight, blockLight, dims ? half(0.0) : shadow, thin, foliage, sf, sl);
+		if (dims) radiance += shadeLitDimsExtra(wetAlbedo, materialN, shadow, thin, foliage, p, sf, sl);
 #ifdef SHADE_DYNLIGHT
-		radiance += float3(wetAlbedo) * sf.ambientBlock.xyz * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(n), thin, blockLight);
+		radiance += float3(wetAlbedo) * sf.ambientBlock.xyz * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(materialN), thin, blockLight);
+#endif
+#if defined(MCOPT_HDR) && defined(SHADE_PBR)
+		if (pbr) {
+			radiance *= materialAo;
+			// G is linear F0 below 230, otherwise an albedo-coloured conductor.
+			bool metal = materialS.g * 255.0 > 229.5;
+			float3 F0 = metal ? float3(albedo) : float3(materialS.g);
+			if (sl.user3.z > 0.0 && max3(F0.r,F0.g,F0.b) > 0.0) {
+				float rough = max((1.0-materialS.r)*(1.0-materialS.r), 0.045);
+				float3 N = float3(materialN), V = normalize(p-shadeEye(sf.invViewProj));
+				float nv = saturate(dot(N,-V));
+				float3 F = F0 + (1.0-F0)*pow(1.0-nv,5.0);
+				float3 R = reflect(V,N);
+				float3 env = mix(shadeSkyLookup(float3(R.x,max(R.y,0.0),R.z),skyLut,skyLutSmplr,sf),
+				    sf.ambientSky.rgb, saturate(rough*1.6));
+				env = mix(sf.ambientGround.rgb,env,smoothstep(-0.15,0.15,R.y))*float(shadeSkyCurve(skyLight));
+				float3 direct = dims ? float3(0.0) : sf.sunColor.rgb * min(soPbrGgx(N,V,sf.lightDirWorld.xyz,max(rough*rough,0.0025)),60.0)
+				    * float(shadow)*float(smoothstep(0.3h,0.8h,skyLight))*(1.0-sl.wet.w);
+				radiance = radiance*(1.0-min(sl.user3.z,1.0)*(metal ? float3(1.0) : F0))
+				    + (env*F*materialAo+direct*F)*sl.user3.z;
+			}
+			float emission = materialS.a; // CPU decoded labPBR A=255 to zero before filtering
+			radiance += float3(albedo)*sf.ambientBlock.xyz*(emission*4.0*sl.user3.w);
+		}
 #endif
 		// Light sources until a material mask: at block light 14-15, bright warm texels (torch and lantern flames, glowstone, lava,
 		// shroomlights) glow instead of being lit like the rest of the block (stronger in the Nether).

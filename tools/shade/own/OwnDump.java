@@ -22,6 +22,9 @@ public class OwnDump {
 			ShadeMsl.LEAN_NETHER | dry};
 		for (int b : opaque) Files.writeString(out.resolve("frag_o_" + b + ".metal"), ShadeMsl.ownFragmentSource(false, b));
 		for (int b : translucent) Files.writeString(out.resolve("frag_t_" + b + ".metal"), ShadeMsl.ownFragmentSource(true, b));
+		// labPBR: validate the same terrain variants with data-map sampling/shading enabled.
+		for (int b : opaque) Files.writeString(out.resolve("frag_o_pbr_" + b + ".metal"), ShadeMsl.ownFragmentSource(false, b | ShadeMsl.PBR_MATERIALS));
+		for (int b : translucent) Files.writeString(out.resolve("frag_t_pbr_" + b + ".metal"), ShadeMsl.ownFragmentSource(true, b | ShadeMsl.PBR_MATERIALS));
 		System.out.println("prefix " + prefix.length() + " chars, terrain " + terrain.length());
 	}
 }

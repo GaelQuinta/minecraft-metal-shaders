@@ -103,6 +103,10 @@ public final class ShadePost {
 	private static int xdrFormat;
 	// M3: the final pass with the Nether/End fog, End sky, shimmer and camera media compiled in (the plain ones carry none of it)
 	private static long psoFinalDims, psoFinalXdrDims;
+	private static long psoMotion, motionTarget;
+	private static int motionW, motionH, motionFormat;
+	private static boolean motionFailed;
+	private static final ByteBuffer MOTION_PARAMS = ByteBuffer.allocateDirect(32).order(ByteOrder.LITTLE_ENDIAN);
 	/**
 	 * (v12-opt) The overworld final pass without the code of settings that are off by default (the volumetric light's edge fix,
 	 * its upsample modes other than 1, the debug views; shade_post.metal LEAN): picked while those are at their defaults, the
@@ -344,6 +348,40 @@ public final class ShadePost {
 		ShadeRender.resource(3, n > 1 ? bloomAccum[1] : 0);
 	}
 
+	/** Applied after TAA (history remains sharp), before bloom and tonemapping; before hand/HUD draws. */
+	private static long motion(long scene, long depth) {
+		float strength = Live.f("mcopt.shade.motionBlur", 0f, 0f, 2f);
+		if (strength <= 0f || depth == 0 || motionFailed) {
+			if (motionTarget != 0) { retired.add(new long[] {motionTarget, frame + 8}); motionTarget = 0; }
+			return scene;
+		}
+		try {
+			if (psoMotion == 0) {
+				long lib = ShadeRender.library(ShadeMsl.prelude() + ShadeMsl.resource("motion_blur.metal"));
+				try { psoMotion = ShadeRender.pipeline(lib, "shade_motion_vs", "shade_motion_fs", ShadeConfig.HDR_FORMAT, 0); }
+				finally { MetalBridge.release(lib); }
+			}
+			int w = ShadeRender.width(scene), h = ShadeRender.height(scene);
+			if (motionTarget == 0 || w != motionW || h != motionH || motionFormat != ShadeConfig.HDR_FORMAT) {
+				if (motionTarget != 0) retired.add(new long[] {motionTarget, frame + 8});
+				motionTarget = 0; // allocation failure must not retire the old texture twice
+				motionTarget = ShadeRender.texture(ShadeConfig.HDR_FORMAT, w, h, false, "mcopt motion blur");
+				motionW = w; motionH = h; motionFormat = ShadeConfig.HDR_FORMAT;
+			}
+			boolean resolved = scene != hdr[frame & 1];
+			MOTION_PARAMS.clear();
+			MOTION_PARAMS.putFloat(strength).putFloat(resolved ? 1f : (float)liveWidth/w)
+				.putFloat(resolved ? 1f : (float)liveHeight/h).putFloat(resolved ? 1f : 0f)
+				.putFloat(liveWidth).putFloat(liveHeight).putFloat(0f).putFloat(0f).flip();
+			pass(psoMotion, motionTarget, ShadeRender.DONT_CARE, new long[] {scene, depth}, MOTION_PARAMS, "mcopt shade: motion blur");
+			return motionTarget;
+		} catch (RuntimeException e) {
+			motionFailed = true;
+			System.out.println("[mcopt] shade: motion blur unavailable: " + e);
+			return scene;
+		}
+	}
+
 	/**
 	 * (1.2.5) PR #6's full-scene HDR final passes, built the first time that mode draws instead of at startup: three more final-pass
 	 * pipelines on the render thread while the world loads, for a mode that is off by default. A failure leaves the frame SDR.
@@ -564,6 +602,11 @@ public final class ShadePost {
 			}
 		}
 		if (out == null) return;
+		long blurred = motion(scene, depth);
+		if (blurred != scene) {
+			scene = bloomSource = blurred;
+			if (taa != null) srcU = srcV = 1f;
+		}
 		// the bloom pyramid follows the output image (constant under dynamic resolution)
 		if (scene != hdr[frame & 1]) sizeBloom(ShadeRender.width(scene), ShadeRender.height(scene));
 		else sizeBloom(width, height);

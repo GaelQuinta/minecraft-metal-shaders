@@ -379,7 +379,7 @@ public final class ShadeLook {
 		// user2: x the sun's glint on water (user.glint), y beacon radiance, zw free
 		put4(b, USER2, Live.f(U + "glint", 1f, 0f, 3f), Live.f("mcopt.shade.beaconBrightness", 1f, 1f, 8f), 0f, 0f);
 		// x: daylight contrast strength 0..2. Zero preserves Current; 1 retains the original Natural look.
-		put4(b, USER3, f.naturalLighting, 0f, 0f, 0f);
+		put4(b, USER3, f.naturalLighting, ShadePbr.strength("normal"), ShadePbr.strength("specular"), ShadePbr.strength("emission"));
 		mcopt.metal.shade.weather.ShadeWeather.pack(b); // M3 weather: wet, wind, flash
 	}
 

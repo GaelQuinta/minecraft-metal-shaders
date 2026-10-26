@@ -15,7 +15,8 @@
 		"ShadeOitMixin",
 		"ShadeDebugMixin",
 		"ShadeWindowMixin",
-		"ShadeWindowAccessor"
+		"ShadeWindowAccessor",
+		"ShadePbrSpritesMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

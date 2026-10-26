@@ -43,6 +43,7 @@ for k in solid cutout translucent; do
 		[ -f variants/${p}_$k.pulled.vs.metal ] && { ./pipecheck none variants/${p}_$k.pulled.vs.metal variants/${p}_$k.fs.metal || fail=1; }
 	done
 done
+./pipecheck compile variants/motion_blur.metal || fail=1
 for i in 0 1; do ./pipecheck pos variants/sky$i.vs.metal variants/sky$i.fs.metal || fail=1; ./pipecheck pos variants/hdrsky$i.vs.metal variants/hdrsky$i.fs.metal || fail=1; done
 # M3.3 (dims): the sky's lean variant and the reduced-resolution aurora pass (ShadeAurora, RGBA16F target)
 for i in 0 1; do ./pipecheck pos variants/hdrsky$i.vs.metal variants/hdrskylean$i.fs.metal || fail=1; done
