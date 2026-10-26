@@ -29,7 +29,7 @@ import static java.lang.foreign.ValueLayout.JAVA_INT;
  * (1.2.5, Gael 2026-10-18: "se calienta mucho... cada cierto tiempo se pone lento y empiezan a dar tirones", which no bench run
  * reproduced) One latest.log line a minute of what the player's own session did, for the next report: the world frames' rate, the
  * hitches (frames over 50 ms) and the longest, the JVM's garbage collection time, the OS's thermal state (nominal, fair, serious,
- * critical: macOS throttles from serious) and the render scale. A thermal state change is logged at once. Off with
+ * critical: macOS throttles from serious), the render scale and (1.2.6) the GPU memory allocated. A thermal state change is logged at once. Off with
  * -Dmcopt.shade.diag=false. Render thread only; costs a nanoTime per frame.
  */
 public final class ShadeDiag {
@@ -69,14 +69,27 @@ public final class ShadeDiag {
 		if (now - start < PERIOD) return;
 		long[] gc = gc();
 		var taa = mcopt.metal.shade.taa.ShadeTaa.current();
-		System.out.println(String.format(Locale.ROOT, "[mcopt] shade: diag %.0f s: %.1f fps, %d hitches > 50 ms (longest %.0f ms), GC %d ms in %d, thermal %s, render scale %s",
+		System.out.println(String.format(Locale.ROOT, "[mcopt] shade: diag %.0f s: %.1f fps, %d hitches > 50 ms (longest %.0f ms), GC %d ms in %d, thermal %s, render scale %s, GPU memory %s",
 			(now - start) * 1e-9, frames / ((now - start) * 1e-9), hitches, worst * 1e-6, gc[0] - gcStart, gc[1] - gcCountStart, name(th),
-			taa != null ? String.format(Locale.ROOT, "%.2f", taa.scale()) : "-"));
+			taa != null ? String.format(Locale.ROOT, "%.2f", taa.scale()) : "-", gpuMemory()));
 		start = now;
 		frames = hitches = 0;
 		worst = 0;
 		gcStart = gc[0];
 		gcCountStart = gc[1];
+	}
+
+	/**
+	 * (1.2.6, issue #16: an M5 aborted in the GPU driver after 2 h 45 min) MTLDevice.currentAllocatedSize in MB, so a slow climb
+	 * over a long session shows in the log before such a crash.
+	 */
+	private static String gpuMemory() {
+		try {
+			long ctx = ShadeBindings.ctx();
+			return ctx == 0 ? "-" : (mcopt.metal.MetalBridge.deviceAllocated(ctx) >> 20) + " MB";
+		} catch (Throwable t) {
+			return "-";
+		}
 	}
 
 	private static String name(int th) {
