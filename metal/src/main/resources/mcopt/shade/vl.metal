@@ -1116,22 +1116,11 @@ static inline half3 vlUpsample(texture2d<half> vl, float2 pos, float dist, const
 	// A sub-resolution sky gap can have four foreground leaves in its bilinear footprint. Reusing their light gives a
 	// leaf-sized orange rectangle in the sky. Search only at these discontinuities, with a strict depth test. Farther
 	// samples have a spatial penalty; they must never bridge a wall/leaf to the sky. This costs nothing on smooth surfaces.
-	float3 edgeSum = 0.0;
-	float edgeWeight = 0.0;
-	for (int j = -1; j <= 2; j++) {
-		for (int i = -1; i <= 2; i++) {
-			if (i >= 0 && i <= 1 && j >= 0 && j <= 1) continue;
-			half4 s = vl.read(uint2(clamp(base + int2(i, j), int2(0), hi)));
-			float diff = abs(float(s.a) - hd);
-			if (diff < tolerance) {
-				float2 offset = float2(i, j) - float2(fr);
-				float w = 1.0 / ((1.0 + dot(offset, offset)) * (1.0 + diff / tolerance));
-				edgeSum += float3(s.rgb) * w;
-				edgeWeight += w;
-			}
-		}
+	const int2 probes[4] = {int2(-1, 0), int2(2, 1), int2(0, 2), int2(1, -1)};
+	for (int k = 0; k < 4; k++) {
+		half4 s = vl.read(uint2(clamp(base + probes[k], int2(0), hi)));
+		if (abs(float(s.a) - hd) < tolerance) return s.rgb;
 	}
-	if (edgeWeight > 0.0) return half3(edgeSum / edgeWeight);
 	// No background observation is safer than inventing distant light from an occluding leaf. Foreground sub-pixel geometry still
 	// uses the length-limited fallback, preserving the old anti-halo treatment without spreading foreground shafts.
 	if (hd > bestD + tolerance) return half3(0.0h);

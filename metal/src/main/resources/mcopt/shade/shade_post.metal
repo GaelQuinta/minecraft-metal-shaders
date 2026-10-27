@@ -212,22 +212,13 @@ static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, fl
 	// Find an observation at the actual depth before falling back; don't magnify a leaf's signed haze correction into a
 	// sky-sized rectangle. The common four-depth gather above still handles smooth areas with one filtered fetch.
 	if (mode < 0.5) {
-		float4 edgeSum = 0.0;
-		float edgeWeight = 0.0;
-		for (int j = -1; j <= 2; j++) {
-			for (int i = -1; i <= 2; i++) {
-				if (i >= 0 && i <= 1 && j >= 0 && j <= 1) continue;
-				uint2 q = uint2(clamp(base + int2(i, j), int2(0), hi));
-				float diff = abs(float(vlD.read(q).a) - hd);
-				if (diff < tolerance) {
-					float2 offset = float2(i, j) - float2(fr);
-					float w = 1.0 / ((1.0 + dot(offset, offset)) * (1.0 + diff / tolerance));
-					edgeSum += float4(vlT.read(q)) * w;
-					edgeWeight += w;
-				}
-			}
+		// Four outer cardinal probes, not a wide blur: only discontinuities pay these depth reads, and the first
+		// same-surface observation is enough. This keeps the repair inside the post pass's bandwidth budget.
+		const int2 probes[4] = {int2(-1, 0), int2(2, 1), int2(0, 2), int2(1, -1)};
+		for (int k = 0; k < 4; k++) {
+			uint2 q = uint2(clamp(base + probes[k], int2(0), hi));
+			if (abs(float(vlD.read(q).a) - hd) < tolerance) return vlT.read(q);
 		}
-		if (edgeWeight > 0.0) return half4(edgeSum / edgeWeight);
 		if (hd > bestD + tolerance) return half4(0.0h, 0.0h, 0.0h, 1.0h);
 	}
 	float mD = maxD;
