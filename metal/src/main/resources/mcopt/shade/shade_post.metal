@@ -188,7 +188,8 @@ static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, fl
 	}
 	if (all(abs(float4(dd) - hd) < 0.5 * tolerance)) return vlT.sample(shadeLinearClamp, uv);
 	half4 sum = 0.0h, bestC = half4(0.0h, 0.0h, 0.0h, 1.0h);
-	float wsum = 0.0, best = 6e4, bestD = 1.0;
+	half wsum = 0.0h;
+	float best = 6e4, bestD = 1.0;
 	for (int j = 0; j <= 1; j++) {
 		for (int i = 0; i <= 1; i++) {
 			uint2 q = uint2(clamp(base + int2(i, j), int2(0), hi));
@@ -196,8 +197,8 @@ static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, fl
 			half sd = j == 0 ? (i == 0 ? dd.w : dd.z) : (i == 0 ? dd.x : dd.y);
 			half bw = (i == 0 ? 1.0h - fr.x : fr.x) * (j == 0 ? 1.0h - fr.y : fr.y) + 1e-3h;
 			float diff = abs(float(sd) - hd);
-			float x = min(diff / tolerance, 128.0);
-			float w = float(bw) / (1.0 + x * x * (1.0 + x));
+			half x = half(min(diff / tolerance, 32.0)); // cubic <= 33792: finite in half, unlike an unbounded depth ratio
+			half w = bw / (1.0h + x * x * (1.0h + x));
 			sum += s * half(w);
 			wsum += w;
 			if (diff < best) {

@@ -1090,19 +1090,20 @@ static inline half3 vlUpsample(texture2d<half> vl, float2 pos, float dist, const
 	float2 fl = floor(lp);
 	half2 fr = half2(lp - fl);
 	int2 base = int2(fl), hi = int2(p.size.xy) - 1;
-	// Keep depth math in float. At a near leaf against the sky, diff / tolerance exceeds half's range when cubed;
-	// its weight must become zero, never poison the weighted sum with Inf/NaN (issue #19).
+	// Keep depth comparisons in float and bound the ratio before the half-precision cubic. A near leaf against sky
+	// otherwise overflows that cubic; mismatched surfaces must reach the safe fallback with finite weights (issue #19).
 	float tolerance = 0.04 * dist + 0.15;
 	float hd = min(dist, 3e4);
 	half3 sum = 0.0h, bestC = 0.0h;
-	float wsum = 0.0, best = 6e4, bestD = 1.0;
+	half wsum = 0.0h;
+	float best = 6e4, bestD = 1.0;
 	for (int j = 0; j <= 1; j++) {
 		for (int i = 0; i <= 1; i++) {
 			half4 s = vl.read(uint2(clamp(base + int2(i, j), int2(0), hi)));
 			half bw = (i == 0 ? 1.0h - fr.x : fr.x) * (j == 0 ? 1.0h - fr.y : fr.y) + 1e-3h;
 			float diff = abs(float(s.a) - hd);
-			float x = min(diff / tolerance, 128.0);
-			float w = float(bw) / (1.0 + x * x * (1.0 + x));
+			half x = half(min(diff / tolerance, 32.0)); // cubic <= 33792: finite in half, unlike an unbounded depth ratio
+			half w = bw / (1.0h + x * x * (1.0h + x));
 			sum += s.rgb * half(w);
 			wsum += w;
 			if (diff < best) {
