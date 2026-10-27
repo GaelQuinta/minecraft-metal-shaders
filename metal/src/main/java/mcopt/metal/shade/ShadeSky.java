@@ -51,6 +51,24 @@ public final class ShadeSky {
 	public static final float KEY = 0.61f, EXPOSURE_MIN = 0.1f, EXPOSURE_MAX = 1.6f, ADAPT_SECONDS = 1.2f;
 	/** How much of a brightness change the eye compensates: 1 = all of it (every scene as bright), 0 = none. */
 	public static final float ADAPTATION = 0.5f;
+	/** Geometry of the fixed 23-direction ambient quadrature, independent of sun, weather and camera. */
+	private static final float[][] AMBIENT_SAMPLES = ambientSamples();
+	private static float[][] ambientSamples() {
+		float[][] bands = {{0f, 0.35f, 8}, {0.35f, 0.8f, 8}, {0.8f, 1.2f, 6}, {1.2f, 1.5707963f, 1}};
+		float[][] samples = new float[23][4];
+		int at = 0;
+		for (float[] band : bands) {
+			float lo = band[0], hi = band[1], mid = 0.5f * (lo + hi);
+			int n = (int) band[2];
+			float solid = (float) (2 * Math.PI * (Math.sin(hi) - Math.sin(lo))) / n;
+			float cy = (float) Math.sin(mid), ch = (float) Math.cos(mid);
+			for (int i = 0; i < n; i++) {
+				double a = (i + 0.5) * 2 * Math.PI / n;
+				samples[at++] = new float[] {ch * (float) Math.cos(a), cy, ch * (float) Math.sin(a), solid};
+			}
+		}
+		return samples;
+	}
 
 	private ShadeSky() {
 	}
@@ -199,10 +217,20 @@ public final class ShadeSky {
 		out[0] = mix(out[0], l * 0.92f * grey, w) * SKY_BRIGHTNESS;
 		out[1] = mix(out[1], l * 0.96f * grey, w) * SKY_BRIGHTNESS;
 		out[2] = mix(out[2], l * grey, w) * SKY_BRIGHTNESS;
+		// Same brightness-preserving directional chroma control as shadeAwaySunset (issue #18).
+		if (sunsetAway < 1f) {
+			float dl = dx * dx + dz * dz, sl = s.sunX * s.sunX + s.sunZ * s.sunZ;
+			float az = dl > 1e-8f && sl > 1e-8f ? (float) ((dx * s.sunX + dz * s.sunZ) / Math.sqrt(dl * sl)) : 0f;
+			float k = (1f - sunsetAway) * (1f - smoothstep(-0.2f, 0.4f, az)) * goldenHourWeight(s.sunY, s.rain);
+			float lum = luma(out[0], out[1], out[2]);
+			for (int c = 0; c < 3; c++) out[c] = mix(out[c], lum, k);
+		}
 	}
 
 	/** M3 sunset art (mcopt.shade.sunsetArt, set every frame by ShadeLook): the azimuth-aware grade of shadeSunsetGrade. */
 	public static volatile boolean sunsetArt = true;
+	/** Render-thread snapshot, set before computing a frame; same value packed at zenithColor.w. */
+	public static volatile float sunsetAway = 1f;
 	private static final float[] ART_HALO = {1.55f, 1.0f, 0.70f}, ART_TOWARD = {1.50f, 0.96f, 0.72f}, ART_SIDE = {1.40f, 0.97f, 0.82f}, ART_AWAY = {1.18f, 0.90f, 1.06f};
 
 	/** shade_common.metal's shadeGoldenHour weight: the warm grade on the sky while the sun is low. */
@@ -239,11 +267,13 @@ public final class ShadeSky {
 		public final float[][] horizon = new float[8][3];
 		/** Average scene luminance the exposure adapts to (before eye sky light). */
 		public float sceneLuma;
+		// Each result owns its scratch: no frame-by-frame array garbage and no mutable global scratch between callers.
+		private final float[] transmittance = new float[3], sample = new float[3], up = new float[3], toward = new float[3], away = new float[3];
 	}
 
 	public static void compute(Sky s, Result r) {
 		float mie = s.mie();
-		float[] t = new float[3], tmp = new float[3];
+		float[] t = r.transmittance, tmp = r.sample;
 		// The light: the sun while it's up, the moon once the sun is well down (both are near zero at the switch).
 		r.sunLight = s.sunY > -0.06f;
 		if (r.sunLight) {
@@ -264,24 +294,16 @@ public final class ShadeSky {
 		// weighted by solid angle and the face's cosine; vertical faces also see half a hemisphere of ground.
 		float ax = s.sunX, az = s.sunZ, al = (float) Math.sqrt(ax * ax + az * az);
 		if (al > 1e-3f) { ax /= al; az /= al; } else { ax = 1f; az = 0f; }
-		float[] up = new float[3], toward = new float[3], away = new float[3];
-		float[][] bands = {{0f, 0.35f, 8}, {0.35f, 0.8f, 8}, {0.8f, 1.2f, 6}, {1.2f, 1.5707963f, 1}};
-		for (float[] band : bands) {
-			float lo = band[0], hi = band[1];
-			int n = (int) band[2];
-			float mid = 0.5f * (lo + hi);
-			float solid = (float) (2 * Math.PI * (Math.sin(hi) - Math.sin(lo))) / n;
-			float cy = (float) Math.sin(mid), ch = (float) Math.cos(mid);
-			for (int i = 0; i < n; i++) {
-				double a = (i + 0.5) * 2 * Math.PI / n;
-				float dx = ch * (float) Math.cos(a), dz = ch * (float) Math.sin(a);
-				radiance(s, dx, cy, dz, tmp);
-				float side = dx * ax + dz * az;
-				for (int k = 0; k < 3; k++) {
-					up[k] += tmp[k] * cy * solid;
-					toward[k] += tmp[k] * Math.max(side, 0f) * solid;
-					away[k] += tmp[k] * Math.max(-side, 0f) * solid;
-				}
+		float[] up = r.up, toward = r.toward, away = r.away;
+		for (int k = 0; k < 3; k++) up[k] = toward[k] = away[k] = 0f;
+		for (float[] sample : AMBIENT_SAMPLES) {
+			float dx = sample[0], cy = sample[1], dz = sample[2], solid = sample[3];
+			radiance(s, dx, cy, dz, tmp);
+			float side = dx * ax + dz * az;
+			for (int k = 0; k < 3; k++) {
+				up[k] += tmp[k] * cy * solid;
+				toward[k] += tmp[k] * Math.max(side, 0f) * solid;
+				away[k] += tmp[k] * Math.max(-side, 0f) * solid;
 			}
 		}
 		float sunOnGround = Math.max(r.lightDir[1], 0f);

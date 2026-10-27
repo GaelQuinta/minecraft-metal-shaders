@@ -277,11 +277,18 @@ public final class ShadeClouds {
 			boolean cells = blocky() && vanillaMask;
 			p.vanillaCells = cells;
 			if (cells) {
-				double drift = ((level.getGameTime() % (vanillaW * 400L)) + f.partialTick) * 0.03;
-				double step = Double.isNaN(lastVanillaX) ? 0.0 : drift - lastVanillaX;
+				if (!wasActive || modeChanged || longGap) lastVanillaX = Double.NaN;
+				// Use the same real-time wind clock as the volumetric clouds. Re-reading server-corrected game ticks every
+				// frame moved blocky cloud shadows backward on time packets (issue #22). Initialise from the game once,
+				// then integrate; pausing/freezing the cloud field must freeze both its image and its shadows.
+				double period = vanillaW * 12.0;
+				double step = Double.isNaN(lastVanillaX) ? 0.0 : move * 0.6 * CloudConfig.wind();
+				double drift = Double.isNaN(lastVanillaX)
+					? ((level.getGameTime() % (vanillaW * 400L)) + f.partialTick) * 0.03
+					: (lastVanillaX + step) % period;
 				lastVanillaX = drift;
 				p.vanillaX = drift;
-				p.vanillaStepX = Math.abs(step) < 4.0 ? (float) step : 0f; // (the offset wraps once per texture width)
+				p.vanillaStepX = (float) step; // continuous even across the texture-period wrap
 				p.vanillaPeriodX = vanillaW * 12.0;
 				p.vanillaPeriodZ = vanillaH * 12.0;
 			} else {

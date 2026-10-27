@@ -1090,18 +1090,20 @@ static inline half3 vlUpsample(texture2d<half> vl, float2 pos, float dist, const
 	float2 fl = floor(lp);
 	half2 fr = half2(lp - fl);
 	int2 base = int2(fl), hi = int2(p.size.xy) - 1;
-	half invTol = half(1.0 / (0.04 * dist + 0.15));
-	half hd = half(min(dist, 3e4));
+	// Keep depth math in float. At a near leaf against the sky, diff / tolerance exceeds half's range when cubed;
+	// its weight must become zero, never poison the weighted sum with Inf/NaN (issue #19).
+	float tolerance = 0.04 * dist + 0.15;
+	float hd = min(dist, 3e4);
 	half3 sum = 0.0h, bestC = 0.0h;
-	half wsum = 0.0h, best = 6e4h, bestD = 1.0h;
+	float wsum = 0.0, best = 6e4, bestD = 1.0;
 	for (int j = 0; j <= 1; j++) {
 		for (int i = 0; i <= 1; i++) {
 			half4 s = vl.read(uint2(clamp(base + int2(i, j), int2(0), hi)));
 			half bw = (i == 0 ? 1.0h - fr.x : fr.x) * (j == 0 ? 1.0h - fr.y : fr.y) + 1e-3h;
-			half diff = abs(s.a - hd);
-			half x = diff * invTol;
-			half w = bw / (1.0h + x * x * (1.0h + x)); // ~ e^-x near 0, falls faster beyond
-			sum += s.rgb * w;
+			float diff = abs(float(s.a) - hd);
+			float x = min(diff / tolerance, 128.0);
+			float w = float(bw) / (1.0 + x * x * (1.0 + x));
+			sum += s.rgb * half(w);
 			wsum += w;
 			if (diff < best) {
 				best = diff;
@@ -1110,11 +1112,33 @@ static inline half3 vlUpsample(texture2d<half> vl, float2 pos, float dist, const
 			}
 		}
 	}
-	if (wsum > 0.02h) return sum / wsum;
+	if (wsum > 0.02) return sum / half(wsum);
+	// A sub-resolution sky gap can have four foreground leaves in its bilinear footprint. Reusing their light gives a
+	// leaf-sized orange rectangle in the sky. Search only at these discontinuities, with a strict depth test. Farther
+	// samples have a spatial penalty; they must never bridge a wall/leaf to the sky. This costs nothing on smooth surfaces.
+	float3 edgeSum = 0.0;
+	float edgeWeight = 0.0;
+	for (int j = -1; j <= 2; j++) {
+		for (int i = -1; i <= 2; i++) {
+			if (i >= 0 && i <= 1 && j >= 0 && j <= 1) continue;
+			half4 s = vl.read(uint2(clamp(base + int2(i, j), int2(0), hi)));
+			float diff = abs(float(s.a) - hd);
+			if (diff < tolerance) {
+				float2 offset = float2(i, j) - float2(fr);
+				float w = 1.0 / ((1.0 + dot(offset, offset)) * (1.0 + diff / tolerance));
+				edgeSum += float3(s.rgb) * w;
+				edgeWeight += w;
+			}
+		}
+	}
+	if (edgeWeight > 0.0) return half3(edgeSum / edgeWeight);
+	// No background observation is safer than inventing distant light from an occluding leaf. Foreground sub-pixel geometry still
+	// uses the length-limited fallback, preserving the old anti-halo treatment without spreading foreground shafts.
+	if (hd > bestD + tolerance) return half3(0.0h);
 	// no low-res sample at this depth (a thin leaf against the sky): the closest one, scaled by how much air this pixel's
 	// ray actually crosses (in-scattering grows with the marched length) so foliage edges get no halo
-	half maxD = half(p.shape.y);
-	return bestC * saturate((min(hd, maxD) + 0.5h) / (min(bestD, maxD) + 0.5h));
+	float maxD = p.shape.y;
+	return bestC * half(saturate((min(hd, maxD) + 0.5) / (min(bestD, maxD) + 0.5)));
 }
 
 // The light added at full-resolution pixel px (pre-exposed: x exposure) and the canopy mist's transmittance T.
