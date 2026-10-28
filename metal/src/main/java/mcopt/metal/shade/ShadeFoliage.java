@@ -46,7 +46,7 @@ public final class ShadeFoliage {
 	static final int LEAVES = 1, PLANT = 2, DOUBLE_LOWER = 3, DOUBLE_UPPER = 4, VINE = 5, CROP = 6;
 	private static final int BYTES = 224, MAX_PUSHERS = 8;
 	/** Amplitudes at 100 % (blocks; the shader scales them by the weather's strength and the sky light). */
-	private static final float LEAVES_AMP = 0.045f, VINE_AMP = 0.02f, PLANT_AMP = 0.11f, CROP_AMP = 0.07f;
+	private static final float LEAVES_AMP = 0.075f, VINE_AMP = 0.035f, PLANT_AMP = 0.2f, CROP_AMP = 0.12f;
 
 	private record Pending(int w, int h, int cell, byte[] classes, int sprites) {}
 
@@ -129,7 +129,7 @@ public final class ShadeFoliage {
 		phase1 = (phase1 + dt * 2.9 * speed) % TAU;
 		phase2 = (phase2 + dt * 4.3 * speed) % TAU;
 		phase3 = (phase3 + dt * 6.1 * speed) % TAU;
-		gustPhase = (gustPhase + dt * 0.45 * speed) % TAU;
+		gustPhase = (gustPhase + dt * 0.8 * speed) % TAU; // (the plants' gust fronts: 24-block waves, ~3 blocks/s)
 		float angle = mcopt.metal.shade.weather.ShadeWeather.ON ? mcopt.metal.shade.weather.ShadeWeather.windAngle() : 0.6f;
 
 		try (MemoryStack stack = MemoryStack.stackPush()) {

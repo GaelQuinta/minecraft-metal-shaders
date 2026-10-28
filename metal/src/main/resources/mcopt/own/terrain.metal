@@ -1748,10 +1748,12 @@ constant bool OWN_REC = false;
 // at the quad's centre: a corner's uv and its diagonal opposite's): 1 leaves (the whole block wobbles a little), 2 plants rooted
 // at their base (grass, ferns, flowers, saplings, bushes), 3 / 4 the lower / upper half of a double plant, 5 vines and other
 // wall-hugging plants (a smaller wobble), 6 crops (rooted, stiffer). A rooted vertex's weight is its height in its quad (the
-// diagonal opposite corner is the other end), so bases stay put and the two halves of a double plant meet. The wind is a field
-// of world position (sines whose wavelengths divide 32 blocks, the slow gusts' 256, over positions wrapped at 1024: continuous
-// everywhere) and of time (phases accumulated on the CPU in double), so corners shared by neighbouring blocks move together and
-// no seam opens. Rain and thunder strengthen it; sky light gates it (nothing waves indoors); it fades out from 24 to 48 blocks.
+// diagonal opposite corner is the other end), so bases stay put and the two halves of a double plant meet. Leaves and vines move
+// with a field of world position (sines whose wavelengths divide 32 blocks, over positions wrapped at 1024: continuous everywhere)
+// and of time (phases accumulated on the CPU in double), so corners shared by neighbouring blocks move together and no seam opens.
+// Rooted plants share no corners between blocks: each sways with a phase of its own (a hash of its column) under gust fronts
+// travelling down the wind (1.2.7 candidate 4: about twice the earlier amplitudes, which hid the motion while walking). Rain and
+// thunder strengthen it; sky light gates it (nothing waves indoors); it fades out from 24 to 48 blocks.
 // Nearby entities (the player, mobs) push plants aside. Position only: TAAU has no motion vectors for it; the amplitudes stay
 // under a pixel or two per frame. The same function, with the same inputs, waves the near shadow cascade's casters.
 struct ShadeSway {
@@ -1819,11 +1821,18 @@ static float3 ownSway(uint vi, int3 origin, float3 cam, device const void *arena
 	if (w <= 0.0) return float3(0);
 	float amp = (k == 6 ? sw.amp.w : sw.amp.y) * gate;
 	if (amp > 0.0) {
-		// a lean down the wind with slow gusts (256-block waves) and a wobble across it
-		float gust = 0.55 + 0.45 * sin(sw.wind.w + dot(a.xz, (6.2831853 / 256.0) * float2(3, 2)));
-		float wob = sin(sw.phase.x + dot(a, K * float3(4, 1, 3))) + 0.4 * sin(sw.phase.z + dot(a, K * float3(-3, 2, 6)));
+		// a lean down the wind that gust fronts sweep across the field (24-block waves travelling down the wind at ~3 blocks/s:
+		// whole patches bend together, visible while walking too) and a sway of each plant's own (its column's phase, from its
+		// quad's centre: the quads of a block and the two halves of a double plant share it, neighbours sway apart)
+		float2 cxz = float2(origin.xz & 1023) + 0.5 * (p.xz + float2(o.pos.xz));
+		uint2 cc = uint2(int2(floor(cxz)) & 1023);
+		uint hh = (cc.x * 73856093u) ^ (cc.y * 19349663u);
+		hh = (hh ^ (hh >> 13)) * 1274126177u;
+		float ph = float(hh >> 16) * (6.2831853 / 65536.0);
 		float2 dir = sw.wind.xz, side = float2(-dir.y, dir.x);
-		d.xz = (dir * (0.6 * gust + 0.35 * wob) + side * 0.3 * sin(sw.phase.y + dot(a, K * float3(2, 3, -5)))) * (amp * w);
+		float front = 0.5 + 0.5 * sin(sw.wind.w - dot(dir, cxz) * (6.2831853 / 24.0));
+		float wob = sin(sw.phase.y + ph) + 0.4 * sin(sw.phase.w + 2.0 * ph);
+		d.xz = (dir * (0.3 + 0.7 * front * front + 0.3 * wob) + side * 0.3 * sin(sw.phase.x + 1.7 * ph)) * (amp * w);
 	}
 	// pushed aside by nearby entities (indoors too)
 	int n = int(sw.info.z);

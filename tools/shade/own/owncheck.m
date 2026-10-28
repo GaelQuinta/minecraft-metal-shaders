@@ -23,7 +23,7 @@ static id<MTLFunction> fncIn(id<MTLLibrary> from, NSString *name, MTLFunctionCon
 
 static id<MTLFunction> fnc(NSString *name, MTLFunctionConstantValues *cv) { return fncIn(lib, name, cv); }
 
-// (1.2.7) the shaded library's pipelines: their cutout kinds' own_vs waves foliage (F_SWAY), as mcown.m ownSwayKind
+// (1.2.7) the shaded library's pipelines: every opaque kind's own_vs has F_SWAY (the cutout ones wave), as mcown.m ownSwayKind
 static int gShade;
 
 // ownStage's constants for kind (vertex 1: own_vs, 0: the fragment stage)
@@ -48,7 +48,7 @@ static MTLFunctionConstantValues *stageConstants(int kind, int vertex, int hdr) 
 	[cv setConstantValue:&qflat type:MTLDataTypeBool atIndex:21];
 	[cv setConstantValue:&fogvertT type:MTLDataTypeBool atIndex:20];
 	if (group) [cv setConstantValue:&group type:MTLDataTypeBool atIndex:25];
-	if (vertex == 1 && gShade && (frag == 1 || frag == 5 || frag == 6)) { bool t = true; [cv setConstantValue:&t type:MTLDataTypeBool atIndex:26]; }
+	if (vertex == 1 && gShade && frag != 3) { bool t = true; [cv setConstantValue:&t type:MTLDataTypeBool atIndex:26]; }
 	if (vertex) {
 		bool cmp = true, fatv = false, clipv = false, tr = translucent != 0;
 		[cv setConstantValue:&cmp type:MTLDataTypeBool atIndex:1];

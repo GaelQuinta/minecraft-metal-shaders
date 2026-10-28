@@ -282,7 +282,8 @@ void mco_shade(Own *w, int on) {
 
 // mcopt-shade 1.2.7 (issue #18, ShadeFoliage): waving foliage. terrain.metal ShadeSway (this frame's wind, amplitudes, pushers) and
 // the class map over the block atlas (retained here; a 1x1 zero map stands in until there is one, so the binding always exists).
-// own_vs reads them under F_SWAY (the cutout kinds' vertex stages while shading is on), own_shadow_vs on its flags bit 2.
+// own_vs reads them under F_SWAY (every opaque kind's vertex stage while shading is on; only the cutout kinds get the moving
+// frame, ownSwayMoves), own_shadow_vs on its flags bit 2.
 #define OWN_SWAY_BYTES 224
 static uint8_t ownSwayFrame[OWN_SWAY_BYTES];
 static id<MTLTexture> ownSwayTex, ownSwayZero;
@@ -302,8 +303,9 @@ void mco_sway_classes(id<MTLTexture> t) {
 	if (!t) ownSwayOn = 0;
 }
 
-// Binds the sway's frame and class map at vertex buffer b / texture t of r; 1 when the foliage moves this frame.
-int mco_sway_bind(id<MTLRenderCommandEncoder> r, int b, int t) {
+// Binds the sway's frame and class map at vertex buffer b / texture t of r (the still ones unless `moves`); 1 when the foliage
+// moves this frame.
+int mco_sway_bind(id<MTLRenderCommandEncoder> r, int b, int t, int moves) {
 	if (!ownSwayZero) {
 		MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:1 height:1 mipmapped:NO];
 		td.usage = MTLTextureUsageShaderRead;
@@ -313,15 +315,25 @@ int mco_sway_bind(id<MTLRenderCommandEncoder> r, int b, int t) {
 		[ownSwayZero replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&zero bytesPerRow:4];
 	}
 	static const uint8_t off[OWN_SWAY_BYTES];
-	[r setVertexBytes:ownSwayOn ? ownSwayFrame : off length:OWN_SWAY_BYTES atIndex:(NSUInteger) b];
-	[r setVertexTexture:ownSwayOn ? ownSwayTex : ownSwayZero atIndex:(NSUInteger) t];
-	return ownSwayOn;
+	int on = ownSwayOn && moves;
+	[r setVertexBytes:on ? ownSwayFrame : off length:OWN_SWAY_BYTES atIndex:(NSUInteger) b];
+	[r setVertexTexture:on ? ownSwayTex : ownSwayZero atIndex:(NSUInteger) t];
+	return on;
 }
 
-// a draw kind whose vertex stage waves foliage (F_SWAY): the cutout kinds (1, 5 sampled at a level, 6 the depth pre-pass) while shading
+// a draw kind whose vertex stage has F_SWAY: every opaque kind while shading (not translucent, 3). Solid and cutout must keep one
+// vertex function between them: vanilla's depth ties (a grass block's solid side and its cutout overlay, drawn after it with
+// GREATER_EQUAL) need bit-identical positions, and under fast math a cutout-only variant with its "+ disp" rounds differently
+// (1.2.7 candidates 1-3: the overlays z-fought their bases, flickering fringes, worst in orange-grass biomes).
 static bool ownSwayKind(Own *w, int kind) {
+	return w->shade && (kind & 15) != 3;
+}
+
+// ... and whose foliage moves (gets this frame's sway; the rest bind the still one): the cutout kinds (1, 5 sampled at a level, 6
+// the depth pre-pass)
+static bool ownSwayMoves(int kind) {
 	int frag = kind & 15;
-	return w->shade && (frag == 1 || frag == 5 || frag == 6);
+	return frag == 1 || frag == 5 || frag == 6;
 }
 
 // mcopt-shade (the shadow pass, mcshadow.m mc_shadow_own_init): w's library, which holds own_shadow_vs (not retained).
@@ -1003,7 +1015,7 @@ int mco_draw(Own *w, Enc *enc, int cutout, const void *frame, int frameLength, i
 	}
 drawCall:
 	if (w->vcount && !mesh) [r setVertexBuffer:w->vcount offset:0 atIndex:28];
-	if (!mesh && ownSwayKind(w, cutout)) mco_sway_bind(r, 30, 28);  // (mcopt-shade 1.2.7: own_vs' F_SWAY arguments)
+	if (!mesh && ownSwayKind(w, cutout)) mco_sway_bind(r, 30, 28, ownSwayMoves(cutout));  // (mcopt-shade 1.2.7: own_vs' F_SWAY arguments)
 	if (cutout & (1 << 30)) {
 		// the visibility oracle: the drawn units (vertex stage) and the units with a visible pixel (fragment stage), this sample's number
 		[r setVertexBuffer:w->oracleKept offset:0 atIndex:26];
