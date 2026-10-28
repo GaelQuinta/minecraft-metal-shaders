@@ -173,17 +173,18 @@ public final class ShadeFrameUpdater {
 		f.dimension = sky.skybox == DimensionType.Skybox.OVERWORLD ? ShadeFrame.DIM_OVERWORLD
 			: sky.skybox == DimensionType.Skybox.END ? ShadeFrame.DIM_END : ShadeFrame.DIM_NETHER;
 		if (f.dimension == ShadeFrame.DIM_OVERWORLD) {
-			// SkyRenderer: RotY(-90) * RotX(angle) * (0, 1, 0)
-			Shade.celestial(sky.sunAngle, DIR);
+			// SkyRenderer: RotY(-90) * RotX(angle) * (0, 1, 0); (1.2.7) the angles through SunClock (no once-a-second step back)
+			double sunAngle = SunClock.angle(sky.sunAngle, 0);
+			Shade.celestial(sunAngle, DIR);
 			f.sunDir.set((float) DIR[0], (float) DIR[1], (float) DIR[2]);
-			Shade.celestial(sky.moonAngle, DIR);
+			Shade.celestial(SunClock.angle(sky.moonAngle, 1), DIR);
 			f.moonDir.set((float) DIR[0], (float) DIR[1], (float) DIR[2]);
 			// (1.1) user.moonPhases false: always a full moon (its light and its disc)
 			int phase = Live.b(ShadeLook.U + "moonPhases", true) ? sky.moonPhase.index() : 0;
 			f.moonPhase = MOON_BRIGHTNESS[Math.floorMod(phase, 8)];
 			moonPhaseIndex = phase;
 			f.starBrightness = sky.starBrightness;
-			f.dayTime = (float) (sky.sunAngle / (2 * Math.PI) - Math.floor(sky.sunAngle / (2 * Math.PI)));
+			f.dayTime = (float) (sunAngle / (2 * Math.PI) - Math.floor(sunAngle / (2 * Math.PI)));
 			Vector3fc skyColor = sky.skyColor;
 			if (skyColor != null) {
 				f.skyColor[0] = skyColor.x();

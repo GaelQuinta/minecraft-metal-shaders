@@ -291,7 +291,7 @@ public final class ShadowPass {
 			this.lightIsMoon = false;
 			this.lightKey = 0x456e64L; // constant: never forces a far redraw
 		} else {
-			this.chooseLight(sky.sunAngle, sky.moonAngle);
+			this.chooseLight(mcopt.metal.shade.SunClock.angle(sky.sunAngle, 0), mcopt.metal.shade.SunClock.angle(sky.moonAngle, 1));
 		}
 		double x = cam.pos.x, y = cam.pos.y, z = cam.pos.z;
 		this.camX = x;
@@ -350,7 +350,7 @@ public final class ShadowPass {
 	}
 
 	/** The light that casts this frame: the sun, or the moon while the sun is below the horizon, quantized to the sun step. */
-	private void chooseLight(float sunAngle, float moonAngle) {
+	private void chooseLight(double sunAngle, double moonAngle) {
 		// vanilla's celestial transform: RotY(-90) * RotX(angle) * (0, 1, 0) = (-sin a, cos a, 0)
 		// the same switch as the shade sky (ShadeSky.compute: the moon once the sun is 0.06 below the horizon), so the light
 		// the terrain is lit by and the one the map is drawn from are always the same
