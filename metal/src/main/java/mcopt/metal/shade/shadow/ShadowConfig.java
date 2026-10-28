@@ -68,6 +68,15 @@ public final class ShadowConfig {
 	public static final float NEAR = clamp(floatProp("mcopt.shade.shadowNear", DIST / 4f), 4f, DIST);
 	public static final int FAR_EVERY = clamp(Integer.getInteger("mcopt.shade.shadowFarEvery", 4), 1, 64);
 	public static final double SUN_STEP_DEGREES = clamp(floatProp("mcopt.shade.shadowSunStep", 0.1f), 0f, 5f);
+	/**
+	 * (1.2.7, issue #19) mcopt.shade.shadowSunStepAdaptive (true): near the horizon the light's step shrinks (halved up to eight
+	 * times) so a step moves the ground end of a shadow at most 1 % of the caster's height; at a 5 degree sun a 0.1 degree step
+	 * moved a tree's shadow tip and its god-ray shafts by over a block, three times a second. false = one step at every height.
+	 * Read every frame.
+	 */
+	static boolean sunStepAdaptive() {
+		return mcopt.metal.shade.Live.b("mcopt.shade.shadowSunStepAdaptive", true);
+	}
 	public static final boolean CULL_LIGHT = !"camera".equals(System.getProperty("mcopt.shade.shadowCull", "light"));
 	public static final boolean ALL_FACES = "all".equals(System.getProperty("mcopt.shade.shadowFaces", "sun"));
 	public static final float BIAS_SLOPE = floatProp("mcopt.shade.shadowBias", 1.0f);
