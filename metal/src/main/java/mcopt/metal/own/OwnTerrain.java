@@ -2014,7 +2014,10 @@ public final class OwnTerrain {
 			});
 			this.rLists[i] = OwnNative.buffer(this.ctx, 4L * cap * 4, false);
 			this.rTested[i] = OwnNative.buffer(this.ctx, (long) cap * 4, false);
-			this.rFat[i] = OwnNative.buffer(this.ctx, FAT ? 4L * cap * 32 : QUADS_FATT ? (long) cap * 32 : 16, false);
+			// 1.2.7: even with fatT inactive, own_cull_r declares a 32-byte TUnit. Metal validates that minimum before
+			// checking the runtime flag. Keep the original 16-byte placeholder with shaders off.
+			this.rFat[i] = OwnNative.buffer(this.ctx, FAT ? 4L * cap * 32 : QUADS_FATT ? (long) cap * 32
+				: mcopt.metal.shade.terrain.ShadeTerrain.ON ? 32 : 16, false);
 		}
 		this.listCap = cap;
 		this.pickRing();

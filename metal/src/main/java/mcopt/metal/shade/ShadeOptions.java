@@ -218,7 +218,7 @@ public final class ShadeOptions {
 				"Where the fog at the end of the render distance starts.", 30, 97, () -> 78, p -> ShadeOption.fmt(p / 100f),
 				v -> ShadeOption.roundOr(ShadeOption.parse(v, Float.NaN) * 100f), p -> p + "%"),
 			pct(U + "sunset", "Atardecer", "Sunset colours", "El dorado y el rosa del cielo al atardecer.", "The sky's gold and rose at sunset.", 0, 200, 100),
-			pct(U + "sunsetAway", "Color opuesto al sol", "Opposite sunset colour",
+			pct(U + "sunsetAway", "Atardecer opuesto", "Opposite sunset",
 				"Reduce el rojo y rosa del cielo opuesto al sol, conservando su brillo. 100% = color original.",
 				"Reduce red and pink opposite the sun while preserving brightness. 100% keeps the original colour.", 0, 100, 100),
 			pct(U + "eveningGlow", "Brillo del ocaso", "Evening glow", "El brillo naranja del aire alrededor del sol bajo.", "The orange glow of the air around the low sun.",

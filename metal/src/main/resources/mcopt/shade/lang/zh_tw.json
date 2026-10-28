@@ -408,6 +408,6 @@
   "Self-light from the pack's emissive pixels.": "資源包像素的自發光亮度。",
   "Motion blur": "動態模糊",
   "Blur camera motion. 0% is off; the hand and menus stay sharp.": "模糊相機運動。0% 為關閉；手部與選單保持清晰。",
-  "Opposite sunset colour": "太陽背面晚霞顏色",
+  "Opposite sunset": "太陽背面晚霞顏色",
   "Reduce red and pink opposite the sun while preserving brightness. 100% keeps the original colour.": "降低太陽背面天空的紅色和粉色，保持亮度不變。100% 保留原來的顏色。"
 }
