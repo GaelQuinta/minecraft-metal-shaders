@@ -174,8 +174,8 @@ static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, fl
 	float2 fl = floor(lp);
 	half2 fr = half2(lp - fl);
 	int2 base = int2(fl), hi = int2(size) - 1;
-	half invTol = half(1.0 / ((0.04 * dist + 0.15) * max(tolScale, 0.05)));
-	half hd = half(min(dist, 3e4));
+	float tolerance = (0.04 * dist + 0.15) * max(tolScale, 0.05);
+	float hd = min(dist, 3e4);
 	// the four distances of the bilinear footprint in one fetch (gather order: (0,1) (1,1) (1,0) (0,0)); when all of them
 	// are at this pixel's depth (most of the screen) one hardware-filtered sample does it
 	half4 dd = vlD.gather(shadeLinearClamp, uv, int2(0), component::w);
@@ -183,22 +183,23 @@ static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, fl
 		half4 s = vlT.sample(shadeLinearClamp, uv);
 		if (mode < 2.5) return s;
 		half4 bw4 = half4((1.0h - fr.x) * fr.y, fr.x * fr.y, fr.x * (1.0h - fr.y), (1.0h - fr.x) * (1.0h - fr.y)); // gather order
-		half mD = half(maxD), avgD = dot(bw4, min(dd, mD));
-		return half4(s.rgb * clamp((min(hd, mD) + 0.5h) / (avgD + 0.5h), 0.0h, 4.0h), s.a);
+		float mD = maxD, avgD = dot(float4(bw4), min(float4(dd), mD));
+		return half4(s.rgb * half(clamp((min(hd, mD) + 0.5) / (avgD + 0.5), 0.0, 4.0)), s.a);
 	}
-	if (all(abs(dd - hd) * invTol < 0.5h)) return vlT.sample(shadeLinearClamp, uv);
+	if (all(abs(float4(dd) - hd) < 0.5 * tolerance)) return vlT.sample(shadeLinearClamp, uv);
 	half4 sum = 0.0h, bestC = half4(0.0h, 0.0h, 0.0h, 1.0h);
-	half wsum = 0.0h, best = 6e4h, bestD = 1.0h;
+	half wsum = 0.0h;
+	float best = 6e4, bestD = 1.0;
 	for (int j = 0; j <= 1; j++) {
 		for (int i = 0; i <= 1; i++) {
 			uint2 q = uint2(clamp(base + int2(i, j), int2(0), hi));
 			half4 s = vlT.read(q);
 			half sd = j == 0 ? (i == 0 ? dd.w : dd.z) : (i == 0 ? dd.x : dd.y);
 			half bw = (i == 0 ? 1.0h - fr.x : fr.x) * (j == 0 ? 1.0h - fr.y : fr.y) + 1e-3h;
-			half diff = abs(sd - hd);
-			half x = diff * invTol;
-			half w = bw / (1.0h + x * x * (1.0h + x)); // ~ e^-x near 0, falls faster beyond
-			sum += s * w;
+			float diff = abs(float(sd) - hd);
+			half x = half(min(diff / tolerance, 32.0)); // cubic <= 33792: finite in half, unlike an unbounded depth ratio
+			half w = bw / (1.0h + x * x * (1.0h + x));
+			sum += s * half(w);
 			wsum += w;
 			if (diff < best) {
 				best = diff;
@@ -207,8 +208,21 @@ static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, fl
 			}
 		}
 	}
-	if (wsum > 0.02h) return sum / wsum;
-	half mD = half(maxD);
+	if (wsum > 0.02) return sum / half(wsum);
+	// Issue #19: the low-resolution footprint may see only foreground leaves while this full-resolution pixel sees sky.
+	// Find an observation at the actual depth before falling back; don't magnify a leaf's signed haze correction into a
+	// sky-sized rectangle. The common four-depth gather above still handles smooth areas with one filtered fetch.
+	if (mode < 0.5) {
+		// Four outer cardinal probes, not a wide blur: only discontinuities pay these depth reads, and the first
+		// same-surface observation is enough. This keeps the repair inside the post pass's bandwidth budget.
+		const int2 probes[4] = {int2(-1, 0), int2(2, 1), int2(0, 2), int2(1, -1)};
+		for (int k = 0; k < 4; k++) {
+			uint2 q = uint2(clamp(base + probes[k], int2(0), hi));
+			if (abs(float(vlD.read(q).a) - hd) < tolerance) return vlT.read(q);
+		}
+		if (hd > bestD + tolerance) return half4(0.0h, 0.0h, 0.0h, 1.0h);
+	}
+	float mD = maxD;
 	if (mode > 0.5) { // the four by their bilinear weights, each scaled by its own air ratio
 		half4 acc = 0.0h;
 		half bsum = 0.0h;
@@ -217,13 +231,13 @@ static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, fl
 				half4 s = vlT.read(uint2(clamp(base + int2(i, j), int2(0), hi)));
 				half sd = j == 0 ? (i == 0 ? dd.w : dd.z) : (i == 0 ? dd.x : dd.y);
 				half bw = (i == 0 ? 1.0h - fr.x : fr.x) * (j == 0 ? 1.0h - fr.y : fr.y) + 1e-3h;
-				acc += half4(shadeVlScaled(s.rgb, (min(hd, mD) + 0.5h) / (min(sd, mD) + 0.5h), airNeg), s.a) * bw;
+				acc += half4(shadeVlScaled(s.rgb, half((min(hd, mD) + 0.5) / (min(float(sd), mD) + 0.5)), airNeg), s.a) * bw;
 				bsum += bw;
 			}
 		}
 		return acc / bsum;
 	}
-	return half4(shadeVlScaled(bestC.rgb, (min(hd, mD) + 0.5h) / (min(bestD, mD) + 0.5h), airNeg), bestC.a);
+	return half4(shadeVlScaled(bestC.rgb, half((min(hd, mD) + 0.5) / (min(bestD, mD) + 0.5)), airNeg), bestC.a);
 }
 
 // Camera-relative world position of the pixel at uv = (pixel + 0.5) / size with reversed-Z depth d. Targets hold GL row

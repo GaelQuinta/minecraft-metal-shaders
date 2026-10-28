@@ -24,7 +24,7 @@ fragment half4 shade_lut_fs(ShadeLutOut in [[stage_in]], constant ShadeFrame &f 
 	float3 transmittance;
 	float3 dir = shadeLutDirection(uv, f);
 	bool art = L.skyGoldH.w > 0.5; // M3 sunset art (mcopt.shade.sunsetArt)
-	float3 sky = shadeSkyRadiance(art ? shadeSunsetStretch(dir, f.sunDirWorld.xyz, f.sunDirWorld.w, f.weather.x) : dir, f, transmittance, art);
+	float3 sky = shadeSkyRadiance(art ? shadeSunsetStretch(dir, f.sunDirWorld.xyz, f.sunDirWorld.w, f.weather.x) : dir, f, transmittance, art, false);
 	// M2 art layer: the golden hour's warm horizon and rose upper sky (ShadeLook.skyGold*), strongest toward the sun; baked
 	// into the LUT so the sky, its reflections and the fog into the sky behind terrain all agree
 	float2 hz = dir.xz, sz = f.sunDirWorld.xz;
@@ -44,5 +44,6 @@ fragment half4 shade_lut_fs(ShadeLutOut in [[stage_in]], constant ShadeFrame &f 
 		float w = rose * (0.55 + 0.45 * toward) * (1.0 - 0.3 * smoothstep(0.55, 1.0, dir.y)) * smoothstep(0.03, 0.2, dir.y);
 		sky = mix(sky, l * tint, w);
 	}
-	return half4(half3(min(sky, 60000.0)), 1.0h);
+	// Apply also to the art tint added above, so reducing the atmospheric chroma can't be undone by the rose overlay.
+	return half4(half3(min(shadeAwaySunset(sky, dir, f), 60000.0)), 1.0h);
 }

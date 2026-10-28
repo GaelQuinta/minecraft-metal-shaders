@@ -128,6 +128,12 @@ public final class VlConfig {
 
 	// ---- (1.1) live settings: read every frame through Live (parsed only when their text changes); each default is the static
 	// above (the startup value, the preset's where it has one) with the same clamp. None needs a reset: the history follows ----
+	/** Issue #21: old menu saves could leave e.g. 0.005 for 50%, collapsing the god-ray target to a handful of rows.
+	 * Invalid live overrides fall back to the preset; don't guess or rewrite an ambiguous saved percentage. */
+	public static float scaleLive(float fallback) {
+		float value = Live.f("mcopt.shade.vl.scaleLive", fallback);
+		return Float.isFinite(value) && value >= 0.2f && value <= 1f ? value : fallback;
+	}
 
 	/** (1.1) live: mcopt.shade.vl.strength, the shafts' overall brightness ({@link #STRENGTH}, >= 0). */
 	public static float strength() {

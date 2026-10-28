@@ -203,7 +203,7 @@ public final class ShadeVl {
 		// (FT2.3: at least ~540 VL rows at a small window, up to half the resolution: on Gael's 1080p monitor a third of the render
 		// made each VL texel ~3 screen pixels and the shafts looked pixelated; at Retina the preset's own scale still decides. From
 		// the allocated height, so the dynamic resolution never reallocates the VL targets)
-		float vlScale = VlConfig.live("mcopt.shade.vl.scaleLive", VlConfig.ft21() ? VlConfig.SCALE
+		float vlScale = VlConfig.scaleLive(VlConfig.ft21() ? VlConfig.SCALE
 			: Math.max(VlConfig.SCALE, Math.min(0.5f, 540f / Math.max(texHeight, 1))));
 		int vw = Math.max(1, Math.round(texWidth * vlScale)), vh = Math.max(1, Math.round(texHeight * vlScale));
 		int lw = Math.clamp(Math.round(width * vlScale), 1, vw), lh = Math.clamp(Math.round(height * vlScale), 1, vh);

@@ -91,6 +91,8 @@ public final class ShadeFrame {
 	public float fogEnvStart, fogEnvEnd = 1e6f, fogRenderStart, fogRenderEnd = 1e6f, fogSkyEnd = 1e6f, fogCloudEnd = 1e6f, hazeDensity = 0.0008f, hazeStrength = 0.45f;
 	public final float[] skyColor = {0.5f, 0.7f, 1f};
 	public float rain, thunder, nightVision, starBrightness;
+	/** Issue #18: chroma on the side opposite the low sun, 1 keeps the released sky. Stored in zenithColor.w. */
+	public float sunsetAway = 1f;
 	public float cascadeSplit0 = 32, cascadeSplit1 = 128, cascadeTexel0 = 1f / 32f, cascadeTexel1 = 1f / 8f;
 	public int shadowResolution = 2048;
 	public float shadowDepthBias = 0.00015f, shadowNormalOffset = 1.5f;
@@ -118,6 +120,7 @@ public final class ShadeFrame {
 	 * toward its target over ShadeSky.ADAPT_SECONDS (dtSeconds since the last frame; snap jumps straight to it).
 	 */
 	public void updateAtmosphere(float dtSeconds, boolean snap) {
+		ShadeSky.sunsetAway = this.sunsetAway = Live.f(ShadeLook.U + "sunsetAway", 1f, 0f, 1f);
 		ShadeSky.Sky s = new ShadeSky.Sky(this.sunDir.x, this.sunDir.y, this.sunDir.z, this.moonDir.x, this.moonDir.y, this.moonDir.z, this.moonPhase,
 			this.rain, this.thunder);
 		ShadeSky.compute(s, this.sky);
@@ -207,7 +210,7 @@ public final class ShadeFrame {
 		put4(b, FOG_RANGE, this.fogEnvStart, this.fogEnvEnd, this.fogRenderStart, this.fogRenderEnd);
 		put4(b, FOG_SKY, this.fogSkyEnd, this.fogCloudEnd, this.hazeDensity, this.hazeStrength);
 		put4(b, SKY_COLOR, this.skyColor[0], this.skyColor[1], this.skyColor[2], 1 - this.rain);
-		put3(b, ZENITH_COLOR, this.sky.zenith, 0);
+		put3(b, ZENITH_COLOR, this.sky.zenith, this.sunsetAway);
 		for (int i = 0; i < 8; i++) put3(b, HORIZON + 16 * i, this.sky.horizon[i], 0);
 		put4(b, CASCADE_SPLITS, this.cascadeSplit0, this.cascadeSplit1, this.cascadeTexel0, this.cascadeTexel1);
 		put4(b, SHADOW_PARAMS, 1f / this.shadowResolution, this.shadowResolution, this.shadowDepthBias, this.shadowNormalOffset);

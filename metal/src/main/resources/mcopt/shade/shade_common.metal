@@ -66,7 +66,7 @@ struct ShadeFrame {
 	float4 fogRange;            // 624  x environmental start, y environmental end, z render distance start, w render distance end (blocks)
 	float4 fogSky;              // 640  x vanilla sky fog end, y cloud fog end, z aerial haze density (1/blocks), w haze strength 0..1
 	float4 skyColor;            // 656  rgb the game's sky colour (sRGB), a 1 - rain
-	float4 zenithColor;         // 672  rgb atmosphere radiance straight up (linear, pre-exposure), w 0
+	float4 zenithColor;         // 672  rgb atmosphere radiance straight up (linear, pre-exposure), w opposite sunset chroma (1 default)
 	float4 horizon[8];          // 688  rgb atmosphere radiance on the horizon (linear, pre-exposure) for directions with x = -1 .. 1
 	                            //      (index i <-> x = i / 3.5 - 1; the sun moves in the x-y plane, so x alone sets the angle to it)
 	float4 cascadeSplits;       // 816  x, y distance (blocks) within which cascade 0 / 1 covers every direction; z, w blocks per texel of cascade 0 / 1
@@ -360,7 +360,15 @@ static inline float3 shadeSunsetStretch(float3 dir, float3 sun, float sunY, floa
 
 // The sky's radiance along dir (no sun disc): sun and moon scattering, faint airglow, overcast in rain. Linear, pre-exposure.
 // art: M3 sunset art (shadeSunsetGrade) instead of M2's shadeGoldenHour.
-static float3 shadeSkyRadiance(float3 dir, constant ShadeFrame &f, thread float3 &transmittance, bool art = false) {
+static inline float3 shadeAwaySunset(float3 sky, float3 dir, constant ShadeFrame &f) {
+	if (f.zenithColor.w >= 1.0) return sky;
+	float dl = dot(dir.xz, dir.xz), sl = dot(f.sunDirWorld.xz, f.sunDirWorld.xz);
+	float az = dl > 1e-8 && sl > 1e-8 ? dot(dir.xz, f.sunDirWorld.xz) * rsqrt(dl * sl) : 0.0;
+	float k = (1.0 - saturate(f.zenithColor.w)) * (1.0 - smoothstep(-0.2, 0.4, az))
+	        * (1.0 - smoothstep(0.02, 0.32, f.sunDirWorld.w)) * smoothstep(-0.16, -0.02, f.sunDirWorld.w) * (1.0 - f.weather.x);
+	return mix(sky, float3(shadeLuma(sky)), k);
+}
+static float3 shadeSkyRadiance(float3 dir, constant ShadeFrame &f, thread float3 &transmittance, bool art = false, bool gradeAway = true) {
 	float3 sky = float3(0.0);
 	float3 tr = float3(1.0);
 	float mie = f.atmosphere.z;
@@ -374,7 +382,7 @@ static float3 shadeSkyRadiance(float3 dir, constant ShadeFrame &f, thread float3
 	if (art) sky = shadeSunsetChroma(sky, f.sunDirWorld.w, rain);
 	sky = mix(sky, float3(l) * float3(0.92, 0.96, 1.0) * (1.0 - 0.45 * f.weather.y), rain * 0.75) * f.atmosphere.w;
 	transmittance = tr;
-	return sky;
+	return gradeAway ? shadeAwaySunset(sky, dir, f) : sky;
 }
 
 // The atmosphere on the horizon toward dir, from the per-frame table (what the terrain fogs into).
