@@ -285,6 +285,7 @@ public final class ShadeFrameUpdater {
 			float waterRain = mcopt.metal.shade.weather.ShadeWeather.ON ? mcopt.metal.shade.weather.ShadeWeather.rainIntensity() : f.rain;
 			mcopt.metal.shade.water.WaterFrame.update(ShadeBindings.ctx(), level, x, y, z, f.underwater, waterRain);
 		}
+		ShadeFoliage.frame(level, x, y, z, f.rain, f.thunder, partial); // (1.2.7) waving foliage
 		f.pack(ShadeBindings.nextSlot());
 		ShadePbr.frame();
 		LOOK.pack(ShadeBindings.currentLook(), f);

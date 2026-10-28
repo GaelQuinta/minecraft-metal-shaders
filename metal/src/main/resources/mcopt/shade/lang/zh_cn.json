@@ -409,5 +409,13 @@
   "Motion blur": "动态模糊",
   "Blur camera motion. 0% is off; the hand and menus stay sharp.": "模糊相机运动。0% 为关闭；手部与菜单保持清晰。",
   "Opposite sunset": "太阳背面晚霞颜色",
-  "Reduce red and pink opposite the sun while preserving brightness. 100% keeps the original colour.": "降低太阳背面天空的红色和粉色，保持亮度不变。100% 保留原来的颜色。"
+  "Reduce red and pink opposite the sun while preserving brightness. 100% keeps the original colour.": "降低太阳背面天空的红色和粉色，保持亮度不变。100% 保留原来的颜色。",
+  "Foliage": "植被",
+  "Leaves, grass and flowers moving in the wind.": "随风摆动的树叶、草和花。",
+  "Waving leaves": "树叶摆动",
+  "How much leaves and vines move. 0 = still.": "树叶和藤蔓的摆动幅度。0 = 静止。",
+  "Waving plants": "植物摆动",
+  "How much grass, flowers and crops sway. 0 = still.": "草、花和农作物的摆动幅度。0 = 静止。",
+  "Plants make way": "植物避让",
+  "Grass and flowers bend aside as you or a mob walk through.": "你或生物走过时，草和花会向两侧弯开。"
 }

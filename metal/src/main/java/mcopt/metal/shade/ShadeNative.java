@@ -36,6 +36,9 @@ final class ShadeNative {
 	private static final MethodHandle LUT_INIT = fn("mc_shade_lut_init", false, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle LUT_RENDER = fn("mc_shade_lut_render", false, null, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle LUT_TEXTURE = fn("mc_shade_lut_texture", true, JAVA_LONG, JAVA_LONG);
+	// (1.2.7) waving foliage (mcown.m)
+	private static final MethodHandle SWAY_FRAME = fn("mco_sway_frame", true, null, JAVA_LONG);
+	private static final MethodHandle SWAY_CLASSES = fn("mco_sway_classes", false, null, JAVA_LONG);
 	// M2
 	private static final MethodHandle SET_M2 = fn("mc_shade_set_m2", true, null, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle RESOURCE = fn("mc_shade_resource", true, null, JAVA_INT, JAVA_LONG);
@@ -100,6 +103,8 @@ final class ShadeNative {
 	static long textureCpu(long ctx, int w, int h, int mips, long label) { try { return (long) TEX_CPU.invokeExact(ctx, w, h, mips, label); } catch (Throwable t) { throw rethrow(t); } }
 	static void textureUpload(long tex, int mip, int x, int y, int w, int h, long bytes, int rowBytes) { try { TEX_UPLOAD.invokeExact(tex, mip, x, y, w, h, bytes, rowBytes); } catch (Throwable t) { throw rethrow(t); } }
 	static void textureRelease(long tex) { try { TEX_RELEASE.invokeExact(tex); } catch (Throwable t) { throw rethrow(t); } }
+	static void swayFrame(long bytes) { try { SWAY_FRAME.invokeExact(bytes); } catch (Throwable t) { throw rethrow(t); } }
+	static void swayClasses(long tex) { try { SWAY_CLASSES.invokeExact(tex); } catch (Throwable t) { throw rethrow(t); } }
 	static int compileSetup(long ctx, int maximize) { try { return (int) COMPILE_SETUP.invokeExact(ctx, maximize); } catch (Throwable t) { throw rethrow(t); } }
 	static int compileThreadQos(int qos) { try { return (int) COMPILE_THREAD_QOS.invokeExact(qos); } catch (Throwable t) { throw rethrow(t); } }
 }

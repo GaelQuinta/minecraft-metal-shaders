@@ -280,6 +280,50 @@ void mco_shade(Own *w, int on) {
 	w->shade = on;
 }
 
+// mcopt-shade 1.2.7 (issue #18, ShadeFoliage): waving foliage. terrain.metal ShadeSway (this frame's wind, amplitudes, pushers) and
+// the class map over the block atlas (retained here; a 1x1 zero map stands in until there is one, so the binding always exists).
+// own_vs reads them under F_SWAY (the cutout kinds' vertex stages while shading is on), own_shadow_vs on its flags bit 2.
+#define OWN_SWAY_BYTES 224
+static uint8_t ownSwayFrame[OWN_SWAY_BYTES];
+static id<MTLTexture> ownSwayTex, ownSwayZero;
+static int ownSwayOn;
+
+void mco_sway_frame(const void *bytes) {
+	memcpy(ownSwayFrame, bytes, OWN_SWAY_BYTES);
+	const float *f = (const float *) ownSwayFrame;
+	ownSwayOn = ownSwayTex && f[12] >= 1.0f && (f[8] > 0 || f[9] > 0 || f[10] > 0 || f[11] > 0 || (f[14] > 0 && f[15] > 0));  // (info.x: a map; amp; pushers)
+}
+
+void mco_sway_classes(id<MTLTexture> t) {
+	if (t == ownSwayTex) return;
+	[t retain];
+	[ownSwayTex release];
+	ownSwayTex = t;
+	if (!t) ownSwayOn = 0;
+}
+
+// Binds the sway's frame and class map at vertex buffer b / texture t of r; 1 when the foliage moves this frame.
+int mco_sway_bind(id<MTLRenderCommandEncoder> r, int b, int t) {
+	if (!ownSwayZero) {
+		MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:1 height:1 mipmapped:NO];
+		td.usage = MTLTextureUsageShaderRead;
+		td.storageMode = MTLStorageModeShared;
+		ownSwayZero = [r.device newTextureWithDescriptor:td];
+		uint32_t zero = 0;
+		[ownSwayZero replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&zero bytesPerRow:4];
+	}
+	static const uint8_t off[OWN_SWAY_BYTES];
+	[r setVertexBytes:ownSwayOn ? ownSwayFrame : off length:OWN_SWAY_BYTES atIndex:(NSUInteger) b];
+	[r setVertexTexture:ownSwayOn ? ownSwayTex : ownSwayZero atIndex:(NSUInteger) t];
+	return ownSwayOn;
+}
+
+// a draw kind whose vertex stage waves foliage (F_SWAY): the cutout kinds (1, 5 sampled at a level, 6 the depth pre-pass) while shading
+static bool ownSwayKind(Own *w, int kind) {
+	int frag = kind & 15;
+	return w->shade && (frag == 1 || frag == 5 || frag == 6);
+}
+
 // mcopt-shade (the shadow pass, mcshadow.m mc_shadow_own_init): w's library, which holds own_shadow_vs (not retained).
 id<MTLLibrary> mco_library(Own *w) {
 	return w->library;
@@ -558,8 +602,9 @@ static id<MTLFunction> ownStage(Own *w, int kind, int vertex, int shadeHdr, char
 		lib = w->shadeLib[translucent];
 		name = @"shade_own_fs";
 	}
-	NSString *key = [NSString stringWithFormat:@"%@ %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d%@", name, vertex ? vsMode | translucent << 2 | quads << 3 : frag, half, lean, nonidx,
-		rev, tight, posonly, occA, occB, (kind >> 29) & 1, oracle, fogvert, fogvertAll, fogvertT, qflat, group ? @" g" : @""];
+	bool sway = vertex == 1 && ownSwayKind(w, kind);  // (mcopt-shade 1.2.7: F_SWAY)
+	NSString *key = [NSString stringWithFormat:@"%@ %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d%@%@", name, vertex ? vsMode | translucent << 2 | quads << 3 : frag, half, lean, nonidx,
+		rev, tight, posonly, occA, occB, (kind >> 29) & 1, oracle, fogvert, fogvertAll, fogvertT, qflat, group ? @" g" : @"", sway ? @" s" : @""];
 	if (shadeHdr && !vertex) key = [key stringByAppendingFormat:@" hdr%d k%d", shadeHdr, (shadeHdr & 2) ? w->shadeKey : 0];  // (mcopt-shade)
 	id<MTLFunction> fn = w->functions[key];
 	if (fn) return fn;
@@ -597,6 +642,10 @@ static id<MTLFunction> ownStageMake(Own *w, id<MTLLibrary> lib, NSString *name, 
 	[cv setConstantValue:&qflat type:MTLDataTypeBool atIndex:21];
 	[cv setConstantValue:&fogvertT type:MTLDataTypeBool atIndex:20];
 	if (group) [cv setConstantValue:&group type:MTLDataTypeBool atIndex:25];
+	if (vertex == 1 && ownSwayKind(w, kind)) {  // (mcopt-shade 1.2.7: waving foliage, terrain.metal F_SWAY)
+		bool sway = true;
+		[cv setConstantValue:&sway type:MTLDataTypeBool atIndex:26];
+	}
 	if (vertex) {
 		bool cmp = w->compact != 0, fatv = w->fat != 0, clipv = w->cpuClip != 0, tr = translucent != 0;
 		[cv setConstantValue:&cmp type:MTLDataTypeBool atIndex:1];
@@ -954,6 +1003,7 @@ int mco_draw(Own *w, Enc *enc, int cutout, const void *frame, int frameLength, i
 	}
 drawCall:
 	if (w->vcount && !mesh) [r setVertexBuffer:w->vcount offset:0 atIndex:28];
+	if (!mesh && ownSwayKind(w, cutout)) mco_sway_bind(r, 30, 28);  // (mcopt-shade 1.2.7: own_vs' F_SWAY arguments)
 	if (cutout & (1 << 30)) {
 		// the visibility oracle: the drawn units (vertex stage) and the units with a visible pixel (fragment stage), this sample's number
 		[r setVertexBuffer:w->oracleKept offset:0 atIndex:26];

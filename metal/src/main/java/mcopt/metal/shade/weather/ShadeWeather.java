@@ -163,6 +163,11 @@ public final class ShadeWeather {
 	static float wetness, puddles, snow, rain;
 	/** Wind direction (radians from +x toward +z), slant, gust; snowfall at the camera 0..1 (smoothed: snow flakes' look). */
 	static float windAngle, slant, gust, snowfall;
+
+	/** (1.2.7) The wind's direction (radians from +x toward +z), for the waving foliage. */
+	public static float windAngle() {
+		return windAngle;
+	}
 	/** (SNOW_LINE) The lowest y the snow cover reaches and the highest the rain's wetness reaches, absolute; at first everywhere. */
 	static float snowFloor = -1e4f, rainTop = 1e4f;
 	/** This frame's flash: direction (camera-relative, unit) and its light. */

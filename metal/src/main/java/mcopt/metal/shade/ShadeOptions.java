@@ -344,6 +344,15 @@ public final class ShadeOptions {
 			toggle("mcopt.shade.snowLine", "Nieve solo en lo alto", "Snow only up high", "En biomas templados, nieva solo arriba de la línea de nieve.",
 				"In temperate biomes snow only falls above the snow line.", true));
 
+		// (1.2.7, issue #18) waving foliage (ShadeFoliage, own/terrain.metal ownSway)
+		page("Vegetación", "Foliage", "Hojas, pasto y flores que se mueven con el viento.", "Leaves, grass and flowers moving in the wind.",
+			pct("mcopt.shade.foliage.leaves", "Hojas al viento", "Waving leaves", "Cuánto se mueven las hojas y enredaderas. 0 = quietas.",
+				"How much leaves and vines move. 0 = still.", 0, 300, 100),
+			pct("mcopt.shade.foliage.plants", "Plantas al viento", "Waving plants", "Cuánto se mecen el pasto, las flores y los cultivos. 0 = quietos.",
+				"How much grass, flowers and crops sway. 0 = still.", 0, 300, 100),
+			toggle("mcopt.shade.foliage.push", "Pasto que se aparta", "Plants make way", "El pasto y las flores se hacen a un lado cuando pasas tú o un animal.",
+				"Grass and flowers bend aside as you or a mob walk through.", true));
+
 		page("Nether y End", "Nether and End", "Niebla, luz y cielo de las otras dimensiones.", "Fog, light and sky of the other dimensions.",
 			toggle("mcopt.shade.dims.pause", "Efectos Nether/End", "Nether/End effects", "Luz, niebla y cielo propios del shader en el Nether y el End.",
 				"The shader's own light, fog and sky in the Nether and the End.", true, true),
