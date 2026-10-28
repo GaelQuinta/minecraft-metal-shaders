@@ -2307,7 +2307,8 @@ public final class OwnTerrain {
 			for (long b : new long[] {this.shLists[slot], this.shTested[slot], this.shFat[slot]}) if (b != 0) this.later(() -> OwnNative.release(b));
 			this.shLists[slot] = OwnNative.buffer(this.ctx, (long) SHADOW_LISTS * this.listCap * 4, false);
 			this.shTested[slot] = OwnNative.buffer(this.ctx, (long) this.listCap * 4, false);
-			this.shFat[slot] = OwnNative.buffer(this.ctx, FAT ? 4L * this.listCap * 32 : 16, false);
+			// The shadow's record cull declares the same 32-byte TUnit, even when its fat writes are disabled.
+			this.shFat[slot] = OwnNative.buffer(this.ctx, FAT ? 4L * this.listCap * 32 : 32, false);
 			if (this.shArgs[slot] == 0) this.shArgs[slot] = OwnNative.buffer(this.ctx, SHADOW_ARGS_BYTES, 2);
 			this.shCap[slot] = this.listCap;
 		}
