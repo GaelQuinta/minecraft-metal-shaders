@@ -438,9 +438,11 @@ static void bindGlobalsRender(id<MTLRenderCommandEncoder> r) {
 // One full-screen triangle of pso into target, in an encoder of its own on the frame's command buffer (ending whatever was
 // open: the backend reopens its own for its next pass). load: 0 don't care (the pass writes every pixel), 1 load, 2 clear to
 // 0. textures: count inputs at texture(0..count-1) (nil entries skipped); bytes (length <= 4 KB, may be NULL) at buffer(0);
-// the globals at buffers 16-19, the shadow map and LUT at textures 16/17 as everywhere. Viewport: the whole target.
+// globals: -1 binds the full shade state; 0 binds no globals; 1 binds only ShadeGpu at buffer(18), for bloom down0's
+// XDR detection. Bloom down/up have only explicit inputs: don't declare the unrelated argument-buffer textures resident.
+// Viewport: the whole target. Values match ShadeRender.GLOBALS_*.
 void mc_shade_pass(Enc *enc, id<MTLRenderPipelineState> pso, id<MTLTexture> target, int load, id<MTLTexture> const *textures, int count,
-                   const void *bytes, int length, const char *label) {
+                   const void *bytes, int length, const char *label, int globals) {
 	if (!pso || !target) return;
 	@autoreleasepool {
 		id<MTLCommandBuffer> cb = mc_frame_cmd(enc);
@@ -461,7 +463,8 @@ void mc_shade_pass(Enc *enc, id<MTLRenderPipelineState> pso, id<MTLTexture> targ
 		id<MTLRenderCommandEncoder> r = [cb renderCommandEncoderWithDescriptor:rp];
 		if (label) r.label = [NSString stringWithUTF8String:label];
 		[r setRenderPipelineState:pso];
-		bindGlobalsRender(r);
+		if (globals == -1) bindGlobalsRender(r);
+		else if (globals == 1 && gpuBuffer) [r setFragmentBuffer:gpuBuffer offset:0 atIndex:18];
 		for (int i = 0; i < count; i++) if (textures[i]) [r setFragmentTexture:textures[i] atIndex:i];
 		if (bytes && length > 0) [r setFragmentBytes:bytes length:length atIndex:0];
 		[r drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];

@@ -33,6 +33,8 @@ import org.lwjgl.system.MemoryUtil;
  * {@link #postSource()} (include it, or write your own: a 3-vertex triangle, no vertex buffers).
  */
 public final class ShadeRender {
+	/** Native mc_shade_pass binding modes. Unclassified passes keep all globals. */
+	static final int GLOBALS_ALL = -1, GLOBALS_NONE = 0, GLOBALS_GPU = 1;
 	/** MTLPixelFormat values used by shade. */
 	public static final int RGBA8 = 70, RGBA16F = 115, RG11B10F = 92, R16F = 25, RG16F = 65, R8 = 10, R32F = 55;
 	/** Load actions for {@link #pass}. */
@@ -126,12 +128,17 @@ public final class ShadeRender {
 	 * params (may be null, at most 4 KB) at buffer(0). Ends any open render encoder (the backend reopens its own).
 	 */
 	public static void pass(long enc, long pipeline, long target, int load, long @Nullable [] textures, @Nullable ByteBuffer params, String label) {
+		pass(enc, pipeline, target, load, textures, params, label, GLOBALS_ALL);
+	}
+
+	/** Post passes with an explicit global binding contract (bloom); other callers use the full-state overload. */
+	static void pass(long enc, long pipeline, long target, int load, long @Nullable [] textures, @Nullable ByteBuffer params, String label, int globals) {
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			int n = textures == null ? 0 : textures.length;
 			long t = stack.nmalloc(8, Math.max(1, n) * 8);
 			for (int i = 0; i < n; i++) MemoryUtil.memPutAddress(t + i * 8L, textures[i]);
 			ShadeNative.pass(enc, pipeline, target, load, t, n, params == null ? 0 : MemoryUtil.memAddress(params), params == null ? 0 : params.remaining(),
-				MemoryUtil.memAddress(stack.UTF8(label)));
+				MemoryUtil.memAddress(stack.UTF8(label)), globals);
 		}
 	}
 
