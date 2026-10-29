@@ -74,8 +74,9 @@ public final class ShadeLook {
 		{40, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f},
 	};
 	public final float[] skyGold = {1f, 1f, 1f, 1f, 1f, 1f};
-	// M3 evening hue shift of the upper sky toward rose / peach (sky LUT, ShadeLook.skyGoldZ.w): sun elevation, weight
-	private static final float[][] SKY_ROSE = {{-6, 0f}, {-3, 0.32f}, {0, 0.64f}, {4, 0.70f}, {9, 0.56f}, {16, 0.28f}, {26, 0.07f}, {34, 0f}};
+	// Rose rises gently from 34 to 3 degrees, then fades through twilight to -10.
+	// Both ends and the peak have zero slope: no sudden change of pace at a keyframe.
+	private static final float ROSE_PEAK = 0.42f;
 	/** This frame's rose weight (0 by day and in rain). */
 	public float skyRose;
 	/** Rose strength per look (epic, storybook, natural). */
@@ -184,14 +185,7 @@ public final class ShadeLook {
 		// (1.1) user.sunset: the golden-hour sky gain and the evening rose (0 = none, 2 = twice as strong)
 		float goldK = (this.rising > 0f ? 0.7f : 1f) * (1f - rain) * Live.f(U + "sunset", 1f, 0f, 2f);
 		for (int c = 0; c < 6; c++) this.skyGold[c] = 1f + (sg[c + 1] - 1f) * goldK;
-		float rose = 0f;
-		for (int i = 0; i + 1 < SKY_ROSE.length; i++) {
-			if (this.elevation >= SKY_ROSE[i][0] && this.elevation < SKY_ROSE[i + 1][0]) {
-				float t = (this.elevation - SKY_ROSE[i][0]) / (SKY_ROSE[i + 1][0] - SKY_ROSE[i][0]);
-				rose = SKY_ROSE[i][1] + (SKY_ROSE[i + 1][1] - SKY_ROSE[i][1]) * t;
-				break;
-			}
-		}
+		float rose = ROSE_PEAK * smooth(-10f, 3f, this.elevation) * (1f - smooth(3f, 34f, this.elevation));
 		this.skyRose = roseOn() ? rose * goldK * ROSE_LOOK[look] : 0f;
 		ShadeSky.sunsetArt = ShadeConfig.flag("mcopt.shade.sunsetArt", true); // read every frame (bench A/B in one session)
 		// (1.1) user.rainFog: the rain's share of the fog and mist terms below (and ShadeFrame's distance haze), 0 = rain adds none
