@@ -33,8 +33,8 @@ public final class CloudParams {
 	/** Art knobs: multiple-scattering octave weight and extinction factors, sky-light extinction (diffuse) factor. */
 	static final float OCTAVE_WEIGHT = CloudConfig.floatProperty("mcopt.shade.clouds.octaveWeight", 0.68f),
 		OCTAVE_EXTINCTION = CloudConfig.floatProperty("mcopt.shade.clouds.octaveExtinction", 0.48f),
-		SKY_EXTINCTION = CloudConfig.floatProperty("mcopt.shade.clouds.skyExtinction", 0.2f),
-		SUNSET_FILL = CloudConfig.floatProperty("mcopt.shade.clouds.sunsetFill", 0.4f),
+		SKY_EXTINCTION = CloudConfig.floatProperty("mcopt.shade.clouds.skyExtinction", 0.12f),
+		SUNSET_FILL = CloudConfig.floatProperty("mcopt.shade.clouds.sunsetFill", 0.65f),
 		AP_SUNSET = CloudConfig.floatProperty("mcopt.shade.clouds.apSunset", 1.5f),
 		LIGHT_STEP = CloudConfig.floatProperty("mcopt.shade.clouds.lightStep", 4f),
 		OD_STEP = CloudConfig.floatProperty("mcopt.shade.clouds.odStep", 2.5f),
@@ -141,7 +141,7 @@ public final class CloudParams {
 		put4(b, 240, this.lightDir[0], this.lightDir[1], this.lightDir[2], this.dev);
 		float[] as = f.sky.ambientSky, ag = f.sky.ambientGround;
 		float albedo = 0.96f - 0.3f * storm;
-		// a low sun: less of the sky's grey-blue fill, so the sunlit sides stay saturated gold against darker bases
+		// Retain enough diffuse sky fill at low sun to keep the undersides readable beneath the golden rims.
 		// (1.1: mcopt.shade.clouds.sunsetFill read every frame, SUNSET_FILL its default)
 		float sunsetFill = Live.f("mcopt.shade.clouds.sunsetFill", SUNSET_FILL);
 		float fill = this.sunLit ? sunsetFill + (1f - sunsetFill) * smoothstep(0.04f, 0.35f, sunY) : 1f;
@@ -150,7 +150,7 @@ public final class CloudParams {
 		// aerial perspective toward the sky behind: lighter while the sun is low (the clouds keep their sunset colour)
 		float lowSun = this.sunLit ? 1f - smoothstep(0.03f, 0.3f, sunY) : 0f;
 		// (FT2.10: mcopt.shade.clouds.apSunset read every frame, for look development in one session)
-		float ap = 9000f * (1f - 0.65f * f.rain) * (1f + CloudConfig.floatProperty("mcopt.shade.clouds.apSunset", AP_SUNSET) * lowSun);
+		float ap = (6000f + 3000f * f.rain) * (1f - 0.65f * f.rain) * (1f + CloudConfig.floatProperty("mcopt.shade.clouds.apSunset", AP_SUNSET) * lowSun);
 		put4(b, 288, CloudConfig.steps(), CloudConfig.lightSteps(), 12000f, ap); // (1.1: the steps live, uniforms of the march)
 		// cirrus: wraps in its own rotated frame (streak axis fixed in the world), so the period stays exact
 		double ca = Math.cos(CIRRUS_AXIS), sa = Math.sin(CIRRUS_AXIS);
@@ -182,7 +182,7 @@ public final class CloudParams {
 		float yRef = this.shadowRefY;
 		float relX = (float) (this.shadowOriginX - f.cameraX), relZ = (float) (this.shadowOriginZ - f.cameraZ);
 		put4(b, 320, extent, yRef, relX, relZ);
-		put4(b, 336, 0.8f, 0.12f, 0.8f, this.opacity);
+		put4(b, 336, 0.4f + 0.4f * storm, 0.12f, 0.8f, this.opacity);
 		// y (FT2.10): the far clouds' bases spread (mcopt.shade.clouds.baseSpread, live: share of the layer's thickness by which a
 		// base rises with the weather map's fine fBm, from ~400 blocks out, full from ~1500; 0 = every base on the layer's floor,
 		// FT2.9; 0.25: no more stacked plates toward the sunset horizon, ft210-t13/t14)

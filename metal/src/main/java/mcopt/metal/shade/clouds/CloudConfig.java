@@ -103,7 +103,7 @@ public final class CloudConfig {
 	public static final float NOISE_DRIFT = clamp(floatProperty("mcopt.shade.clouds.noiseDrift", 0.82f), 0f, 2f);
 	public static final long SEED = Long.getLong("mcopt.shade.clouds.seed", 0L);
 	public static final float DENSITY = clamp(floatProperty("mcopt.shade.clouds.density", 1f), 0.1f, 10f);
-	public static final float DETAIL = clamp(floatProperty("mcopt.shade.clouds.detail", 1f), 0f, 3f);
+	public static final float DETAIL = clamp(floatProperty("mcopt.shade.clouds.detail", 0.6f), 0f, 3f);
 	/** Blocks of world per 1 km of the sky model's air for the light the layer gets (sunset light lingers on the clouds). */
 	public static final float ALTITUDE_SCALE = clamp(floatProperty("mcopt.shade.clouds.altitudeScale", 4f), 0f, 50f);
 	/** Most visits a history pixel averages (its march samples are jittered): fewer with a larger checkerboard (slower visits). */
