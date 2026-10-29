@@ -33,7 +33,7 @@ import org.joml.Matrix4f;
  * Pure maths, no game types: tools can pack it too.
  */
 public final class ShadeLook {
-	public static final int SIZE = 1088;
+	public static final int SIZE = 1120;
 	// Byte offsets of struct ShadeLook (shade_look.metal).
 	public static final int VIEW_PROJ = 0, PREV_VIEW_PROJ = 64, CELESTIAL = 128, CLOUD_SHADOW_VP = 192, SUN_GEOM = 256, SUN_ART = 272, AMBIENT_ART = 288,
 		BOUNCE = 304, GRADE0 = 320, GRADE1 = 336, GRADE2 = 352, GRADE3 = 368, TONEMAP = 384, OUTPUT = 400, BLOOM = 416, FOG_R = 432, FOG_M = 448,
@@ -41,7 +41,7 @@ public final class ShadeLook {
 		EYE = 624, SKY_GOLD_H = 640, SKY_GOLD_Z = 656, NIGHT = 672, SSR = 688, CLOCK2 = 704, RENDER_SCALE = 720, EXPOSURE_CFG = 736, DIM_TINT = 752, FLASH = 768,
 		DT = 784, TIER = 800, GRADE_IN = 816, GRADE_OUT = 864, GRADE_IN_INV = 912, GRADE_OUT_INV = 960, EXPOSURE_REF = 1008,
 		// (1.1) the player's settings the shaders read (ShadeSettings / the settings screen; shade_look.metal user0..3)
-		USER0 = 1024, USER1 = 1040, USER2 = 1056, USER3 = 1072;
+		USER0 = 1024, USER1 = 1040, USER2 = 1056, USER3 = 1072, LAVA_STILL = 1088, LAVA_FLOW = 1104;
 	/** (1.1) Prefix of the player's multipliers (Live: 1 = as released, unless a comment says otherwise). */
 	static final String U = "mcopt.shade.user.";
 
@@ -380,6 +380,9 @@ public final class ShadeLook {
 		put4(b, USER2, Live.f(U + "glint", 1f, 0f, 3f), Live.f("mcopt.shade.beaconBrightness", 1f, 1f, 8f), 0f, 0f);
 		// x: daylight contrast strength 0..2. Zero preserves Current; 1 retains the original Natural look.
 		put4(b, USER3, f.naturalLighting, ShadePbr.strength("normal"), ShadePbr.strength("specular"), ShadePbr.strength("emission"));
+		// Filled from the current atlas by LavaFrame; unknown/reloading sprites must never classify other blocks as lava.
+		put4(b, LAVA_STILL, 0f, 0f, 0f, 0f);
+		put4(b, LAVA_FLOW, 0f, 0f, 0f, 0f);
 		mcopt.metal.shade.weather.ShadeWeather.pack(b); // M3 weather: wet, wind, flash
 	}
 

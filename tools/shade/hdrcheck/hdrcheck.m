@@ -207,7 +207,7 @@ static void benchmark(NSString *folder) {
         d.colorAttachments[1].pixelFormat=k?MTLPixelFormatRGBA16Float:MTLPixelFormatRG11B10Float;
         pipes[k]=[device newRenderPipelineStateWithDescriptor:d error:&error]; check(pipes[k]!=nil,error.description.UTF8String);
     }
-    float look[272]={0}, frame[512]={0}, gpu[256]={0}, resource[256]={0};
+    float look[280]={0}, frame[512]={0}, gpu[256]={0}, resource[256]={0};
     NSData *data=[NSData dataWithContentsOfFile:[folder stringByAppendingPathComponent:@"curves.bin"]];
     const float *cs=data.bytes;
     for(int i=0;i<3;i++) { look[816/4+i*5]=1; look[864/4+i*5]=1; look[368/4+i]=1; }

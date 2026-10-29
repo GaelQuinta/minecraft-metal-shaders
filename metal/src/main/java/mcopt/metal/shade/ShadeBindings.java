@@ -35,7 +35,7 @@ public final class ShadeBindings {
 	public static final boolean ON = Shade.ENABLED;
 	/** Ring slots: more than the frames that can be in flight (-Dmcopt.metal.inFlight, 2 by default) plus the one being written. */
 	private static final int RING = Math.max(3, Integer.getInteger("mcopt.metal.inFlight", 2) + 1);
-	/** ShadeFrame (1008 B) at 0, ShadeLook (1088 B since 1.1: its user0..3) at LOOK_OFFSET. */
+	/** ShadeFrame (1024 B) at 0, ShadeLook (1120 B, including lava sprite bounds) at LOOK_OFFSET. */
 	private static final int SLOT_SIZE = 2304, LOOK_OFFSET = 1024;
 
 	private static long ctx, state, compareSampler, dummyShadow, shadowMap, gpuBuffer;

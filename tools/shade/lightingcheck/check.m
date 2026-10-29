@@ -4,7 +4,7 @@
 #include <math.h>
 static id<MTLDevice> dev;
 static id<MTLCommandQueue> queue;
-enum { COUNT=384, FRAME=1024, LOOK=1088 };
+enum { COUNT=384, FRAME=1024, LOOK=1120 };
 static void check(BOOL ok,const char *why){if(!ok){fprintf(stderr,"FAIL %s\n",why);exit(1);}}
 static void complete(id<MTLCommandBuffer> cb){[cb commit];[cb waitUntilCompleted];check(cb.status==MTLCommandBufferStatusCompleted,cb.error.description.UTF8String);}
 static NSData *readData(NSString *path){NSData *d=[NSData dataWithContentsOfFile:path];check(d!=nil,path.UTF8String);return d;}

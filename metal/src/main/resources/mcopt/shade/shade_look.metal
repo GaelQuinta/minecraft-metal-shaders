@@ -81,6 +81,8 @@ struct ShadeLook {
 	float4 user1;         // 1040 x Distant Horizons' far water reflection strength, y its screen-space part on (1) / off (0), z foam, w refraction
 	float4 user2;         // 1056 x the sun's glint on water, y beacon radiance multiplier, zw free
 	float4 user3;         // 1072 x Natural lighting daylight strength 0..2 (0 = Current, 1 = original Natural), y signed normal strength (negative flips Y), z specular, w emission (0 without PBR)
+	float4 lavaStill;     // 1088 atlas UV bounds; all zero while unavailable
+	float4 lavaFlow;      // 1104 atlas UV bounds for flowing lava
 };
 
 // ShadeLook.tier.y feature bits

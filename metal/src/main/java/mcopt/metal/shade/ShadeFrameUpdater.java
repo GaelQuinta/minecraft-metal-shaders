@@ -288,6 +288,7 @@ public final class ShadeFrameUpdater {
 		f.pack(ShadeBindings.nextSlot());
 		ShadePbr.frame();
 		LOOK.pack(ShadeBindings.currentLook(), f);
+		mcopt.metal.shade.terrain.LavaFrame.pack(ShadeBindings.currentLook());
 		mcopt.metal.shade.dims.ShadeDims.pack(ShadeBindings.currentLook(), ShadeBindings.currentSlot(), f);
 		if (mcopt.metal.shade.dims.ShadeXdr.active()) mcopt.metal.shade.dims.ShadeXdr.frame(Math.min(dt, 0.25f));
 		ShadeDiag.frame(); // (1.2.5) a latest.log line a minute: hitches, GC, thermal state

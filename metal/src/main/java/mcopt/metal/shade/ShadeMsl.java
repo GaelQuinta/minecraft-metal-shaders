@@ -134,7 +134,7 @@ public final class ShadeMsl {
 			+ ((leanBits & PBR_MATERIALS) != 0 ? "#define SHADE_PBR\n" : "")
 			+ leanDefines((leanBits & ~PBR_MATERIALS) << LEAN_SHIFT) + LEAN_TEST
 			+ (translucent ? "#define SHADE_OWN_TRANSLUCENT\n" : "") + prelude() + ShadeWeather.prelude(translucent)
-			+ (translucent && ShadeWater.MODULE ? ShadeWater.prelude() : "") + resource("terrain_own.metal");
+			+ (translucent && ShadeWater.MODULE ? ShadeWater.prelude() : "") + resource("lava.metal") + resource("terrain_own.metal");
 	}
 
 	/**

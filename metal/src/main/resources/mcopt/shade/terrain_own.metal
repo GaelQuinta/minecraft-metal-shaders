@@ -233,7 +233,8 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #else
 	bool dims = sf.flags.x != SHADE_DIM_OVERWORLD;
 #endif
-	if (dims && !shadeDimsLit(sf)) {
+	bool lava = sl.user0.w > 0.0 && shadeLavaSprite(uv, sl);
+	if (dims && !shadeDimsLit(sf) && !lava) {
 		// vanilla's lightmap (own's vertices leave it out under shading: sampled here from the interpolated light) and its
 		// directional face shade (ShadeFaceShadeMixin flattened it in the vertices)
 		float2 lightUv = clamp(float2(in.shadeLight) * (240.0 / 256.0) + 0.5 / 16.0, float2(0.5 / 16.0), float2(15.5 / 16.0));
@@ -277,7 +278,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	bool endLit = sf.flags.x == SHADE_DIM_END, netherLit = sf.flags.x == SHADE_DIM_NETHER;
 #endif
 	half shadowSky = endLit ? half(1.0) : skyLight;
-	half shadow = (skyLight <= 0.3h && !endLit) || netherLit ? half(1.0)
+	half shadow = lava || (skyLight <= 0.3h && !endLit) || netherLit ? half(1.0)
 		// M3.4 (mcopt.shade.waterShadowSoft, ShadeLook.waterShadow.x, read every frame): up-facing water gets a soft-edged shadow
 		: waterFull ? (n.y > 0.5h && sl.waterShadow.x > 0.0 ? shadeShadowSoft(shadowMap, shadowCompare, sf, p, n, sl.waterShadow.x, in.fragCoord.xy, sl.waterShadow.z)
 		                                                    : shadeShadow(shadowMap, shadowCompare, sf, p, n, false))
@@ -285,7 +286,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #ifdef MCOPT_HDR
 	// M3: the volumetric clouds' shadows (shade_clouds.metal; 1 when they are off); overworld only (only where the sun or moon
 	// still reaches: a pixel already in terrain shadow needs no cloud-map fetch)
-	if (!dims && skyLight > 0.3h && shadow > 0.0h) shadow *= half(shadeCloudShadow(p, sl, sr.cloudShadow));
+	if (!lava && !dims && skyLight > 0.3h && shadow > 0.0h) shadow *= half(shadeCloudShadow(p, sl, sr.cloudShadow));
 #endif
 	float alpha = color.a;
 #ifdef SHADE_OWN_TRANSLUCENT
@@ -305,7 +306,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	float4 materialS = float4(0.0);
 	float materialAo = 1.0;
 #if defined(MCOPT_HDR) && defined(SHADE_PBR)
-	bool pbr = any(abs(sl.user3.yzw) > 0.0) && !waterFull && !water;
+	bool pbr = any(abs(sl.user3.yzw) > 0.0) && !waterFull && !water && !lava;
 	if (pbr) {
 		if (abs(sl.user3.y) > 0.0) {
 			float4 nm = g.UseRgss == 1 ? soSampleRgss(sr.pbrNormal, atlasSampler, uv, pixelSize, du, dv)
@@ -330,6 +331,9 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	}
 #endif
 	float3 radiance;
+	if (lava) {
+		radiance = shadeLavaSurface(texel.rgb, p + sf.cameraBlock.xyz + sf.cameraFract.xyz, sl.clock2.x, sl.user0.w);
+	} else
 #ifdef SHADE_WATER
 	if (waterFull) {
 		half3 up = half3(0.0h, 1.0h, 0.0h);
