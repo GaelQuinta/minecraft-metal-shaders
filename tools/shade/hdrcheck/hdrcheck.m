@@ -81,7 +81,7 @@ static void curves(NSString *folder) {
     for(int row=0;row<30;row++) for(int brightness=0;brightness<3;brightness++) {
         float l[272]={0}, p[24]={0};
         for(int k=0;k<3;k++) { l[816/4+k*5]=1; l[864/4+k*5]=1; l[368/4+k]=1; }
-        l[384/4]=cs[row*4]; l[384/4+1]=.92f;
+        l[384/4]=cs[row*4]; l[384/4+1]=.97f;
         p[16]=2; p[17]=cs[row*4+1]; p[18]=cs[row*4+2]; p[19]=cs[row*4+3]; p[23]=(float[]){.5,1,2}[brightness];
         id<MTLCommandBuffer> cb=[queue commandBuffer]; id<MTLComputeCommandEncoder> e=[cb computeCommandEncoder];
         [e setComputePipelineState:pipe]; [e setBuffer:input offset:0 atIndex:1]; [e setBuffer:output offset:0 atIndex:2];
