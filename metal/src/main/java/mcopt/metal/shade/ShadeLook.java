@@ -56,12 +56,12 @@ public final class ShadeLook {
 		{-15, 1.00f, 1.00f, 0.80f, 0.88f, 1.16f, 0.74f, 1.30f, 0.130f, 0.30f, 1.5f, -20},
 		{-9, 1.00f, 1.00f, 0.84f, 0.86f, 1.20f, 0.82f, 1.32f, 0.120f, 0.15f, 2.0f, -25},
 		{-4, 1.00f, 1.00f, 0.86f, 0.84f, 1.22f, 1.10f, 1.34f, 0.110f, 0.05f, 2.5f, -30},
-		{0, 1.30f, 0.85f, 1.04f, 0.93f, 1.03f, 1.20f, 1.36f, 0.100f, 1.00f, 5.0f, 40},
-		{5, 1.22f, 1.00f, 1.02f, 0.95f, 1.00f, 1.18f, 1.38f, 0.090f, 0.85f, 4.0f, 42},
-		{12, 1.12f, 1.00f, 1.01f, 0.97f, 0.99f, 1.14f, 1.40f, 0.085f, 0.55f, 2.5f, 32},
-		{25, 1.04f, 1.00f, 0.98f, 0.99f, 1.03f, 1.08f, 1.40f, 0.080f, 0.32f, 1.2f, 15},
-		{45, 1.00f, 1.00f, 0.95f, 1.00f, 1.08f, 1.02f, 1.40f, 0.075f, 0.22f, 0.6f, 0},
-		{65, 1.00f, 1.00f, 0.95f, 1.00f, 1.10f, 1.00f, 1.42f, 0.075f, 0.18f, 0.5f, -5},
+		{0, 1.30f, 0.85f, 1.04f, 0.93f, 1.03f, 1.20f, 1.36f, 0.100f, 1.00f, 5.0f, 6},
+		{5, 1.22f, 1.00f, 1.02f, 0.95f, 1.00f, 1.18f, 1.38f, 0.090f, 0.85f, 4.0f, 6},
+		{12, 1.12f, 1.00f, 1.01f, 0.97f, 0.99f, 1.14f, 1.40f, 0.085f, 0.55f, 2.5f, 6},
+		{25, 1.04f, 1.00f, 1.00f, 0.99f, 1.01f, 1.02f, 1.40f, 0.080f, 0.32f, 1.2f, 15},
+		{45, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.04f, 1.40f, 0.075f, 0.22f, 0.6f, 6},
+		{65, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.05f, 1.42f, 0.075f, 0.18f, 0.5f, 4},
 	};
 	// golden-hour sky gain (sky LUT): elevation, horizon rgb, zenith rgb; linear between rows, 1 outside
 	private static final float[][] SKY_GOLD = {
@@ -90,7 +90,7 @@ public final class ShadeLook {
 	private static final int K_GAMMA = 1, K_LIGHT = 2, K_AMB = 3, K_SAT = 6, K_CONTRAST = 7, K_BLOOM = 8, K_VL = 9, K_MIST = 10, K_WB = 11;
 
 	// ---- look presets (bible §3.6): epic, storybook, natural -------------------------------------------------------------
-	private static final float[] PRESET_GAMMA = {1.0f, 1.15f, 0.9f}, PRESET_SAT = {0.08f, 0.14f, 0.02f}, PRESET_CONTRAST = {1.05f, 0.97f, 0.95f},
+	private static final float[] PRESET_GAMMA = {1.0f, 1.15f, 0.9f}, PRESET_SAT = {0.05f, 0.10f, 0.0f}, PRESET_CONTRAST = {1.05f, 0.97f, 0.95f},
 		PRESET_BLOOM = {1.0f, 1.25f, 0.8f}, PRESET_LAMBDA = {0.55f, 0.40f, 0.70f}, PRESET_INSET = {0.20f, 0.16f, 0.24f}, PRESET_VL = {1.0f, 1.25f, 0.8f},
 		PRESET_SPECTRUM = {0.6f, 0.9f, 0.3f};
 
@@ -168,7 +168,9 @@ public final class ShadeLook {
 			this.saturation -= 0.04f * lowSun;
 		} else {
 			this.mistSigma *= 1f - 0.1f * lowSun;
-			this.whiteBalance += 8f * lowSun;
+			// The atmosphere already warms the sun and horizon. A second warm white balance
+			// suppresses blue in the transition sky until green becomes the strongest channel.
+			this.whiteBalance += 8f * lowSun * (1f - smooth(-4f, 0f, this.elevation));
 		}
 		// golden-hour sky gain (mornings a little less warm), none in rain
 		float[] sg = SKY_GOLD[SKY_GOLD.length - 1];
@@ -227,6 +229,9 @@ public final class ShadeLook {
 		float mired = 1e6f / 6504f + this.whiteBalance;
 		float[] target = blackbody(1e6f / Math.max(mired, 20f)), d65 = blackbody(6504f);
 		for (int i = 0; i < 3; i++) this.wbGain[i] = 1f + (target[i] / d65[i] - 1f) * 0.5f;
+		// green-magenta tint (mcopt.shade.user.tint, live: + = more magenta, - = more green; 0 = as released): the temperature
+		// above only moves along blue-orange
+		this.wbGain[1] *= 1f - 0.06f * Live.f(U + "tint", 0f, -1f, 1f);
 		float l = luma(this.wbGain[0], this.wbGain[1], this.wbGain[2]);
 		for (int i = 0; i < 3; i++) this.wbGain[i] /= l;
 		// tone curve through (MID_IN, MID_OUT) and (WHITE, 1)
@@ -294,7 +299,7 @@ public final class ShadeLook {
 		put4(b, AMBIENT_ART, this.ambientTint[0], this.ambientTint[1], this.ambientTint[2], 0.06f * (1f - 0.7f * f.rain) * Live.f(U + "bounce", 1f, 0f, 4f));
 		put4(b, BOUNCE, 0.62f, 0.56f, 0.44f, 0f);
 		// w (1.1): the water's clarity (ShadeSettings: its absorption divided by it; 1 = as released; was the unused scene contrast)
-		put4(b, GRADE0, 0f, this.saturation, (ShadeSettings.look() == 1 ? 0.18f : 0.10f) * Live.f(U + "vibrance", 1f, 0f, 4f), ShadeSettings.clarity());
+		put4(b, GRADE0, 0f, this.saturation, (ShadeSettings.look() == 1 ? 0.12f : 0.06f) * Live.f(U + "vibrance", 1f, 0f, 4f), ShadeSettings.clarity());
 		put4(b, GRADE1, this.wbGain[0], this.wbGain[1], this.wbGain[2], 0.55f * Live.f(U + "purkinje", 1f, 0f, 2f)); // (1.1) user.purkinje: the night's blue shift
 		put4(b, GRADE2, 0f, 0f, 0f, 0.0025f);
 		put4(b, GRADE3, 1f, 1f, 1f, this.inset);

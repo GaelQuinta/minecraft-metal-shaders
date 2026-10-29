@@ -19,10 +19,8 @@ vertex ShadeLutOut shade_lut_vs(uint vid [[vertex_id]]) {
 	return out;
 }
 
-fragment half4 shade_lut_fs(ShadeLutOut in [[stage_in]], constant ShadeFrame &f [[buffer(16)]], constant ShadeLook &L [[buffer(17)]]) {
-	float2 uv = (in.position.xy - 0.5) / float2(SHADE_LUT_W - 1, SHADE_LUT_H - 1);
+static inline float3 shadeSkyLutRadiance(float3 dir, constant ShadeFrame &f, constant ShadeLook &L) {
 	float3 transmittance;
-	float3 dir = shadeLutDirection(uv, f);
 	bool art = L.skyGoldH.w > 0.5; // M3 sunset art (mcopt.shade.sunsetArt)
 	float3 sky = shadeSkyRadiance(art ? shadeSunsetStretch(dir, f.sunDirWorld.xyz, f.sunDirWorld.w, f.weather.x) : dir, f, transmittance, art, false);
 	// M2 art layer: the golden hour's warm horizon and rose upper sky (ShadeLook.skyGold*), strongest toward the sun; baked
@@ -44,6 +42,12 @@ fragment half4 shade_lut_fs(ShadeLutOut in [[stage_in]], constant ShadeFrame &f 
 		float w = rose * (0.55 + 0.45 * toward) * (1.0 - 0.3 * smoothstep(0.55, 1.0, dir.y)) * smoothstep(0.03, 0.2, dir.y);
 		sky = mix(sky, l * tint, w);
 	}
-	// Apply also to the art tint added above, so reducing the atmospheric chroma can't be undone by the rose overlay.
-	return half4(half3(min(shadeAwaySunset(sky, dir, f), 60000.0)), 1.0h);
+	// The warm gain can turn cyan back toward green; constrain the completed sky grade too.
+	if (art) sky = shadeSunsetHue(sky, f.sunDirWorld.w);
+	return min(shadeAwaySunset(sky, dir, f), 60000.0);
+}
+
+fragment half4 shade_lut_fs(ShadeLutOut in [[stage_in]], constant ShadeFrame &f [[buffer(16)]], constant ShadeLook &L [[buffer(17)]]) {
+	float2 uv = (in.position.xy - 0.5) / float2(SHADE_LUT_W - 1, SHADE_LUT_H - 1);
+	return half4(half3(shadeSkyLutRadiance(shadeLutDirection(uv, f), f, L)), 1.0h);
 }

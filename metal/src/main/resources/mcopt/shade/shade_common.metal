@@ -333,6 +333,17 @@ static inline float3 shadeSunsetGrade(float3 dir, float3 sun, float sunY, float 
 	return mix(float3(1.0), col, w * saturate(0.2 + 0.8 * band + 0.4 * glow));
 }
 
+// Keep the RGB atmosphere's blue-to-gold transition from peaking in green, including pale sky.
+// Atmospheric radiance only: foliage and other green materials must not pass through this correction.
+// ShadeSky.radiance mirrors it for ambient lighting. Also used after the LUT's directional grade.
+static inline float3 shadeSunsetHue(float3 sky, float sunY) {
+	float transition = (1.0 - smoothstep(0.32, 0.50, sunY)) * smoothstep(-0.16, -0.02, sunY);
+	if (transition <= 0.0) return sky;
+	float before = shadeLuma(sky);
+	sky.g -= max(sky.g - 0.96 * max(sky.r, sky.b), 0.0) * transition;
+	return sky * (before / max(shadeLuma(sky), 1e-8));
+}
+
 // M3 sunset art: a low sun's horizon reads warm peach-gold, never pure saturated amber (the long path leaves almost no blue;
 // the studied packs keep some in it): while the sun is low, very saturated sky gives part of its chroma back to its
 // luminance, and the warm hue leans from lemon toward peach. ShadeSky.radiance mirrors it.
@@ -381,6 +392,7 @@ static float3 shadeSkyRadiance(float3 dir, constant ShadeFrame &f, thread float3
 	sky *= art ? shadeSunsetGrade(dir, f.sunDirWorld.xyz, f.sunDirWorld.w, rain) : shadeGoldenHour(dir.y, f.sunDirWorld.w, rain);
 	if (art) sky = shadeSunsetChroma(sky, f.sunDirWorld.w, rain);
 	sky = mix(sky, float3(l) * float3(0.92, 0.96, 1.0) * (1.0 - 0.45 * f.weather.y), rain * 0.75) * f.atmosphere.w;
+	if (art) sky = shadeSunsetHue(sky, f.sunDirWorld.w);
 	transmittance = tr;
 	return gradeAway ? shadeAwaySunset(sky, dir, f) : sky;
 }

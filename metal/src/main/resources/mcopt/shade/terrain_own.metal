@@ -255,7 +255,12 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	}
 	if (shadeDev(sf, SHADE_DEV_FLAT_LIGHT)) return float4(shadeVanillaOut(color.rgb, sl), color.a);
 	float ex = shadeExposure(sf, sg);
-	half3 albedo = shadeToLinear(half3(texel.rgb) * half3(vertexColor.rgb));
+	// the biome tint (grass, leaves, vines) pulled 22% toward its luma before it multiplies the texture: vanilla's colour map,
+	// linearized, is a neon green under real lighting; untinted blocks (grey AO only) are unchanged
+	half3 vtint = half3(vertexColor.rgb);
+	half vchroma = max3(vtint.r, vtint.g, vtint.b) - min3(vtint.r, vtint.g, vtint.b);
+	if (vchroma > half(0.06)) vtint = mix(half3(shadeLumaH(vtint)), vtint, half(0.78));
+	half3 albedo = shadeToLinear(half3(texel.rgb) * vtint);
 	int debug = sf.flags.w;
 	if (debug == 3) albedo = half3(0.45h);
 	bool foliage = SO_CUTOUT_PASS && !thin; // the cutout pass (not translucent): leaves, vines and the like
