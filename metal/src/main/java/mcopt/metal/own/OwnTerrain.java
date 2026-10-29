@@ -2712,7 +2712,6 @@ public final class OwnTerrain {
 		if (!TRANSLUCENT || !MetalBridge.inRenderPass(this.encoder)) return false;
 		// (probe modes "notrans" / "skipall": our translucent terrain not drawn, the frame's translucent cost measured apart)
 		if (PROBE_MS > 0 && (PROBE_MODES[this.probeMode].equals("notrans") || PROBE_MODES[this.probeMode].equals("skipall"))) return true;
-		if (mcopt.metal.shade.terrain.ShadeTerrain.ON) mcopt.metal.shade.terrain.ShadeTerrain.beforeTranslucent(this.encoder); // mcopt-shade: water copy
 		if (NO_FADE) fadeMs = 0;
 		int k = (int) (this.frame % FRAMES);
 		GpuBufferSlice projection = RenderSystem.getProjectionMatrixBuffer(), fog = RenderSystem.getShaderFog();
@@ -2893,6 +2892,9 @@ public final class OwnTerrain {
 		MemoryUtil.memPutInt(args + 12, 0);
 		MemoryUtil.memPutInt(args + 16, 0);
 		if (at == 0) return true;
+		// Capture only when the final list contains draws. Empty/cull-only passes need neither the scene/depth copy nor
+		// next frame's water-wave bake. Keep this before draw-state bindings: capture may reopen the render encoder.
+		if (mcopt.metal.shade.terrain.ShadeTerrain.ON) mcopt.metal.shade.terrain.ShadeTerrain.beforeTranslucent(this.encoder);
 		Matrix4f proj = new Matrix4f();
 		long pa = MetalBridge.bufferAddress(projection.buffer());
 		if (pa != 0) proj.setFromAddress(pa + projection.offset());
