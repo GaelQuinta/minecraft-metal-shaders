@@ -370,8 +370,8 @@ public final class ShadeLook {
 		this.snapExposure = false;
 		// (1.1) the player's settings for the shaders (shade_look.metal user0..3)
 		// user0: x the soft shadows' sun radius (rad: the real sun's x user.shadowSoftness; shade_m2 PCSS), y the vignette's strength
-		// (0.12 as released, x user.vignette), z leaves' and plants' light through them (user.leafLight), w glowing blocks (user.emissive)
-		put4(b, USER0, SUN_RADIUS * Live.f(U + "shadowSoftness", 1f, 0.25f, 4f), 0.12f * Live.f(U + "vignette", 1f, 0f, 4f),
+		// (0.035 at full darkness, x user.vignette), z leaves' and plants' light through them (user.leafLight), w glowing blocks (user.emissive)
+		put4(b, USER0, SUN_RADIUS * Live.f(U + "shadowSoftness", 1f, 0.25f, 4f), 0.035f * Live.f(U + "vignette", 1f, 0f, 4f),
 			Live.f(U + "leafLight", 1f, 0f, 3f), Live.f(U + "emissive", 1f, 0f, 3f));
 		// user1: x Distant Horizons' far water: its reflections' strength (= the near water's, user waterReflect), y its screen-space
 		// part (1 on, 0 = the player's "sky only"), z the near water's foam (user.foam), w its refraction (user.refraction)

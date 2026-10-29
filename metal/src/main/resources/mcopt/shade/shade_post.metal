@@ -433,10 +433,11 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 		float rods = (1.0 - smoothstep(0.004, 0.04, lum)) * L.grade1.w;
 		c = mix(c, float3(shadeLuma(c)) * float3(0.72, 0.88, 1.3), rods);
 	}
-	// vignette (sparing what is bright)
+	// A faint vignette only in genuinely dim scene light; normal brightness gets no corner darkening.
 	float2 r = (in.uv - 0.5) * float2(float(scene.get_width()) / float(scene.get_height()), 1.0);
 	float vr = pow(saturate(length(r) * 1.25), 2.4);
-	c *= 1.0 - L.user0.y * vr * (1.0 - 0.5 * saturate(shadeLuma(c) - 1.0)); // (1.1) user0.y: the vignette (0.12 as released)
+	float darkVignette = 1.0 - smoothstep(0.002, 0.02, max(lum, 0.0));
+	c *= 1.0 - L.user0.y * vr * darkVignette;
 	// vibrance: saturate the less saturated colours more
 	float Y = shadeLuma(c);
 	float mx = max(max(c.r, c.g), c.b), mn = min(min(c.r, c.g), c.b);

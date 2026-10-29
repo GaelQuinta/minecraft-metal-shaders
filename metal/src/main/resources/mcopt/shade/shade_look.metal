@@ -77,7 +77,7 @@ struct ShadeLook {
 	float4 gradeOutInv[3];// 960  inverse of gradeOut
 	float4 exposureRef;   // 1008 x reference exposure E_ref (CPU, linear), y metering share lambda, z metering key, w 1 = jump (no adaptation)
 	// (1.1) the player's settings (ShadeLook.USER0..3, the settings screen; 1 = as released unless noted)
-	float4 user0;         // 1024 x soft shadows' sun radius (rad), y vignette strength (0.12), z leaves' / plants' light through them, w glowing blocks
+	float4 user0;         // 1024 x soft shadows' sun radius (rad), y vignette strength (0.035), z leaves' / plants' light through them, w glowing blocks
 	float4 user1;         // 1040 x Distant Horizons' far water reflection strength, y its screen-space part on (1) / off (0), z foam, w refraction
 	float4 user2;         // 1056 x the sun's glint on water, y beacon radiance multiplier, zw free
 	float4 user3;         // 1072 x Natural lighting daylight strength 0..2 (0 = Current, 1 = original Natural), y signed normal strength (negative flips Y), z specular, w emission (0 without PBR)
