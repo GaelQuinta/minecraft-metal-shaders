@@ -300,7 +300,11 @@ public final class ShadeLook {
 		put4(b, BOUNCE, 0.62f, 0.56f, 0.44f, 0f);
 		// w (1.1): the water's clarity (ShadeSettings: its absorption divided by it; 1 = as released; was the unused scene contrast)
 		put4(b, GRADE0, 0f, this.saturation, (ShadeSettings.look() == 1 ? 0.12f : 0.06f) * Live.f(U + "vibrance", 1f, 0f, 4f), ShadeSettings.clarity());
-		put4(b, GRADE1, this.wbGain[0], this.wbGain[1], this.wbGain[2], 0.55f * Live.f(U + "purkinje", 1f, 0f, 2f)); // (1.1) user.purkinje: the night's blue shift
+		// Night exposure lifts dim material colours into view; a 55% rod mix erased them again.
+		// Keep a faint low-light shift while retaining colour separation, fading smoothly at dusk.
+		float nightColour = 1f - smooth(-10f, -2f, this.elevation);
+		put4(b, GRADE1, this.wbGain[0], this.wbGain[1], this.wbGain[2],
+			(0.55f - 0.37f * nightColour) * Live.f(U + "purkinje", 1f, 0f, 2f));
 		put4(b, GRADE2, 0f, 0f, 0f, 0.0025f);
 		put4(b, GRADE3, 1f, 1f, 1f, this.inset);
 		put4(b, TONEMAP, this.contrast, SHOULDER, this.toneB, this.toneBeta);
