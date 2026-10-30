@@ -116,7 +116,7 @@ public final class ShadeMsl {
 	 * own per variant: {@link #ownFragmentSource}.
 	 */
 	public static String ownPrefix() {
-		return "#define MCOPT_SHADE\n" + look();
+		return "#define MCOPT_SHADE\n" + look() + resource("leaves.metal");
 	}
 
 	/**

@@ -63,7 +63,8 @@ struct ShadeOwnIn {
 	float2 texCoord0 [[function_constant(SO_VARY)]];
 	float chunkVisibility [[function_constant(SO_RICH)]];
 	float3 shadePos [[function_constant(SO_VARY)]];   // camera-relative world position
-	half2 shadeLight [[function_constant(SO_VARY)]];  // block, sky light 0..1
+	half2 shadeLight [[function_constant(SO_VARY)]]; // block, sky light 0..1
+	half shadeLeaf [[flat, function_constant(SO_VARY)]]; // identified from the current leaf sprites
 };
 
 // vanilla's std140 uniform blocks as own binds them (own/terrain.metal Globals, Terrain, Fog)
@@ -258,7 +259,8 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	half3 albedo = shadeToLinear(half3(texel.rgb) * half3(vertexColor.rgb));
 	int debug = sf.flags.w;
 	if (debug == 3) albedo = half3(0.45h);
-	bool foliage = SO_CUTOUT_PASS && !thin; // the cutout pass (not translucent): leaves, vines and the like
+	bool leaf = in.shadeLeaf > 0.5h;
+	bool foliage = leaf || (SO_CUTOUT_PASS && !thin); // the cutout pass (not translucent): leaves, vines and the like
 #if defined(SHADE_WATER) && !defined(SHADE_LEAN_ABOVE)
 	// the water module: water by its sprites (as above), quad-uniform
 	int waterSprite = int(shadeQuadMax(float(shadeWaterSprite(uv, wp))));
@@ -443,7 +445,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		half3 wetAlbedo = albedo;
 #endif
 		// Nether/End (dims module): shadeLit2 without sky light and sun, plus the dimension's own light (shadeLitDimsExtra)
-		radiance = shadeLit2(wetAlbedo, materialN, dims ? half(0.0) : skyLight, blockLight, dims ? half(0.0) : shadow, thin, foliage, sf, sl);
+		radiance = shadeLit2(wetAlbedo, materialN, dims ? half(0.0) : skyLight, blockLight, dims ? half(0.0) : shadow, thin, foliage, sf, sl, leaf, -p * rsqrt(max(dot(p, p), 1e-8)));
 		if (dims) radiance += shadeLitDimsExtra(wetAlbedo, materialN, shadow, thin, foliage, p, sf, sl);
 #ifdef SHADE_DYNLIGHT
 		radiance += float3(wetAlbedo) * sf.ambientBlock.xyz * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(materialN), thin, blockLight);

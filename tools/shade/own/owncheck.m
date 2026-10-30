@@ -132,6 +132,8 @@ int main(int argc, const char **argv) {
 					bool cc = compact, ff = fat;
 					[cv setConstantValue:&cc type:MTLDataTypeBool atIndex:1];
 					[cv setConstantValue:&ff type:MTLDataTypeBool atIndex:2];
+					bool translucent = false;
+					[cv setConstantValue:&translucent type:MTLDataTypeBool atIndex:4];
 					MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
 					pd.vertexFunction = fnc(@"own_shadow_vs", cv);
 					pd.depthAttachmentPixelFormat = MTLPixelFormatDepth16Unorm;

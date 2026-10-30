@@ -167,7 +167,19 @@ kernel void own_clear_vis(device uint *vis [[buffer(6)]], constant uint &words [
 	if (i < words) vis[i] = 0;
 }
 
-constant float FACE_MARGIN = 1.0 / 64.0;
+// Conservative envelope for the shared leaf deformation, including visibility/occlusion tests without vertex uniforms.
+#ifdef MCOPT_SHADE
+constant float LEAF_MARGIN = 0.1;
+#define LEAF_ARG , constant ShadeLeaves &leaves
+#define LEAF_BIND , constant ShadeLeaves &leaves [[buffer(30)]]
+#define LEAF_USE , leaves
+#else
+constant float LEAF_MARGIN = 0.0;
+#define LEAF_ARG
+#define LEAF_BIND
+#define LEAF_USE
+#endif
+constant float FACE_MARGIN = 1.0 / 64.0 + LEAF_MARGIN;
 
 // ---- solid-section occlusion (-Dmcopt.own.solidOcc): fully opaque sections rasterized as boxes before the pass ----
 
@@ -194,6 +206,7 @@ struct SolidOcc {
 // A box (camera-relative) wholly behind the opaque sections' depth (only real opaque blocks occlude, so water and glass never
 // hide anything). Conservative: false whenever unsure.
 static bool solidHidden(constant SolidOcc &p, texture2d<float, access::read> occ, float3 lo, float3 hi) {
+	lo -= LEAF_MARGIN; hi += LEAF_MARGIN;
 	if (p.on == 0) return false;
 	float2 mn = float2(1e30), mx = float2(-1e30);
 	float zmax = 0;
@@ -586,6 +599,7 @@ kernel void frag_reset(constant FragFrame &g [[buffer(11)]], device uint *args [
 }
 
 static bool fragBoxIn(constant CullFrame &f, float3 lo, float3 hi) {
+	lo -= LEAF_MARGIN; hi += LEAF_MARGIN;
 	for (int p = 0; p < 4; p++) {
 		float4 pl = f.planes[p];
 		float3 v = select(lo, hi, pl.xyz > 0);
@@ -1038,6 +1052,7 @@ static uint fragHull(thread float2 *p, thread float2 *h) {
 
 // a camera-relative box against the pyramid (own_q_b's test on its 8 corners): false only if wholly behind it
 static bool fragTestBox(float3 lo, float3 hi, constant FragTest &ft, texture2d<float, access::read> hiz) {
+	lo -= LEAF_MARGIN; hi += LEAF_MARGIN;
 	if (ft.mips == 0) return true;
 	float2 mn = float2(1e30), mx = float2(-1e30);
 	float zmax = 0;
@@ -1256,6 +1271,7 @@ static float fragFar(uint level, uint2 la, uint2 lb, uint2 lsize, float zm, text
 
 template <bool G>
 static bool fragTestBoxFast(float3 lo, float3 hi, constant FragTest &ft, texture2d<float, access::read> hiz, array<texture2d<float>, 12> lv) {
+	lo -= LEAF_MARGIN; hi += LEAF_MARGIN;
 	if (ft.mips == 0) return true;
 	float2 mn = float2(1e30), mx = float2(-1e30);
 	float zmax = 0;
@@ -1291,6 +1307,7 @@ static bool fragTestBoxFast(float3 lo, float3 hi, constant FragTest &ft, texture
 // fragTestBox. Margins cover float error between the box's and a sub-box's projections: 1 pixel on the rectangle, 1e-5 on zmax,
 // and no reject when a corner is within 1e-3 of the w cut (a sub-box corner would then be all but on it).
 static bool fragBoxMayPass(float3 lo, float3 hi, constant FragTest &ft, texture2d<float, access::read> hiz) {
+	lo -= LEAF_MARGIN; hi += LEAF_MARGIN;
 	if (ft.mips == 0) return true;
 	float2 mn = float2(1e30), mx = float2(-1e30);
 	float zmax = 0;
@@ -1482,8 +1499,8 @@ kernel void own_occ(constant OccFrame &f [[buffer(0)]], device const Section *se
 	Rec rec = recs[r];
 	Section s = sections[rec.slot];
 	float3 o = float3(int3(s.x, s.y, s.z) - f.camBlock.xyz) + f.camOffset.xyz;
-	float3 lo = o + float3(int3(rec.lo & 255, (rec.lo >> 8) & 255, (rec.lo >> 16) & 255) - 16);
-	float3 hi = o + float3(int3(rec.hi & 255, (rec.hi >> 8) & 255, (rec.hi >> 16) & 255) - 16);
+	float3 lo = o + float3(int3(rec.lo & 255, (rec.lo >> 8) & 255, (rec.lo >> 16) & 255) - 16) - LEAF_MARGIN;
+	float3 hi = o + float3(int3(rec.hi & 255, (rec.hi >> 8) & 255, (rec.hi >> 16) & 255) - 16) + LEAF_MARGIN;
 	bool visible = false;
 	float2 mn = float2(1e30), mx = float2(-1e30);
 	float zmax = 0;
@@ -1631,6 +1648,7 @@ struct VOut {
 	// camera-relative position and the block / sky light 0..1; vertexColor then leaves the lightmap out
 	float3 shadePos [[function_constant(F_VARY)]];
 	half2 shadeLight [[function_constant(F_VARY)]];
+	half shadeLeaf [[flat, function_constant(F_VARY)]];
 #endif
 };
 
@@ -1682,9 +1700,9 @@ constant bool FAT [[function_constant(2)]];
 constant bool CPU_CLIP [[function_constant(3)]];
 
 static VOut ownVertex(uint vi, int3 origin, int uploadMs, constant DrawFrame &df, device const void *arenaRaw, constant Projection &proj,
-	constant Globals &g, constant Terrain &t, texture2d<float> lightmap, sampler lightSampler, thread float3 &rel);
+	constant Globals &g, constant Terrain &t, texture2d<float> lightmap, sampler lightSampler, thread float3 &rel, bool leafCandidate LEAF_ARG);
 static VOut ownShade(Vtx v, int3 origin, int uploadMs, constant DrawFrame &df, constant Projection &proj, constant Globals &g,
-	constant Terrain &t, texture2d<float> lightmap, sampler lightSampler, thread float3 &rel);
+	constant Terrain &t, texture2d<float> lightmap, sampler lightSampler, thread float3 &rel LEAF_ARG);
 
 // -Dmcopt.own.mesh.qrec (OWN_QREC, prepended by OwnTerrain; OwnQrec): every solid / cutout quad id is a 40-byte record id, and
 // its corner c is decoded into exactly the compact vertex it replaces. Words: 0 corner selections (bits 3c + axis: x / y / z takes
@@ -1749,7 +1767,7 @@ vertex VOut own_vs(uint vid [[vertex_id]], uint iid [[instance_id]], constant Dr
 #ifdef OWN_VCOUNT
 	, device atomic_uint *vcount [[buffer(28)]]
 #endif
-	) {
+	LEAF_BIND) {
 	VOut o;
 	uint quadStart, meta, base;
 #ifdef OWN_TPROBE
@@ -1866,12 +1884,12 @@ vertex VOut own_vs(uint vid [[vertex_id]], uint iid [[instance_id]], constant Dr
 #endif
 	float3 rel;
 	if (F_ORACLE) {
-		VOut ov = ownVertex(vi, origin, uploadMs, df, arenaRaw, proj, g, t, lightmap, lightSampler, rel);
+		VOut ov = ownVertex(vi, origin, uploadMs, df, arenaRaw, proj, g, t, lightmap, lightSampler, rel, QUADS || ((meta >> 9) & 3u) == 1u LEAF_USE);
 		ov.oracleUnit = unitRec;
 		if (quad == 0 && corner == 0 && unitRec != 0xffffffffu) oracleKept[unitRec] = oracleFrame;
 		return ov;
 	}
-	VOut ov = ownVertex(vi, origin, uploadMs, df, arenaRaw, proj, g, t, lightmap, lightSampler, rel);
+	VOut ov = ownVertex(vi, origin, uploadMs, df, arenaRaw, proj, g, t, lightmap, lightSampler, rel, QUADS || ((meta >> 9) & 3u) == 1u LEAF_USE);
 	if (F_FV) {
 		// (F_FV: the fog value itself per vertex, in the spherical distance's place; with F_FOGVERT_ALL in rich pipelines also the
 		// render-distance term's max, as the fragment stage would take it)
@@ -1898,9 +1916,7 @@ vertex VOut own_vs(uint vid [[vertex_id]], uint iid [[instance_id]], constant Dr
 	return ov;
 }
 
-// one arena vertex as vanilla's terrain.vsh shades it (own_vs, own_mesh); rel: its section-relative position
-static VOut ownVertex(uint vi, int3 origin, int uploadMs, constant DrawFrame &df, device const void *arenaRaw, constant Projection &proj,
-	constant Globals &g, constant Terrain &t, texture2d<float> lightmap, sampler lightSampler, thread float3 &rel) {
+static Vtx ownFetchVertex(uint vi, device const void *arenaRaw) {
 	Vtx v;
 	if (OWN_REC && COMPACT && !TRANSLUCENT) {
 		v = ownQrec(arenaRaw, vi >> 2, vi & 3);  // (solid / cutout: vi = record id * 4 + corner)
@@ -1920,12 +1936,48 @@ static VOut ownVertex(uint vi, int3 origin, int uploadMs, constant DrawFrame &df
 	} else {
 		v = ((device const Vtx *) arenaRaw)[vi];
 	}
-	return ownShade(v, origin, uploadMs, df, proj, g, t, lightmap, lightSampler, rel);
+	return v;
+}
+
+#ifdef MCOPT_SHADE
+static float2 ownSpriteCentre(uint vi, float2 uv, device const void *arenaRaw) {
+	uint opposite = (vi & ~3u) | ((vi + 2u) & 3u);
+	if (OWN_REC && COMPACT && !TRANSLUCENT) {
+		device const uint *w = ((device const uint *) arenaRaw) + (vi >> 2) * 10;
+		if ((w[0] & 0x80000000u) == 0)
+			return (float2(w[4] & 65535u, w[5] & 65535u) + float2(w[4] >> 16, w[5] >> 16)) / 131072.0;
+		opposite = w[1] * 4 + (opposite & 3u);
+	}
+	float2 other;
+	if (COMPACT) {
+		CVtx v = ((device const CVtx *) arenaRaw)[opposite];
+		other = float2(v.u, v.v) / 65536.0;
+	} else other = float2(((device const Vtx *) arenaRaw)[opposite].uv0);
+	return (uv + other) * 0.5;
+}
+#endif
+
+// one arena vertex as vanilla's terrain.vsh shades it (own_vs, own_mesh); rel: its section-relative position
+static VOut ownVertex(uint vi, int3 origin, int uploadMs, constant DrawFrame &df, device const void *arenaRaw, constant Projection &proj,
+	constant Globals &g, constant Terrain &t, texture2d<float> lightmap, sampler lightSampler, thread float3 &rel, bool leafCandidate LEAF_ARG) {
+	Vtx v = ownFetchVertex(vi, arenaRaw);
+#ifdef MCOPT_SHADE
+	// Opposite corners' midpoint lies inside the sprite, even for UVs on shared atlas borders.
+	bool leaf = leafCandidate && !TRANSLUCENT && shadeLeafSprite(ownSpriteCentre(vi, float2(v.uv0), arenaRaw), leaves);
+	float3 offset = leaf ? shadeLeafOffset(float3(v.pos), origin, leaves) : float3(0.0);
+	float3 cameraRelative = float3(v.pos) + float3(origin - int3(g.CameraBlockPos)) + float3(g.CameraOffset);
+	v.pos = packed_float3(float3(v.pos) + offset * (1.0 - smoothstep(32.0, 64.0, length(cameraRelative))));
+#endif
+	VOut out = ownShade(v, origin, uploadMs, df, proj, g, t, lightmap, lightSampler, rel LEAF_USE);
+#ifdef MCOPT_SHADE
+	if (F_VARY) out.shadeLeaf = half(leaf);
+#endif
+	return out;
 }
 
 // a vertex as vanilla's terrain.vsh shades it (ownVertex's fetched one, or own_vs' from a quad record)
 static VOut ownShade(Vtx v, int3 origin, int uploadMs, constant DrawFrame &df, constant Projection &proj, constant Globals &g,
-	constant Terrain &t, texture2d<float> lightmap, sampler lightSampler, thread float3 &rel) {
+	constant Terrain &t, texture2d<float> lightmap, sampler lightSampler, thread float3 &rel LEAF_ARG) {
 	VOut o;
 	rel = float3(v.pos);
 	int3 cbp = int3(g.CameraBlockPos);
@@ -1998,7 +2050,14 @@ struct FragOcc {
 
 // a vertex's clip position exactly as ownVertex computes it (the same expression), without its other outputs
 static float4 ownClip(uint vi, int3 origin, constant DrawFrame &df, device const void *arenaRaw, constant Projection &proj, constant Globals &g,
-	constant Terrain &t, thread float3 &rel) {
+	constant Terrain &t, thread float3 &rel, bool leafCandidate LEAF_ARG) {
+#ifdef MCOPT_SHADE
+	Vtx v = ownFetchVertex(vi, arenaRaw);
+	bool leaf = leafCandidate && !TRANSLUCENT && shadeLeafSprite(ownSpriteCentre(vi, float2(v.uv0), arenaRaw), leaves);
+	float3 cameraRelative = float3(v.pos) + float3(origin - int3(g.CameraBlockPos)) + float3(g.CameraOffset);
+	float3 p = float3(v.pos) + (leaf ? shadeLeafOffset(float3(v.pos), origin, leaves)
+		* (1.0 - smoothstep(32.0, 64.0, length(cameraRelative))) : float3(0.0));
+#else
 	float3 p;
 	if (OWN_REC && COMPACT) {
 		p = ownQrecPos(arenaRaw, vi >> 2, vi & 3);
@@ -2008,6 +2067,7 @@ static float4 ownClip(uint vi, int3 origin, constant DrawFrame &df, device const
 	} else {
 		p = float3(((device const Vtx *) arenaRaw)[vi].pos);
 	}
+#endif
 	rel = p;
 	int3 cbp = int3(g.CameraBlockPos);
 	float3 pos = p + float3(origin - cbp) + float3(g.CameraOffset);
@@ -2048,6 +2108,7 @@ static bool fragOccVisible(float4 p0, float4 p1, float4 p2, float4 p3, constant 
 // behind it
 static bool fragOccBox(float3 lo, float3 hi, constant DrawFrame &df, constant Projection &proj, constant Terrain &t, constant FragOcc &fo,
 	texture2d<float, access::read> hiz) {
+	lo -= LEAF_MARGIN; hi += LEAF_MARGIN;
 	if (fo.mips == 0) return true;
 	float4x4 m = CPU_CLIP ? df.clip : proj.ProjMat * t.ModelViewMat;
 	float2 mn = float2(1e30), mx = float2(-1e30);
@@ -2080,7 +2141,7 @@ static bool fragOccBox(float3 lo, float3 hi, constant DrawFrame &df, constant Pr
 	constant Globals &g [[buffer(22)]], constant Terrain &t [[buffer(23)]], texture2d<float> lightmap [[texture(17)]],
 	sampler lightSampler [[sampler(15)]], device uint *masks [[buffer(26), function_constant(F_OCC)]],
 	constant FragOcc &fo [[buffer(27), function_constant(F_OCC)]], device atomic_uint *occStats [[buffer(28), function_constant(F_OCC)]],
-	texture2d<float, access::read> hiz [[texture(18), function_constant(F_OCCB)]]) {
+	texture2d<float, access::read> hiz [[texture(18), function_constant(F_OCCB)]] LEAF_BIND) {
 	uint r = lists[df.listBase + tg];
 	Rec rec = recs[r];
 	Section s = sections[rec.slot];
@@ -2109,7 +2170,7 @@ static bool fragOccBox(float3 lo, float3 hi, constant DrawFrame &df, constant Pr
 		if (keep) {
 			float3 rel[4];
 			float4 p[4];
-			for (uint c = 0; c < 4; c++) p[c] = ownClip((rec.quadStart + q) * 4 + c, origin, df, arenaRaw, proj, g, t, rel[c]);
+			for (uint c = 0; c < 4; c++) p[c] = ownClip((rec.quadStart + q) * 4 + c, origin, df, arenaRaw, proj, g, t, rel[c], ((rec.meta >> 9) & 3u) == 1u LEAF_USE);
 			bool gone = (p[0].x > p[0].w && p[1].x > p[1].w && p[2].x > p[2].w && p[3].x > p[3].w)
 				|| (p[0].x < -p[0].w && p[1].x < -p[1].w && p[2].x < -p[2].w && p[3].x < -p[3].w)
 				|| (p[0].y > p[0].w && p[1].y > p[1].w && p[2].y > p[2].w && p[3].y > p[3].w)
@@ -2130,11 +2191,11 @@ static bool fragOccBox(float3 lo, float3 hi, constant DrawFrame &df, constant Pr
 		}
 		if (keep) {
 			float3 rel;
-			for (uint c = 0; c < 4; c++) v[c] = ownVertex((rec.quadStart + q) * 4 + c, origin, s.uploadMs, df, arenaRaw, proj, g, t, lightmap, lightSampler, rel);
+			for (uint c = 0; c < 4; c++) v[c] = ownVertex((rec.quadStart + q) * 4 + c, origin, s.uploadMs, df, arenaRaw, proj, g, t, lightmap, lightSampler, rel, ((rec.meta >> 9) & 3u) == 1u LEAF_USE);
 		}
 	} else if (keep) {
 		float3 rel[4];
-		for (uint c = 0; c < 4; c++) v[c] = ownVertex((rec.quadStart + q) * 4 + c, origin, s.uploadMs, df, arenaRaw, proj, g, t, lightmap, lightSampler, rel[c]);
+		for (uint c = 0; c < 4; c++) v[c] = ownVertex((rec.quadStart + q) * 4 + c, origin, s.uploadMs, df, arenaRaw, proj, g, t, lightmap, lightSampler, rel[c], ((rec.meta >> 9) & 3u) == 1u LEAF_USE);
 		float4 p0 = v[0].pos, p1 = v[1].pos, p2 = v[2].pos, p3 = v[3].pos;
 		bool gone = (p0.x > p0.w && p1.x > p1.w && p2.x > p2.w && p3.x > p3.w) || (p0.x < -p0.w && p1.x < -p1.w && p2.x < -p2.w && p3.x < -p3.w)
 			|| (p0.y > p0.w && p1.y > p1.w && p2.y > p2.w && p3.y > p3.w) || (p0.y < -p0.w && p1.y < -p1.w && p2.y < -p2.w && p3.y < -p3.w);
@@ -2170,7 +2231,7 @@ static bool fragOccBox(float3 lo, float3 hi, constant DrawFrame &df, constant Pr
 	constant DrawFrame &df [[buffer(20)]], device const void *arenaRaw [[buffer(16)]], device const Section *sections [[buffer(17)]],
 	device const Rec *recs [[buffer(18)]], device const uint *lists [[buffer(19)]], constant Projection &proj [[buffer(21)]],
 	constant Globals &g [[buffer(22)]], constant Terrain &t2 [[buffer(23)]], texture2d<float> lightmap [[texture(17)]],
-	sampler lightSampler [[sampler(15)]]) {
+	sampler lightSampler [[sampler(15)]] LEAF_BIND) {
 	threadgroup uint counts[4];
 	Rec rec = recs[lists[df.listBase + tg]];
 	Section s = sections[rec.slot];
@@ -2179,7 +2240,7 @@ static bool fragOccBox(float3 lo, float3 hi, constant DrawFrame &df, constant Pr
 	bool live = q <= (rec.meta & 63);
 	VOut v;
 	float3 rel = float3(0);
-	if (live) v = ownVertex((rec.quadStart + q) * 4 + c, origin, s.uploadMs, df, arenaRaw, proj, g, t2, lightmap, lightSampler, rel);
+	if (live) v = ownVertex((rec.quadStart + q) * 4 + c, origin, s.uploadMs, df, arenaRaw, proj, g, t2, lightmap, lightSampler, rel, ((rec.meta >> 9) & 3u) == 1u LEAF_USE);
 	float4 p = live ? v.pos : float4(0, 0, 0, 1);
 	ushort l0 = ushort(lane & ~3u);
 	float4 p0 = simd_shuffle(p, l0), p1 = simd_shuffle(p, ushort(l0 + 1)), p2 = simd_shuffle(p, ushort(l0 + 2)), p3 = simd_shuffle(p, ushort(l0 + 3));
@@ -2352,7 +2413,7 @@ fragment float4 own_fs(VOut in [[stage_in]], constant Globals &g [[buffer(OWN_FS
 	constant DrawFrame &df [[buffer(20)]], device const void *arenaRaw [[buffer(16)]], device const Section *sections [[buffer(17)]],
 	device const uint *qa [[buffer(18)]], device const uint *owner [[buffer(19)]], device const uint *qIdx [[buffer(25)]],
 	constant Projection &proj [[buffer(21)]], constant Globals &g [[buffer(22)]], constant Terrain &t [[buffer(23)]],
-	texture2d<float> lightmap [[texture(17)]], sampler lightSampler [[sampler(15)]]) {
+	texture2d<float> lightmap [[texture(17)]], sampler lightSampler [[sampler(15)]] LEAF_BIND) {
 	uint list = df.listBase;
 	uint n = qa[list * 5] / 6, start = qa[list * 5 + 2];
 	uint k = tg * 32 + q;
@@ -2363,7 +2424,7 @@ fragment float4 own_fs(VOut in [[stage_in]], constant Globals &g [[buffer(OWN_FS
 		Section s = sections[owner[quad]];
 		int3 origin = int3(s.x, s.y, s.z);
 		float3 rel;
-		for (uint c = 0; c < 4; c++) v[c] = ownVertex(quad * 4 + c, origin, s.uploadMs, df, arenaRaw, proj, g, t, lightmap, lightSampler, rel);
+		for (uint c = 0; c < 4; c++) v[c] = ownVertex(quad * 4 + c, origin, s.uploadMs, df, arenaRaw, proj, g, t, lightmap, lightSampler, rel, true LEAF_USE);
 		float4 p0 = v[0].pos, p1 = v[1].pos, p2 = v[2].pos, p3 = v[3].pos;
 		keep = !((p0.x > p0.w && p1.x > p1.w && p2.x > p2.w && p3.x > p3.w) || (p0.x < -p0.w && p1.x < -p1.w && p2.x < -p2.w && p3.x < -p3.w)
 			|| (p0.y > p0.w && p1.y > p1.w && p2.y > p2.w && p3.y > p3.w) || (p0.y < -p0.w && p1.y < -p1.w && p2.y < -p2.w && p3.y < -p3.w));
@@ -2619,6 +2680,20 @@ static bool quadTest(constant QuadFrame &f, device const void *arena, device con
 	bool visible = false, behind = false;
 	float2 mn = float2(1e30), mx = float2(-1e30);
 	float zmax = 0;
+#ifdef MCOPT_SHADE
+	float3 lo = float3(1e30), hi = float3(-1e30);
+	for (uint c = 0; c < 4; c++) {
+		float3 p = o + quadCorner(arena, f.compact, quad * 4 + c);
+		lo = min(lo, p); hi = max(hi, p);
+	}
+	lo -= LEAF_MARGIN; hi += LEAF_MARGIN;
+	for (uint c = 0; c < 8; c++) {
+		float4 h = f.clip * float4(select(lo, hi, bool3((c & 1) != 0, (c & 2) != 0, (c & 4) != 0)), 1.0);
+		if (h.w <= 0.05) behind = true;
+		float3 n = h.xyz / max(h.w, 1e-6);
+		mn = min(mn, n.xy); mx = max(mx, n.xy); zmax = max(zmax, n.z);
+	}
+#else
 	if (f.box != 0) {
 		// the quad's bounds (quarter blocks from -8, never smaller than the quad): eight corners from one projected corner and
 		// three projected edges (the projection is linear)
@@ -2645,6 +2720,7 @@ static bool quadTest(constant QuadFrame &f, device const void *arena, device con
 			zmax = max(zmax, n.z);
 		}
 	}
+#endif
 	if (behind) {
 		visible = true;
 	} else if (!(mx.x < -1 || mx.y < -1 || mn.x > 1 || mn.y > 1)) {
@@ -2684,8 +2760,8 @@ kernel void own_q_b(constant QuadFrame &f [[buffer(0)]], device const Section *s
 	// the unit's box first, once per SIMD group (a group is one unit: run 32): lanes 0-7 project its corners
 	bool unitHidden = false, unitDecides = false;
 	if (f.run == 32) {
-		float3 lo = o + float3(int3(rec.lo & 255, (rec.lo >> 8) & 255, (rec.lo >> 16) & 255) - 16);
-		float3 hi = o + float3(int3(rec.hi & 255, (rec.hi >> 8) & 255, (rec.hi >> 16) & 255) - 16);
+		float3 lo = o + float3(int3(rec.lo & 255, (rec.lo >> 8) & 255, (rec.lo >> 16) & 255) - 16) - LEAF_MARGIN;
+		float3 hi = o + float3(int3(rec.hi & 255, (rec.hi >> 8) & 255, (rec.hi >> 16) & 255) - 16) + LEAF_MARGIN;
 		uint c = q & 7;
 		float4 h = f.clip * float4((c & 1) ? hi.x : lo.x, (c & 2) ? hi.y : lo.y, (c & 4) ? hi.z : lo.z, 1.0);
 		bool near = h.w <= 0.05;
@@ -2817,8 +2893,8 @@ kernel void own_q_bf(constant QuadFrame &f [[buffer(0)]], device const Section *
 		vis = mine;
 	} else {
 	// the unit's box: lanes 0-7 its corners, the group's min / max
-	float3 ulo = o + float3(int3(rec.lo & 255, (rec.lo >> 8) & 255, (rec.lo >> 16) & 255) - 16);
-	float3 uhi = o + float3(int3(rec.hi & 255, (rec.hi >> 8) & 255, (rec.hi >> 16) & 255) - 16);
+	float3 ulo = o + float3(int3(rec.lo & 255, (rec.lo >> 8) & 255, (rec.lo >> 16) & 255) - 16) - LEAF_MARGIN;
+	float3 uhi = o + float3(int3(rec.hi & 255, (rec.hi >> 8) & 255, (rec.hi >> 16) & 255) - 16) + LEAF_MARGIN;
 	uint c8 = q & 7;
 	float4 uh = f.clip * float4((c8 & 1) ? uhi.x : ulo.x, (c8 & 2) ? uhi.y : ulo.y, (c8 & 4) ? uhi.z : ulo.z, 1.0);
 	float3 un = uh.xyz / max(uh.w, 1e-6);
@@ -2831,15 +2907,15 @@ kernel void own_q_bf(constant QuadFrame &f [[buffer(0)]], device const Section *
 	uint2 ula, ulb;
 	texelRect(f, umn, umx, ul, ula, ulb);
 	// the quad's bounds: eight corners from one projected corner and three edges
-	float3 lo = o + float3(b.x & 255, (b.x >> 8) & 255, (b.x >> 16) & 255) * 0.25 - 8.0;
-	float3 ext = float3(b.y & 255, (b.y >> 8) & 255, (b.y >> 16) & 255) * 0.25 - 8.0 + o - lo;
+	float3 lo = o + float3(b.x & 255, (b.x >> 8) & 255, (b.x >> 16) & 255) * 0.25 - 8.0 - LEAF_MARGIN;
+	float3 ext = float3(b.y & 255, (b.y >> 8) & 255, (b.y >> 16) & 255) * 0.25 - 8.0 + o - lo + LEAF_MARGIN;
 	float4 h0 = f.clip * float4(lo, 1.0);
 	float4 ex = f.clip[0] * ext.x, ey = f.clip[1] * ext.y, ez = f.clip[2] * ext.z;
 	bool behind = false;
 	float2 mn = float2(1e30), mx = float2(-1e30);
 	float zmax = 0;
 	// (alu: an axis whose bounds are equal adds no new corner; a facing unit's quads share it, so the group branches as one)
-	uint flatAxes = f.alu == 0 ? 0u : ((b.x & 255) == (b.y & 255) ? 1u : 0u) | (((b.x >> 8) & 255) == ((b.y >> 8) & 255) ? 2u : 0u)
+	uint flatAxes = (f.alu == 0 || LEAF_MARGIN > 0.0) ? 0u : ((b.x & 255) == (b.y & 255) ? 1u : 0u) | (((b.x >> 8) & 255) == ((b.y >> 8) & 255) ? 2u : 0u)
 		| (((b.x >> 16) & 255) == ((b.y >> 16) & 255) ? 4u : 0u);
 	for (uint c = 0; c < 8; c++) {
 		if ((c & flatAxes) != 0) continue;
@@ -2921,8 +2997,8 @@ kernel void own_q_bu(constant QuadFrame &f [[buffer(0)]], device const Section *
 		Rec rec = recs[r];
 		Section s = sections[rec.slot];
 		float3 o = float3(int3(s.x, s.y, s.z) - f.camBlock.xyz) + f.camOffset.xyz;
-		float3 lo = o + float3(int3(rec.lo & 255, (rec.lo >> 8) & 255, (rec.lo >> 16) & 255) - 16);
-		float3 hi = o + float3(int3(rec.hi & 255, (rec.hi >> 8) & 255, (rec.hi >> 16) & 255) - 16);
+		float3 lo = o + float3(int3(rec.lo & 255, (rec.lo >> 8) & 255, (rec.lo >> 16) & 255) - 16) - LEAF_MARGIN;
+		float3 hi = o + float3(int3(rec.hi & 255, (rec.hi >> 8) & 255, (rec.hi >> 16) & 255) - 16) + LEAF_MARGIN;
 		bool near = false;
 		float2 mn = float2(1e30), mx = float2(-1e30);
 		float zmax = 0;
@@ -3436,6 +3512,12 @@ kernel void own_q_pre(constant QuadFrame &f [[buffer(0)]], device const Section 
 			}
 		}
 	}
+#ifdef MCOPT_SHADE
+	if (layer == 1 && t < min(args[ARGS_T], f.listCap)) {
+		Rec rec = recs[tested[t]];
+		want = q <= (rec.meta & 63);
+	}
+#endif
 	putQuads(idx, qa, 0, want, layer, quad, f.qcap, f.qlist);
 }
 
@@ -3551,7 +3633,7 @@ struct OwnShadowFrame { int4 camBlock; float4 camOffset; uint listBase, flags, p
 struct OwnShadowOut { float4 pos [[position]]; float2 uv; half alpha; };
 
 static OwnShadowOut ownShadowVertex(uint vid, uint iid, constant OwnShadowFrame &f, constant OwnShadowCascade &c, device const void *arenaRaw,
-	device const Section *sections, device const Rec *recs, device const uint *lists) {
+	device const Section *sections, device const Rec *recs, device const uint *lists, constant ShadeLeaves &leaves) {
 	OwnShadowOut o;
 	o.pos = float4(0, 0, -2, 1);  // (padding and units left out: outside the clip volume)
 	o.uv = float2(0);
@@ -3578,18 +3660,10 @@ static OwnShadowOut ownShadowVertex(uint vid, uint iid, constant OwnShadowFrame 
 		if (((sxz.x + sxz.y * int((f.parts + 1) / 2)) % int(f.parts) + int(f.parts)) % int(f.parts) != int(f.part)) return o;
 	}
 	uint vi = (quadStart + quad) * 4 + (vid & 3);
-	Vtx v;
-	if (OWN_REC && COMPACT) {
-		v = ownQrec(arenaRaw, vi >> 2, vi & 3);
-	} else if (COMPACT) {
-		CVtx k = ((device const CVtx *) arenaRaw)[vi];
-		v.pos = packed_float3(OWN_POS3(arenaRaw, k.px, k.py, k.pz));
-		v.color = k.color;
-		v.uv0 = packed_float2(float2(k.u, k.v) / 65536.0);
-	} else {
-		v = ((device const Vtx *) arenaRaw)[vi];
-	}
+	Vtx v = ownFetchVertex(vi, arenaRaw);
+	bool leaf = ((meta >> 9) & 3u) == 1u && shadeLeafSprite(ownSpriteCentre(vi, float2(v.uv0), arenaRaw), leaves);
 	float3 p = float3(v.pos) + float3(origin - f.camBlock.xyz) + f.camOffset.xyz;
+	if (leaf) p += shadeLeafOffset(float3(v.pos), origin, leaves) * (1.0 - smoothstep(32.0, 64.0, length(p)));
 	o.pos = c.viewProj * float4(p, 1.0);
 	o.pos.z -= c.depthBias * o.pos.w;
 	o.uv = float2(v.uv0);
@@ -3599,8 +3673,8 @@ static OwnShadowOut ownShadowVertex(uint vid, uint iid, constant OwnShadowFrame 
 
 vertex OwnShadowOut own_shadow_vs(uint vid [[vertex_id]], uint iid [[instance_id]], device const void *arenaRaw [[buffer(0)]],
 	device const Section *sections [[buffer(1)]], device const Rec *recs [[buffer(2)]], constant OwnShadowCascade &cascade [[buffer(3)]],
-	constant OwnShadowFrame &frame [[buffer(4)]], device const uint *lists [[buffer(5)]]) {
-	return ownShadowVertex(vid, iid, frame, cascade, arenaRaw, sections, recs, lists);
+	constant OwnShadowFrame &frame [[buffer(4)]], device const uint *lists [[buffer(5)]], constant ShadeLeaves &leaves [[buffer(30)]]) {
+	return ownShadowVertex(vid, iid, frame, cascade, arenaRaw, sections, recs, lists, leaves);
 }
 
 // cutout (leaves, grass, flowers): the texel when the atlas alpha (level 0, nearest) times the vertex alpha passes vanilla's 0.5

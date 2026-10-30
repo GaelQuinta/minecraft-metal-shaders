@@ -121,6 +121,8 @@ public final class ShadeOptions {
 			pct("mcopt.shade.pbr.emission", "Emisión PBR", "PBR emission", "Brillo propio de los píxeles emisivos del pack.",
 				"Self-light from the pack's emissive pixels.", 0, 200, 100),
 			h("Materiales", "Materials"),
+			pct(U + "leafWind", "Viento en hojas", "Leaf wind", "Movimiento suave de las hojas; cero lo desactiva.",
+				"Gentle leaf movement; zero disables it.", 0, 200, 100),
 			pct(U + "leafLight", "Luz en hojas", "Leaf light", "Cuánta luz pasa por las hojas y plantas a contraluz.",
 				"How much light shines through leaves and plants against the sun.", 0, 300, 100),
 			pct(U + "emissive", "Bloques de luz", "Glowing blocks", "Cuánto brillan las llamas, la glowstone y la lava.",

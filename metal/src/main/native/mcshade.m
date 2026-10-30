@@ -184,6 +184,13 @@ void mc_shade_set(id<MTLBuffer> frame, uint64_t offset, id<MTLTexture> shadow, i
 	shadowSampler = sampler;
 }
 
+// LeafFrame.OFFSET: a separate 272-byte region of the frame ring, shared by colour and shadow draws.
+void mc_shade_bind_leaves(id<MTLRenderCommandEncoder> r, int mesh) {
+	if (!r || !frameBuffer) return;
+	if (mesh) [r setMeshBuffer:frameBuffer offset:frameOffset + 2304 atIndex:30];
+	else [r setVertexBuffer:frameBuffer offset:frameOffset + 2304 atIndex:30];
+}
+
 int mc_shade_bind_render(id<MTLRenderCommandEncoder> r);
 
 // Binds the globals into enc's open render encoder (nothing when none is open or nothing is set yet).
