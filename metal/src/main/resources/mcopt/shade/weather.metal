@@ -67,9 +67,10 @@ static float4 shadeWeather3(float4 c, float4 pixel, constant ShadeFrame &f, cons
 	float3 lit = shadeOut(light * (0.9 + 0.2 * l) * float3(0.97, 0.99, 1.0), f, shadeExposure(f, g));
 	// thin and glassy: mostly transparent, and the columns right in front of the eye (a block wide on screen) fade out
 	// (snow: flakes are opaque, about M2.1's 0.55; L.wet.w is 0 while it snows)
-	// Keep the texture's feathered edges faint; distant overlapping streaks dissolve instead of forming a white curtain.
-	float rainAlpha = (0.14 + 0.16 * saturate(L.wet.w)) * (0.65 + 0.35 * saturate(c.a))
-		* smoothstep(0.7, 3.5, dist) * mix(1.0, 0.45, smoothstep(12.0, 32.0, dist));
+	// Keep the texture's alpha once: a second alpha-dependent attenuation erased fine drops.
+	// Distant overlapping streaks still dissolve instead of forming a white curtain.
+	float rainAlpha = (0.24 + 0.24 * saturate(L.wet.w))
+		* smoothstep(0.7, 2.5, dist) * mix(1.0, 0.45, smoothstep(12.0, 32.0, dist));
 	float a = c.a * mix(rainAlpha, 0.55 * smoothstep(1.2, 4.5, dist), snowK);
 	return float4(lit, a);
 }

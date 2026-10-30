@@ -7,7 +7,7 @@ int main(int argc,const char **argv){@autoreleasepool{
  ok(argc==4,@"usage: check source-dir probe.metal fixture-dir");NSError *err=nil;id<MTLDevice>d=MTLCreateSystemDefaultDevice();ok(d!=nil,@"GPU unavailable");id<MTLCommandQueue>q=[d newCommandQueue];NSString *dir=@(argv[1]),*fd=@(argv[3]);
  NSString *probe=[NSString stringWithContentsOfFile:@(argv[2]) encoding:NSUTF8StringEncoding error:&err];
  NSData*ff=[NSData dataWithContentsOfFile:[fd stringByAppendingPathComponent:@"noon_up.frame"]],*ll=[NSData dataWithContentsOfFile:[fd stringByAppendingPathComponent:@"noon_up.look"]];ok(ff.length>=1024&&(ll.length==1088||ll.length==1120),@"fixture sizes");
- float before[2][7][160*4];float minRatio=1,maxRatio=0;
+ float before[2][7][160*4];float minRatio=INFINITY,maxRatio=0;
  for(int lite=0;lite<2;lite++)for(int version=0;version<2;version++){
   NSString *src=[NSString stringWithContentsOfFile:[dir stringByAppendingPathComponent:version?@"after.metal":@"before.metal"] encoding:NSUTF8StringEncoding error:&err];
   src=[NSString stringWithFormat:@"#define MCOPT_HDR\n%@%@\n%@\n%@",lite?@"#define SHADE_WX_LITE\n":@"",src,@"",probe];
@@ -24,11 +24,11 @@ int main(int argc,const char **argv){@autoreleasepool{
     for(int c=0;c<4;c++)ok(isfinite(v[i*4+c])&&v[i*4+c]>=0,@"finite nonnegative rain");ok(v[i*4+3]<=1,@"rain alpha bounded");
     if(!version)continue;
     if(scene==2||scene>=5)for(int c=0;c<4;c++)ok(fabsf(v[i*4+c]-before[lite][scene][i*4+c])<.00001,@"snow/media/dimension regression");
-    if(scene<2 && (i/16)%5>=2 && i%16>0){float r=v[i*4+3]/before[lite][scene][i*4+3];ok(r<1,@"rain curtain opacity not reduced");minRatio=fminf(minRatio,r);maxRatio=fmaxf(maxRatio,r);}
+    if(scene<2 && (i/16)%5>=2 && i%16>0){float r=v[i*4+3]/before[lite][scene][i*4+3];ok(r>1.5&&v[i*4+3]<.5,@"visible soft rain");minRatio=fminf(minRatio,r);maxRatio=fmaxf(maxRatio,r);}
     if(i%16==0)ok(v[i*4+3]==0,@"empty rain texel opaque");
    }
    if(!version)memcpy(before[lite][scene],v,160*16);
   }
  }
- printf("PASS 28 rain cases (full/lite, light/heavy/night/snow/lightning/media/dimension), opacity %.0f-%.0f%% lower beyond 6 blocks\n",100*(1-maxRatio),100*(1-minRatio));
+ printf("PASS 28 rain cases (full/lite, light/heavy/night/snow/lightning/media/dimension), opacity %.0f-%.0f%% stronger beyond 6 blocks\n",100*(minRatio-1),100*(maxRatio-1));
 }return 0;}
