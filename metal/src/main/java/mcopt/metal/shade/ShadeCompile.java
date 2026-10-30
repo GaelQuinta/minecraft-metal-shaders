@@ -136,6 +136,7 @@ public final class ShadeCompile {
 			warmTotal = warm.size();
 			WARM_LEFT.set(warm.size());
 			for (Map.Entry<String, Runnable> w : warm) execute(new Job(() -> warmOne(w.getKey(), w.getValue()), PRIORITY_WARM));
+			if (WARM) mcopt.metal.shade.terrain.ShadeTerrain.warmUp(ctx);
 		} catch (Throwable t) {
 			// no pool: everything compiles where it did before
 			MetalShaderRegistry.setPrewarmRunner(null);
