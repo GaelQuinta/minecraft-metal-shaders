@@ -103,4 +103,38 @@ static inline float4 shadeCloudsDome(float3 dir, constant ShadeLook &L, texture2
 	return float4(c.rgb * k, mix(1.0, c.a, k));
 }
 
+
+// Foreground clouds on DH surfaces: compare distances from any camera height.
+// A high peak may be behind a cloud even when the viewer is below the cloud base.
+// Near terrain is handled by cloud_over; empty sky already contains its cloud composite.
+static inline float4 shadeCloudsForeground(float3 p, constant ShadeLook &L, constant ShadeResources &R) {
+	float k = 1.0;
+	if (L.clouds0.w < 0.5) return float4(0.0, 0.0, 0.0, 1.0);
+	float4 cp = L.viewProjNoJitter * float4(p, 0.0);
+	if (cp.w <= 1e-6) return float4(0.0, 0.0, 0.0, 1.0);
+	float2 uv = cp.xy / cp.w * 0.5 + 0.5;
+	if (any(uv < 0.0) || any(uv > 1.0)) return float4(0.0, 0.0, 0.0, 1.0);
+	float cd;
+	if (L.clouds0.w > 1.5) {
+		constexpr sampler point(filter::nearest, address::clamp_to_edge);
+		uint4 q = uint4(R.cloudHistoryData.gather(point, uv)) & 0xfffu;
+		float2 t = fract(uv * float2(R.cloudHistoryData.get_width(), R.cloudHistoryData.get_height()) - 0.5);
+		float4 w = float4((1.0-t.x)*t.y, t.x*t.y, t.x*(1.0-t.y), (1.0-t.x)*(1.0-t.y));
+		w = select(float4(0.0), w, q != 4095u);
+		float sum = dot(w, float4(1.0));
+		if (sum <= 1e-4) return float4(0.0, 0.0, 0.0, 1.0);
+		cd = dot(w, exp2(float4(q) * (1.0/256.0))) / sum;
+	} else {
+		float2 size = float2(R.cloudDistance.get_width(), R.cloudDistance.get_height());
+		float2 pos = clamp(uv * size - 0.5, float2(0.0), size - 1.0);
+		uint2 a = uint2(pos), b = min(a + 1u, uint2(size) - 1u);
+		float2 t = fract(pos);
+		cd = mix(mix(R.cloudDistance.read(a).r, R.cloudDistance.read(uint2(b.x,a.y)).r, t.x),
+			mix(R.cloudDistance.read(uint2(a.x,b.y)).r, R.cloudDistance.read(b).r, t.x), t.y);
+	}
+	k *= smoothstep(cd * 0.8, cd * 1.05, length(p));
+	float4 cloud = shadeCloudsScreen(normalize(p), L, R.cloudScreen);
+	return float4(cloud.rgb * k, mix(1.0, cloud.a, k));
+}
+
 #endif

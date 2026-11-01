@@ -31,7 +31,7 @@ final class CloudNative {
 	private static final MethodHandle NEW = fn("mc_clouds_new", JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle SIZE = fn("mc_clouds_size", JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT);
 	private static final MethodHandle RENDER = fn("mc_clouds_render", null, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT);
-	private static final MethodHandle OUTPUTS = fn("mc_clouds_outputs", null, JAVA_LONG, JAVA_LONG);
+	private static final MethodHandle OUTPUTS = fn("mc_clouds_outputs", JAVA_INT, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle TIMES = fn("mc_clouds_times", null, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle FREE = fn("mc_clouds_free", null, JAVA_LONG);
 	private static final MethodHandle VANILLA = fn("mc_clouds_vanilla", JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT);
@@ -119,10 +119,10 @@ final class CloudNative {
 		}
 	}
 
-	/** out: 3 pointers: shadow map, dome, screen history. */
-	static void outputs(long state, long out) {
+	/** out: shadow, dome, screen, march distance and stable history data; returns 1 for stable history. */
+	static int outputs(long state, long out) {
 		try {
-			OUTPUTS.invokeExact(state, out);
+			return (int) OUTPUTS.invokeExact(state, out);
 		} catch (Throwable t) {
 			throw rethrow(t);
 		}
