@@ -26,13 +26,10 @@ fragment float4 cloudpreview_fs(PVOut in [[stage_in]], constant ShadeFrame &f [[
 		c = mix(c, shadeSkyLookup(float3(dir.x, 0.0, dir.z), lut, ls, f), fog);
 		if (mode.x == 2) c = float3(cs);
 	} else {
-		c = shadeSkyLookup(dir, lut, ls, f);
-		float cosA = dot(dir, f.sunDirWorld.xyz);
-		float rho = acos(clamp(cosA, -1.0, 1.0)) / L.sunGeom.y;
-		if (f.lightDirWorld.w > 0.5) {
-			c += f.sunColor.rgb * max(shadeHG(cosA, 0.85) - shadeHG(cosA, 0.6), 0.0) * 0.35 * f.atmosphere.z;
-			if (rho < 1.0) c += f.sunColor.rgb * 160.0;
-		}
+		// Daytime only: this preview has no Milky Way texture bound.
+		c = f.lightDirWorld.w > 0.5
+		    ? shadeSkyRadiance2(dir, lut, ls, f, L, lut, 1.4 * f.screen.w)
+		    : shadeSkyLookup(dir, lut, ls, f);
 		float4 cl = mode.x == 1 ? shadeCloudsDome(dir, L, dome) : shadeCloudsScreen(dir, L, hist);
 		c = c * cl.a + cl.rgb;
 		if (mode.x == 3) c = float3(1.0 - cl.a) / ex;

@@ -483,8 +483,8 @@ static float3 shadeMoonDisc(float2 q, float3 md, float3 pole, float phase) {
 	return float3(albedo * (lit * 3.2 + earthshine)) * limb;
 }
 
-// The overworld sky's radiance toward unit dir (pre-exposure): the atmosphere (sky-view LUT), a procedural sun disc with
-// per-channel limb darkening and its Mie aureole, the moon, stars and the Milky Way at night. pixelAngle: radians per pixel.
+// The overworld sky's radiance toward unit dir (pre-exposure): the atmosphere (sky-view LUT), a soft solar profile
+// and its Mie aureole, the moon, stars and the Milky Way at night. pixelAngle: radians per pixel.
 static float3 shadeSkyRadiance2(float3 dir, texture2d<half> lut, sampler s, constant ShadeFrame &f, constant ShadeLook &L,
                                 texture2d<half> milkyWay, float pixelAngle) {
 	if (shadeDev(f, SHADE_DEV_FLAT_SKY)) return float3(0.3, 0.5, 0.8);
@@ -497,19 +497,19 @@ static float3 shadeSkyRadiance2(float3 dir, texture2d<half> lut, sampler s, cons
 	float sunUp = smoothstep(-0.12, 0.0, sd.y);
 	if (sunUp > 0.0 && f.sunColor.w >= 0.0) {
 		float3 sunLight = f.lightDirWorld.w > 0.5 ? f.sunColor.rgb : float3(0.0);
-		float aureole = (shadeHG(cosA, 0.85) - shadeHG(cosA, 0.6)) * 0.35 * f.atmosphere.z * (1.0 - 0.7 * rain);
-		sky += sunLight * max(aureole, 0.0) * above;
-		float rs = L.sunGeom.y;
-		float ang = acos(clamp(cosA, -1.0, 1.0));
-		float rho = ang / rs;
-		if (rho < 1.3) {
-			float w = 1.5 * pixelAngle / rs;
-			float mu = sqrt(saturate(1.0 - rho * rho));
-			float3 u = float3(0.40, 0.55, 0.70), v = float3(0.25, 0.20, 0.12);
-			float3 I = 1.0 - u * (1.0 - mu) - v * (1.0 - mu) * (1.0 - mu);
-			float edge = smoothstep(1.0 + w, 1.0 - w, rho);
-			sky += sunLight * (160.0 * (1.0 - 0.9 * rain)) * I * edge * above;
-		}
+		// Positive scattering lobes merge the solar glow into the surrounding sky.
+		// Subtracting a broad lobe made a finite circular halo boundary at about 20 degrees.
+		float aureole = (0.35 * shadeHG(cosA, 0.85) + 1.2 * shadeHG(cosA, 0.65))
+		                * f.atmosphere.z * (1.0 - 0.7 * rain);
+		sky += sunLight * aureole * above;
+		// A lower, broad-winged profile avoids a clipped white disc with a separate-looking halo.
+		// Its angular energy (20 * 3.5) is within 2% of the former Gaussian (48 / ln(2)); surface sunlight is unchanged.
+		float rs = max(L.sunGeom.y, 1e-5);
+		float rho2 = max(2.0 * (1.0 - cosA), 0.0) / (rs * rs);
+		float width2 = 3.5 + (pixelAngle * pixelAngle) / (6.0 * rs * rs);
+		float falloff = 1.0 + rho2 / width2;
+		float disc = (70.0 / width2) / (falloff * falloff);
+		sky += sunLight * (1.0 - 0.9 * rain) * disc * above;
 	}
 	bool procedural = shadeFeature(L, SHADE_FEATURE_STARS);
 	float night = L.night.x;
