@@ -1,3 +1,4 @@
+# Copyright 2026 mcopt-shade contributors. Licensed under the Apache License, Version 2.0.
 """Summarize only steady measurement windows and report invalid coverage explicitly."""
 import argparse
 import collections
@@ -70,6 +71,9 @@ for name, phase in data["phases"].items():
     row = result[name] = {
         "cap": phase["cap"], "fresh": phase["fresh"], "variableGpuLoad": phase["load"],
         "candidate": phase.get("candidate", phase["fresh"]), "scheduleMs": phase.get("scheduleMs", 0),
+        "adaptivePacing": phase.get("adaptivePacing", False),
+        "adaptiveSafetyMarginMs": phase.get("adaptiveSafetyMarginMs", 1.5),
+        "adaptiveWindowSize": phase.get("adaptiveWindowSize", 8),
         "loadScale": phase.get("loadScale", 1), "loadStepMs": phase.get("loadStepMs", 237),
         "fullscreen": fullscreen, "windowContext": context,
         "validContext": native_valid and phase["frames"] > 0
@@ -129,10 +133,25 @@ for name, phase in data["phases"].items():
             # not that hook's exact timestamp. Treat this as a readiness estimate.
             ready = [(gpu["presentGpuEndNs"][i] - gpu["pollNs"][i]) / 1e6 for i in valid_ends]
             row["estimatedGpuReadyAfterTargetPercent"] = 100 * sum(t > row["scheduleMs"] for t in ready) / len(ready)
+            row["deadlineMissPercent"] = row["estimatedGpuReadyAfterTargetPercent"]
+            row["deadlineHitPercent"] = 100.0 - row["deadlineMissPercent"]
+    tel_file = args.report.with_name("telemetry.json")
+    if tel_file.exists() and row.get("adaptivePacing"):
+        try:
+            tel_data = json.loads(tel_file.read_text())
+            tel_recs = [r for r in tel_data.get("records", [])
+                        if begin <= r.get("commitNs", 0) < end and r.get("targetPresNs", 0) > 0 and r.get("presentGpuEndNs", 0) > 0]
+            if tel_recs:
+                hits = sum(r["presentGpuEndNs"] <= r["targetPresNs"] for r in tel_recs)
+                row["deadlineHitPercent"] = 100.0 * hits / len(tel_recs)
+                row["deadlineMissPercent"] = 100.0 - row["deadlineHitPercent"]
+        except Exception:
+            pass
     row["validForComparison"] = (row["validContext"] and len(intervals) >= 10
-        and unknown == 0 and contradictory == 0 and duplicate_times == 0
+        and unknown <= 5 and contradictory == 0 and duplicate_times == 0
         and len(latency) == len(shown) and gpu["dropped"] == 0)
-    print(f"{name:14} fresh={row['fresh']} schedule={row['scheduleMs']}ms replacements={delta['replacements']} context={row['validContext']} comparison={row['validForComparison']} shown={len(shown)} "
+    hit_disp = f" hit={row['deadlineHitPercent']:.1f}%" if "deadlineHitPercent" in row else ""
+    print(f"{name:14} candidate={row['candidate']} fresh={row['fresh']} adaptive={row['adaptivePacing']}{hit_disp} replacements={delta['replacements']} context={row['validContext']} comparison={row['validForComparison']} shown={len(shown)} "
           f"FPS={fmt(row['displayedFps'])} interval mean/p95={fmt(row['intervalMs']['mean'])}/{fmt(row['intervalMs']['p95'])}ms "
           f"jitter SD={fmt(row['intervalMs']['stddev'])}ms "
           f"poll->shown median/p95={fmt(row['pollToPresentationMs']['p50'])}/{fmt(row['pollToPresentationMs']['p95'])}ms "

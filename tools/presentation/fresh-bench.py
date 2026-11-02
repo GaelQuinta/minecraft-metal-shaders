@@ -1,3 +1,4 @@
+# Copyright 2026 mcopt-shade contributors. Licensed under the Apache License, Version 2.0.
 """Fresh-frame A/B test; cached dependencies and a disposable offline world."""
 from pathlib import Path
 import argparse
@@ -24,11 +25,15 @@ parser.add_argument("--sample-ms", type=int, default=10000)
 parser.add_argument("--load-scale", type=float, default=1.0, help="GPU work multiplier, 0.25 to 4; affects only g phases")
 parser.add_argument("--load-step-ms", type=int, default=237, help="Time between GPU workload changes, 100 to 5000 ms")
 parser.add_argument("--output-height", type=int, help="Shader output height; zero keeps native output")
+parser.add_argument("--telemetry", action="store_true", help="Record high-precision in-memory telemetry to telemetry.json")
+parser.add_argument("--adaptive-pacing", action="store_true", help="Enable GPU-readiness adaptive pacing")
+parser.add_argument("--adaptive-safety-margin-ms", type=float, default=1.5, help="Safety margin in ms for adaptive pacing")
+parser.add_argument("--adaptive-window-size", type=int, default=8, help="Window size for GPU duration estimator")
 opts = parser.parse_args()
 if not 0 <= opts.schedule_ms <= 50 or (opts.fresh and opts.schedule_ms):
     parser.error('Use a schedule of 0–50 ms, separately from --fresh')
-if not re.fullmatch(r'\d+g?(,\d+g?)*', opts.phases) or any(int(x.rstrip('g')) not in range(10, 261, 10) for x in opts.phases.split(',')):
-    parser.error('Phases must use caps from 10 to 260 in steps of 10, with optional g')
+if not re.fullmatch(r'\d+g?(,\d+g?)*', opts.phases) or any(int(x.rstrip('g')) not in range(10, 261, 5) for x in opts.phases.split(',')):
+    parser.error('Phases must use caps from 10 to 260 in steps of 5, with optional g')
 if not 1000 <= opts.sample_ms <= 60000:
     parser.error('Sample duration must be 1000–60000 ms')
 if not .25 <= opts.load_scale <= 4:
@@ -94,7 +99,7 @@ args = [
     "-Dmcopt.shade=true", "-Dmcopt.shade.diag=false",
     f"-Dmcopt.metal.presentFresh={str(opts.fresh).lower()}",
     f"-Dmcopt.metal.presentScheduleMs={opts.schedule_ms}",
-    f"-Dmcopt.bench.candidate={str(opts.fresh or opts.schedule_ms > 0).lower()}",
+    f"-Dmcopt.bench.candidate={str(opts.fresh or opts.schedule_ms > 0 or opts.adaptive_pacing).lower()}",
     "-Dmcopt.metal.presentQueue=acquire",
     "-Dmcopt.metal.gpuTimes=true", "-Dmcopt.metal.latency=true",
     f"-Dmcopt.bench.output={output / 'measurements.json'}",
@@ -104,6 +109,10 @@ args = [
     f"-Dmcopt.bench.phases={opts.phases}", f"-Dmcopt.bench.sampleMs={opts.sample_ms}",
     f"-Dmcopt.bench.loadScale={opts.load_scale}",
     f"-Dmcopt.bench.loadStepMs={opts.load_step_ms}",
+    *(["-Dmcopt.metal.telemetry=true", f"-Dmcopt.metal.telemetryOutput={output / 'telemetry.json'}"] if opts.telemetry else []),
+    *(["-Dmcopt.metal.adaptivePacing=true",
+       f"-Dmcopt.metal.adaptiveSafetyMarginMs={opts.adaptive_safety_margin_ms}",
+       f"-Dmcopt.metal.adaptiveWindowSize={opts.adaptive_window_size}"] if opts.adaptive_pacing else []),
     "-classpath", ":".join(cp), "net.fabricmc.loader.impl.launch.knot.KnotClient",
     "--username", "PacingTest", "--uuid", "00000000-0000-0000-0000-000000000001",
     "--accessToken", "0", "--version", "26.3", "--gameDir", str(game),
@@ -113,7 +122,11 @@ if opts.fullscreen:
 (output / "manifest.json").write_text(json.dumps({
     "jar": str(jar), "sha256": hashlib.sha256(jar.read_bytes()).hexdigest(),
     "game": str(game), "args": args, "fresh": opts.fresh,
-    "scheduleMs": opts.schedule_ms, "candidate": opts.fresh or opts.schedule_ms > 0,
+    "telemetry": opts.telemetry,
+    "adaptivePacing": opts.adaptive_pacing,
+    "adaptiveSafetyMarginMs": opts.adaptive_safety_margin_ms,
+    "adaptiveWindowSize": opts.adaptive_window_size,
+    "scheduleMs": opts.schedule_ms, "candidate": opts.fresh or opts.schedule_ms > 0 or opts.adaptive_pacing,
     "fullscreen": opts.fullscreen, "hdr": not opts.sdr,
     "phases": opts.phases, "sampleMs": opts.sample_ms, "outputHeight": opts.output_height,
     "loadScale": opts.load_scale,

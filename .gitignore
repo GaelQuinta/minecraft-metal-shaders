@@ -9,3 +9,5 @@ mcopt-pack-cache/
 dist/
 .replay-stamp
 .replay-lineage
+.DS_Store
+bin/

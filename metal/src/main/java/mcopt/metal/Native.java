@@ -1,3 +1,19 @@
+/*
+ * Copyright 2026 mcopt-shade contributors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package mcopt.metal;
 
 import java.io.IOException;
@@ -118,6 +134,14 @@ final class Native {
 	private static final MethodHandle PRESENT_SCHEDULE = fn("mc_present_schedule", false, null, JAVA_DOUBLE);
 	private static final MethodHandle PRESENT_FRAME_START = fn("mc_present_frame_start", false, null);
 	private static final MethodHandle PRESENT_FRESH_STAT = fn("mc_present_fresh_stat", false, JAVA_LONG, JAVA_INT);
+	private static final MethodHandle TELEMETRY_ENABLE = fn("mc_telemetry_enable", false, null, JAVA_INT);
+	private static final MethodHandle TELEMETRY_IS_ENABLED = fn("mc_telemetry_is_enabled", false, JAVA_INT);
+	private static final MethodHandle TELEMETRY_COUNT = fn("mc_telemetry_count", false, JAVA_LONG);
+	private static final MethodHandle TELEMETRY_DUMP_JSON = fn("mc_telemetry_dump_json", false, JAVA_INT, JAVA_LONG);
+	private static final MethodHandle ADAPTIVE_PACING_CONFIG = fn("mc_adaptive_pacing_config", false, null, JAVA_INT, JAVA_DOUBLE, JAVA_INT);
+	private static final MethodHandle ADAPTIVE_PACING_IS_ENABLED = fn("mc_adaptive_pacing_is_enabled", false, JAVA_INT);
+	private static final MethodHandle ADAPTIVE_PACING_GPU_EST_MS = fn("mc_adaptive_pacing_gpu_est_ms", false, JAVA_DOUBLE);
+	private static final MethodHandle ADAPTIVE_PACING_STAT = fn("mc_adaptive_pacing_stat", false, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle PACE_ADAPT = fn("mc_pace_adapt", false, null, JAVA_INT);
 	private static final MethodHandle PACE_FOLLOW = fn("mc_pace_follow", false, null, JAVA_INT);
 	private static final MethodHandle PACE_DISPLAY = fn("mc_pace_display", false, JAVA_INT);
@@ -252,6 +276,14 @@ final class Native {
 	static void presentSchedule(double seconds) { try { PRESENT_SCHEDULE.invokeExact(seconds); } catch (Throwable t) { throw rethrow(t); } }
 	static void presentFrameStart() { try { PRESENT_FRAME_START.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static long presentFreshStat(int kind) { try { return (long) PRESENT_FRESH_STAT.invokeExact(kind); } catch (Throwable t) { throw rethrow(t); } }
+	static void telemetryEnable(int on) { try { TELEMETRY_ENABLE.invokeExact(on); } catch (Throwable t) { throw rethrow(t); } }
+	static boolean telemetryIsEnabled() { try { return (int) TELEMETRY_IS_ENABLED.invokeExact() != 0; } catch (Throwable t) { throw rethrow(t); } }
+	static long telemetryCount() { try { return (long) TELEMETRY_COUNT.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
+	static int telemetryDumpJson(long pathCStr) { try { return (int) TELEMETRY_DUMP_JSON.invokeExact(pathCStr); } catch (Throwable t) { throw rethrow(t); } }
+	static void adaptivePacingConfig(boolean enabled, double safetyMarginMs, int windowSize) { try { ADAPTIVE_PACING_CONFIG.invokeExact(enabled ? 1 : 0, safetyMarginMs, windowSize); } catch (Throwable t) { throw rethrow(t); } }
+	static boolean adaptivePacingIsEnabled() { try { return (int) ADAPTIVE_PACING_IS_ENABLED.invokeExact() != 0; } catch (Throwable t) { throw rethrow(t); } }
+	static double adaptivePacingGpuEstMs() { try { return (double) ADAPTIVE_PACING_GPU_EST_MS.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
+	static long adaptivePacingStat(int kind) { try { return (long) ADAPTIVE_PACING_STAT.invokeExact(kind); } catch (Throwable t) { throw rethrow(t); } }
 	static int cadenceState(int index) { try { return (int) CADENCE_STATE.invokeExact(index); } catch (Throwable t) { throw rethrow(t); } }
 	static long cadencePresentGpuEnd(int index) { try { return (long) CADENCE_PRESENT_GPU_END.invokeExact(index); } catch (Throwable t) { throw rethrow(t); } }
 	static void sleepPrecise(long ns) { try { SLEEP_PRECISE.invokeExact(ns); } catch (Throwable t) { throw rethrow(t); } }

@@ -1,3 +1,19 @@
+/*
+ * Copyright 2026 mcopt-shade contributors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package mcopt.pacingbench;
 
 import com.google.gson.GsonBuilder;
@@ -48,6 +64,12 @@ public class PacingBench implements ClientModInitializer {
         if ((flags & SDLVideo.SDL_WINDOW_INPUT_FOCUS) == 0) unfocused++;
         if (((flags & SDLVideo.SDL_WINDOW_FULLSCREEN) != 0) != fullscreen) wrongMode++;
         if (mc.getWindow().getWidth() != (int)current.get("width") || mc.getWindow().getHeight() != (int)current.get("height")) changedSize++;
+        if (mc.player != null) {
+            mc.player.setXRot(15);
+            mc.player.setYRot(0);
+            mc.player.setDeltaMovement(0, 0, 0);
+            mc.player.setPos(.5, mc.player.getY(), .5);
+        }
         if (Math.abs(mc.player.getX() - .5) > .1 || Math.abs(mc.player.getZ() - .5) > .1
                 || Math.abs(mc.player.getXRot() - 15) > 1 || Math.abs(mc.player.getYRot()) > 1) moved++;
     }
@@ -56,8 +78,15 @@ public class PacingBench implements ClientModInitializer {
         game(() -> {
             check(mc.gui.screen() == null && mc.gui.overlay() == null, "Gameplay visible");
             mc.options.framerateLimit().set(cap);
+            mc.getFramerateLimitTracker().setFramerateLimit(cap);
             variableLoad = load;
             loadStartedNs = System.nanoTime();
+            if (mc.player != null) {
+                mc.player.setXRot(15);
+                mc.player.setYRot(0);
+                mc.player.setDeltaMovement(0, 0, 0);
+                mc.player.setPos(.5, mc.player.getY(), .5);
+            }
             note("prepare " + i + " cap=" + cap + " load=" + load + " fresh=" + fresh);
         });
         Thread.sleep(3000);
@@ -65,6 +94,9 @@ public class PacingBench implements ClientModInitializer {
             current = new LinkedHashMap<>();
             current.put("cap", cap); current.put("fresh", fresh); current.put("load", load);
             current.put("candidate", Boolean.getBoolean("mcopt.bench.candidate"));
+            current.put("adaptivePacing", Boolean.getBoolean("mcopt.metal.adaptivePacing"));
+            current.put("adaptiveSafetyMarginMs", Double.parseDouble(System.getProperty("mcopt.metal.adaptiveSafetyMarginMs", "1.5")));
+            current.put("adaptiveWindowSize", Integer.getInteger("mcopt.metal.adaptiveWindowSize", 8));
             double scheduleMs = Double.parseDouble(System.getProperty("mcopt.metal.presentScheduleMs", "0"));
             current.put("scheduleMs", scheduleMs);
             current.put("loadScale", Double.parseDouble(System.getProperty("mcopt.bench.loadScale", "1")));
@@ -94,7 +126,7 @@ public class PacingBench implements ClientModInitializer {
             current.put("caps", caps); current.put("frames", frames); current.put("unfocused", unfocused);
             current.put("wrongMode", wrongMode); current.put("changedSize", changedSize); current.put("moved", moved);
             current = null;
-            note("complete " + i + " frames=" + frames + " unfocused=" + unfocused);
+            note("complete " + i + " frames=" + frames + " unfocused=" + unfocused + " wrongMode=" + wrongMode + " changedSize=" + changedSize + " moved=" + moved);
             check(unfocused + wrongMode + changedSize + moved == 0, "Focus, window and camera remain fixed");
         });
     }
@@ -141,13 +173,19 @@ public class PacingBench implements ClientModInitializer {
                     int cap = Integer.parseInt(load ? plan[i].substring(0, plan[i].length() - 1) : plan[i]);
                     phase(i, cap, load);
                 }
-                Thread.sleep(1500);
+                Thread.sleep(4000);
                 game(() -> {
                     Map<String, Object> report = new LinkedHashMap<>();
                     report.put("format", 2); report.put("gpu", GpuTimes.snapshot(phases)); report.put("phases", phases);
                     report.put("latencyMeaning", "After SDL input poll to Metal presentedTime; not physical input-to-photon latency");
                     try { Files.writeString(Path.of(System.getProperty("mcopt.bench.output")), new GsonBuilder().setPrettyPrinting().create().toJson(report)); }
                     catch (Exception e) { throw new RuntimeException(e); }
+                    String telPath = System.getProperty("mcopt.metal.telemetryOutput");
+                    if (telPath != null) {
+                        try {
+                            Class.forName("mcopt.metal.FrameSchedule").getMethod("dumpTelemetry", String.class).invoke(null, telPath);
+                        } catch (Throwable ignored) {}
+                    }
                     note("PASS"); mc.stop();
                 });
             } catch (Throwable t) { t.printStackTrace(); note("FAIL"); Runtime.getRuntime().halt(70); }

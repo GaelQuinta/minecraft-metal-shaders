@@ -1,7 +1,9 @@
+// Copyright 2026 mcopt-shade contributors. Licensed under the Apache License, Version 2.0.
 // Thin C surface over Metal for the Java backend (called through java.lang.foreign).
 // Objects cross the boundary as retained pointers; Java owns them and hands them back to mc_release.
 // Built without ARC so ownership is explicit. Hot encoder calls allocate nothing, so they need no autorelease pool.
 #include <stdatomic.h>
+#import <AppKit/AppKit.h>
 #import "mcmetal.h"
 #include "mcpresentfresh.h"
 #import <CoreVideo/CoreVideo.h>
@@ -953,6 +955,7 @@ void mc_pre_fill(Enc *enc, id<MTLBuffer> buffer, uint64_t offset, uint64_t lengt
 }
 
 static void pqSubmit(void);
+static void mc_commit_hooks(id<MTLCommandBuffer> c);
 
 // Commits everything recorded so far (the pre command buffer first). Returns the retained main command buffer so Java can
 // wait on it (frame pacing, fences); it completes after the pre one.
@@ -979,6 +982,7 @@ id<MTLCommandBuffer> mc_enc_commit(Enc *enc) {
 	endRender(enc);
 	id<MTLCommandBuffer> c = cmd(enc);
 	if (diagOn) [c addCompletedHandler:^(id<MTLCommandBuffer> cb) { diagReport("main", n, t, big, mainBytes, cb); }];
+	mc_commit_hooks(c);
 	[c commit];
 	if (gcOn) {  // -Dmcopt.metal.gpuCount: the next frame's encoders get a new record and frame index
 		gcFrame++;
@@ -1748,6 +1752,8 @@ id<MTLRenderPipelineState> mc_xdr_present_pso(id<MTLDevice> device);
 
 uint32_t mc_layer_display(CAMetalLayer *layer); // mcxdr.m: the display the layer's window is on (0 = unknown)
 static CAMetalLayer *paceLayer; // the surface's layer (mc_layer_configure): the pacer can follow its window's display
+static void startDisplayLink(void);
+static int adaptivePacingEnabled;
 
 void mc_layer_configure(Ctx *ctx, CAMetalLayer *layer, int width, int height, int vsync) {
 	layer.device = ctx->device;
@@ -1763,6 +1769,7 @@ void mc_layer_configure(Ctx *ctx, CAMetalLayer *layer, int width, int height, in
 	layer.framebufferOnly = YES;
 	layer.drawableSize = CGSizeMake(width, height);
 	paceLayer = layer;
+	if (adaptivePacingEnabled) startDisplayLink();
 	// vsync: bit 0 = display sync; bits 8-15 = maximumDrawableCount (0 = the default, 3; -Dmcopt.metal.drawables)
 	layer.displaySyncEnabled = (vsync & 1) != 0;
 	int drawables = (vsync >> 8) & 0xff;
@@ -1886,6 +1893,87 @@ void mc_sleep_precise(int64_t ns) {
 	}
 }
 
+// ---- Phase 4 GPU-Readiness Adaptive Pacing Engine ----
+#define ADAPTIVE_MAX_WINDOW 64
+static double adaptiveSafetyMargin = 0.0015; // default 1.5 ms
+static uint32_t adaptiveWindowSize = 8;      // default 8 frames
+static _Atomic double adaptiveDurRing[ADAPTIVE_MAX_WINDOW];
+static _Atomic uint32_t adaptiveRingIndex;
+static _Atomic uint32_t adaptiveRingCount;
+static _Atomic double adaptiveGpuEst;         // current estimated t_gpu in seconds
+static _Atomic long adaptiveTimedPresents;
+static _Atomic long adaptiveFallbackPresents;
+
+void mc_adaptive_pacing_config(int enabled, double safetyMarginMs, int windowSize) {
+	adaptivePacingEnabled = enabled != 0;
+	adaptiveSafetyMargin = (safetyMarginMs > 0 && isfinite(safetyMarginMs)) ? (safetyMarginMs / 1000.0) : 0.0015;
+	adaptiveWindowSize = (windowSize >= 1 && windowSize <= ADAPTIVE_MAX_WINDOW) ? (uint32_t)windowSize : 8;
+	if (adaptivePacingEnabled) {
+		startDisplayLink();
+	}
+}
+
+int mc_adaptive_pacing_is_enabled(void) {
+	return adaptivePacingEnabled;
+}
+
+double mc_adaptive_pacing_gpu_est_ms(void) {
+	return atomic_load(&adaptiveGpuEst) * 1e3;
+}
+
+long mc_adaptive_pacing_stat(int kind) {
+	switch (kind) {
+		case 0: return atomic_load(&adaptiveTimedPresents);
+		case 1: return atomic_load(&adaptiveFallbackPresents);
+		case 2: return atomic_load(&adaptiveRingCount);
+		case 3: return (long)(atomic_load(&adaptiveGpuEst) * 1e6); // in microseconds
+		default: return 0;
+	}
+}
+
+static void adaptiveRecordGpuDuration(double dur) {
+	if (dur <= 0.0001 || dur > 0.500) return;
+	uint32_t w = adaptiveWindowSize;
+	if (w < 1) w = 8;
+	if (w > ADAPTIVE_MAX_WINDOW) w = ADAPTIVE_MAX_WINDOW;
+
+	uint32_t idx = atomic_fetch_add(&adaptiveRingIndex, 1) % w;
+	adaptiveDurRing[idx] = dur;
+	uint32_t count = atomic_fetch_add(&adaptiveRingCount, 1) + 1;
+	uint32_t n = count < w ? count : w;
+	double sum = 0.0;
+	for (uint32_t i = 0; i < n; i++) {
+		sum += adaptiveDurRing[i];
+	}
+	double avg = sum / n;
+	atomic_store(&adaptiveGpuEst, avg);
+}
+
+static double mc_quantize_cadence(double rawTarget, double now) {
+	double tau = refreshPeriod > 0 ? refreshPeriod : 0.0;
+	if (tau <= 0.001) {
+		if (paceLayer) {
+			NSScreen *scr = [NSScreen mainScreen];
+			if (scr && scr.minimumRefreshInterval > 0) {
+				tau = scr.minimumRefreshInterval;
+			}
+		}
+		if (tau <= 0.001) tau = 1.0 / 120.0; // 8.333ms base for ProMotion
+	}
+	double ref = nextRefresh;
+	if (ref > 0) {
+		if (ref < now) {
+			double behind = now - ref;
+			ref += ceil(behind / tau) * tau;
+		}
+		if (rawTarget <= ref) return ref;
+		double ahead = rawTarget - ref;
+		double k = ceil(ahead / tau);
+		return ref + k * tau;
+	}
+	return ceil(rawTarget / tau) * tau;
+}
+
 id<CAMetalDrawable> mc_layer_next(CAMetalLayer *layer) {
 	@autoreleasepool {
 		return [[layer nextDrawable] retain];
@@ -1914,7 +2002,21 @@ void mc_present(Enc *enc, id<CAMetalDrawable> drawable, id<MTLTexture> src) {
 		double encodedAt = CACurrentMediaTime();
 		[cmd(enc) addCompletedHandler:^(id<MTLCommandBuffer> b) { gpuLatency += (CACurrentMediaTime() - encodedAt - gpuLatency) * 0.1; }];
 		paceWatch(drawable);
-		[cmd(enc) presentDrawable:drawable];
+		double now = CACurrentMediaTime();
+		if (adaptivePacingEnabled && atomic_load(&adaptiveRingCount) > 0 && atomic_load(&adaptiveGpuEst) > 0) {
+			double est = atomic_load(&adaptiveGpuEst);
+			double rawTarget = encodedAt + est + adaptiveSafetyMargin;
+			double targetPres = mc_quantize_cadence(rawTarget, now);
+			if (targetPres > now && targetPres - now <= .10) {
+				[cmd(enc) presentDrawable:drawable atTime:targetPres];
+				atomic_fetch_add(&adaptiveTimedPresents, 1);
+			} else {
+				[cmd(enc) presentDrawable:drawable];
+				atomic_fetch_add(&adaptiveFallbackPresents, 1);
+			}
+		} else {
+			[cmd(enc) presentDrawable:drawable];
+		}
 	}
 }
 
@@ -1951,12 +2053,155 @@ static _Atomic long pqFreshChecks, pqRefreshed, pqFreshSavedNs, pqDrawableWaitNs
 static double pqScheduleBudget, pqFrameStart, pqDeadline[PQ_SLOTS];
 static _Atomic long pqTimedPresents, pqExpiredDeadlines;
 
+// ---- Phase 3 High-Precision Telemetry Subsystem ----
+#define MC_TELEMETRY_CAPACITY 65536
+
+typedef struct {
+	uint64_t frameId;            // Monotonic 64-bit frame ID
+	uint64_t inputNs;            // T_input (Mach absolute time in ns)
+	uint64_t commitNs;           // T_commit (Mach absolute time in ns)
+	uint64_t renderGpuStartNs;   // Render CB GPUStartTime (ns)
+	uint64_t renderGpuEndNs;     // Render CB GPUEndTime (ns)
+	uint64_t presentGpuStartNs;  // Present CB GPUStartTime (ns)
+	uint64_t presentGpuEndNs;    // Present CB GPUEndTime (ns)
+	uint64_t presentedNs;        // drawable.presentedTime (ns)
+	uint64_t callbackNs;         // presentedHandler callback arrival (ns)
+	uint64_t targetPresNs;       // Scheduled presentation deadline (ns)
+	uint32_t state;              // 0=unknown, 1=presented, 2=superseded_before, 3=superseded_after, 4=no_drawable
+	uint32_t flags;              // Bit 0: 1=adaptive timed present, 0=standard present
+} McFrameTelemetry;
+
+static McFrameTelemetry *telemetryRing;
+static _Atomic uint64_t telemetryFrameSeq;
+static int telemetryEnabled;
+static mach_timebase_info_data_t machTimebase;
+
+static inline uint64_t mc_mach_to_ns(uint64_t machTicks) {
+	if (__builtin_expect(machTimebase.denom == 0, 0)) mach_timebase_info(&machTimebase);
+	return (uint64_t)((__uint128_t)machTicks * machTimebase.numer / machTimebase.denom);
+}
+
+static inline uint64_t mc_time_now_ns(void) {
+	return mc_mach_to_ns(mach_absolute_time());
+}
+
+static inline uint64_t mc_cftime_to_ns(double cftime) {
+	return cftime > 0.0 ? (uint64_t)(cftime * 1e9) : 0ULL;
+}
+
+static _Atomic uint64_t telCurrentFrameId;
+static _Atomic uint64_t telCurrentInputNs;
+static _Atomic int telFramePresenting;
+static uint64_t pqTelFrameId[PQ_SLOTS];
+
+void mc_telemetry_enable(int on) {
+	if (on) {
+		if (!telemetryRing) {
+			telemetryRing = (McFrameTelemetry *)calloc(MC_TELEMETRY_CAPACITY, sizeof(McFrameTelemetry));
+		}
+		telemetryEnabled = 1;
+	} else {
+		telemetryEnabled = 0;
+	}
+}
+
+int mc_telemetry_is_enabled(void) {
+	return telemetryEnabled;
+}
+
+uint64_t mc_telemetry_count(void) {
+	return atomic_load(&telemetryFrameSeq);
+}
+
+static void mc_commit_hooks(id<MTLCommandBuffer> c) {
+	int telOn = telemetryEnabled && atomic_load(&telFramePresenting);
+	int adaptOn = adaptivePacingEnabled;
+	if (!telOn && !adaptOn) return;
+
+	uint64_t fid = telOn ? atomic_load(&telCurrentFrameId) : 0;
+	uint32_t slot = (uint32_t)(fid % MC_TELEMETRY_CAPACITY);
+	if (telOn && fid > 0) {
+		telemetryRing[slot].frameId = fid;
+		telemetryRing[slot].inputNs = atomic_load(&telCurrentInputNs);
+		telemetryRing[slot].commitNs = mc_time_now_ns();
+	}
+	[c addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+		if (telOn && fid > 0) {
+			telemetryRing[slot].renderGpuStartNs = mc_cftime_to_ns(cb.GPUStartTime);
+			telemetryRing[slot].renderGpuEndNs = mc_cftime_to_ns(cb.GPUEndTime);
+		}
+		if (adaptOn) {
+			double dur = cb.GPUEndTime - cb.GPUStartTime;
+			adaptiveRecordGpuDuration(dur);
+		}
+	}];
+}
+
+int mc_telemetry_dump_json(const char *filepath) {
+	if (!telemetryRing || !filepath) return 0;
+	FILE *f = fopen(filepath, "w");
+	if (!f) return 0;
+	uint64_t total = atomic_load(&telemetryFrameSeq);
+	uint64_t start = total > MC_TELEMETRY_CAPACITY ? total - MC_TELEMETRY_CAPACITY : 1;
+	fprintf(f, "{\n  \"capacity\": %d,\n  \"totalFrames\": %llu,\n  \"records\": [\n",
+		MC_TELEMETRY_CAPACITY, (unsigned long long)total);
+	int first = 1;
+	for (uint64_t id = start; id <= total; id++) {
+		uint32_t slot = (uint32_t)(id % MC_TELEMETRY_CAPACITY);
+		McFrameTelemetry *r = &telemetryRing[slot];
+		if (r->frameId != id) continue;
+		if (!first) fprintf(f, ",\n");
+		first = 0;
+		fprintf(f, "    {\"frameId\": %llu, \"inputNs\": %llu, \"commitNs\": %llu, "
+			"\"renderGpuStartNs\": %llu, \"renderGpuEndNs\": %llu, "
+			"\"presentGpuStartNs\": %llu, \"presentGpuEndNs\": %llu, "
+			"\"presentedNs\": %llu, \"callbackNs\": %llu, \"targetPresNs\": %llu, "
+			"\"state\": %u, \"flags\": %u}",
+			(unsigned long long)r->frameId,
+			(unsigned long long)r->inputNs,
+			(unsigned long long)r->commitNs,
+			(unsigned long long)r->renderGpuStartNs,
+			(unsigned long long)r->renderGpuEndNs,
+			(unsigned long long)r->presentGpuStartNs,
+			(unsigned long long)r->presentGpuEndNs,
+			(unsigned long long)r->presentedNs,
+			(unsigned long long)r->callbackNs,
+			(unsigned long long)r->targetPresNs,
+			r->state,
+			r->flags);
+	}
+	fprintf(f, "\n  ]\n}\n");
+	fclose(f);
+	return 1;
+}
+
 void mc_present_schedule(double seconds) {
 	if (!pqQueue) pqScheduleBudget = isfinite(seconds) && seconds > 0 && seconds <= .05 ? seconds : 0;
 }
 
 void mc_present_frame_start(void) {
-	if (pqScheduleBudget > 0) pqFrameStart = CACurrentMediaTime();
+	double now = CACurrentMediaTime();
+	if (pqScheduleBudget > 0) pqFrameStart = now;
+	if (telemetryEnabled) {
+		uint64_t fid = atomic_fetch_add(&telemetryFrameSeq, 1) + 1;
+		uint64_t inNs = mc_time_now_ns();
+		atomic_store(&telCurrentFrameId, fid);
+		atomic_store(&telCurrentInputNs, inNs);
+		atomic_store(&telFramePresenting, 0);
+		uint32_t slot = (uint32_t)(fid % MC_TELEMETRY_CAPACITY);
+		telemetryRing[slot].frameId = fid;
+		telemetryRing[slot].inputNs = inNs;
+		telemetryRing[slot].commitNs = 0;
+		telemetryRing[slot].renderGpuStartNs = 0;
+		telemetryRing[slot].renderGpuEndNs = 0;
+		telemetryRing[slot].presentGpuStartNs = 0;
+		telemetryRing[slot].presentGpuEndNs = 0;
+		telemetryRing[slot].presentedNs = 0;
+		telemetryRing[slot].callbackNs = 0;
+		telemetryRing[slot].targetPresNs = 0;
+		telemetryRing[slot].state = 0;
+		telemetryRing[slot].flags = 0;
+	}
 }
 
 static double pqFrameDeadline(double polled, double budget, double now) {
@@ -2046,20 +2291,61 @@ static void pqEncodePresent(id<CAMetalDrawable> drawable, int slot, uint64_t wai
 	[r setFragmentSamplerState:ctx->presentSampler atIndex:0];
 	[r drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
 	[r endEncoding];
+	uint64_t telFid = (telemetryEnabled && slot >= 0 && slot < PQ_SLOTS) ? pqTelFrameId[slot] : 0;
 	[p addCompletedHandler:^(id<MTLCommandBuffer> cb) {
 		if (cadence >= 0 && cadence < CADENCE_CAPACITY)
 			__atomic_store_n(&cadencePresentGpuEnd[cadence], (uint64_t)(cb.GPUEndTime * 1e9), __ATOMIC_RELEASE);
 		gpuLatency += (CACurrentMediaTime() - queuedAt - gpuLatency) * 0.1;
 		atomic_store(&pqBusy[slot], 0);
+		if (telFid > 0) {
+			uint32_t tslot = (uint32_t)(telFid % MC_TELEMETRY_CAPACITY);
+			telemetryRing[tslot].presentGpuStartNs = mc_cftime_to_ns(cb.GPUStartTime);
+			telemetryRing[tslot].presentGpuEndNs = mc_cftime_to_ns(cb.GPUEndTime);
+		}
 	}];
+	if (telFid > 0) {
+		uint32_t tslot = (uint32_t)(telFid % MC_TELEMETRY_CAPACITY);
+		[drawable addPresentedHandler:^(id<MTLDrawable> d) {
+			telemetryRing[tslot].presentedNs = mc_cftime_to_ns(d.presentedTime);
+			telemetryRing[tslot].callbackNs = mc_time_now_ns();
+			telemetryRing[tslot].state = 1; // presented
+		}];
+	}
 	paceWatch(drawable);
-	double now = deadline > 0 ? CACurrentMediaTime() : 0;
-	if (deadline > now && deadline - now <= .05) {
-		[p presentDrawable:drawable atTime:deadline];
-		atomic_fetch_add(&pqTimedPresents, 1);
+	double now = CACurrentMediaTime();
+	double targetPres = 0;
+	int useTarget = 0;
+	if (adaptivePacingEnabled && atomic_load(&adaptiveRingCount) > 0 && atomic_load(&adaptiveGpuEst) > 0) {
+		double est = atomic_load(&adaptiveGpuEst);
+		double rawTarget = queuedAt + est + adaptiveSafetyMargin;
+		targetPres = mc_quantize_cadence(rawTarget, now);
+		if (targetPres > now && targetPres - now <= .10) {
+			useTarget = 1;
+		}
+	} else if (deadline > now && deadline - now <= .05) {
+		targetPres = deadline;
+		useTarget = 1;
+	}
+
+	if (useTarget) {
+		[p presentDrawable:drawable atTime:targetPres];
+		if (adaptivePacingEnabled) {
+			atomic_fetch_add(&adaptiveTimedPresents, 1);
+			if (telFid > 0) {
+				uint32_t tslot = (uint32_t)(telFid % MC_TELEMETRY_CAPACITY);
+				telemetryRing[tslot].targetPresNs = mc_cftime_to_ns(targetPres);
+				telemetryRing[tslot].flags |= 1;
+			}
+		} else {
+			atomic_fetch_add(&pqTimedPresents, 1);
+		}
 	} else {
 		[p presentDrawable:drawable];
-		if (deadline > 0) atomic_fetch_add(&pqExpiredDeadlines, 1);
+		if (adaptivePacingEnabled) {
+			atomic_fetch_add(&adaptiveFallbackPresents, 1);
+		} else if (deadline > 0) {
+			atomic_fetch_add(&pqExpiredDeadlines, 1);
+		}
 	}
 	[p commit];
 }
@@ -2103,6 +2389,10 @@ static uint64_t pqRefresh(uint64_t current) {
 		double saved = pqQueuedAt[selected & 3] - pqQueuedAt[current & 3];
 		atomic_fetch_add(&pqFreshSavedNs, (long) (fmax(0, saved) * 1e9));
 		cadenceMark(pqCadence[current & 3], 3);
+		if (telemetryEnabled && pqTelFrameId[current & 3] > 0) {
+			uint32_t curSlot = (uint32_t)(pqTelFrameId[current & 3] % MC_TELEMETRY_CAPACITY);
+			telemetryRing[curSlot].state = 3; // superseded after acquisition
+		}
 		atomic_store(&pqBusy[current & 3], 0);
 		atomic_fetch_add(&pqDropped, 1);
 		atomic_fetch_add(&pqRefreshed, 1);
@@ -2115,12 +2405,20 @@ int mc_present_queued_acquire(Enc *enc, CAMetalLayer *layer, id<MTLTexture> src,
 	if (k < 0) return 0;
 	if (pqAcq) {
 		cadenceMark(pqCadence[pqAcq & 3], 2);
+		if (telemetryEnabled && pqTelFrameId[pqAcq & 3] > 0) {
+			uint32_t oldSlot = (uint32_t)(pqTelFrameId[pqAcq & 3] % MC_TELEMETRY_CAPACITY);
+			telemetryRing[oldSlot].state = 2; // superseded before acquisition
+		}
 		atomic_store(&pqBusy[pqAcq & 3], 0);  // two presents in one frame: the newer one wins
 	}
 	pqLayer = layer;
 	pqCadence[k] = cadence;
 	pqQueuedAt[k] = CACurrentMediaTime();
 	pqDeadline[k] = pqFrameDeadline(pqFrameStart, pqScheduleBudget, pqQueuedAt[k]);
+	if (telemetryEnabled) {
+		pqTelFrameId[k] = atomic_load(&telCurrentFrameId);
+		atomic_store(&telFramePresenting, 1);
+	}
 	pqAcq = pqValue << 2 | (uint64_t) k;
 	return 1;
 }
@@ -2137,6 +2435,10 @@ static void pqWork(void) {
 			if (pqFresh) atomic_fetch_add(&pqDrawableWaitNs, (long) ((CACurrentMediaTime() - acquireStart) * 1e9));
 			if (!drawable) {  // window hidden: drop this present
 				cadenceMark(pqCadence[slot], 4);
+				if (telemetryEnabled && pqTelFrameId[slot] > 0) {
+					uint32_t dSlot = (uint32_t)(pqTelFrameId[slot] % MC_TELEMETRY_CAPACITY);
+					telemetryRing[dSlot].state = 4; // no drawable
+				}
 				atomic_store(&pqBusy[slot], 0);
 				continue;
 			}
@@ -2153,6 +2455,10 @@ static void pqPublish(void) {
 	pqAcq = 0;
 	if (old) {
 		cadenceMark(pqCadence[old & 3], 2);
+		if (telemetryEnabled && pqTelFrameId[old & 3] > 0) {
+			uint32_t oldSlot = (uint32_t)(pqTelFrameId[old & 3] % MC_TELEMETRY_CAPACITY);
+			telemetryRing[oldSlot].state = 2; // superseded before acquisition
+		}
 		atomic_store(&pqBusy[old & 3], 0);
 		atomic_fetch_add(&pqDropped, 1);
 	}
