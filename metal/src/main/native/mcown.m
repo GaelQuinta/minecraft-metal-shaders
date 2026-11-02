@@ -54,6 +54,7 @@ typedef struct {
 	uint32_t a1MaskLo, a1MaskHi;  // the lists with a table (mco_frag_exact_mask; else the first a1Lists)
 	int a1MaskSet;
 	id<MTLBuffer> a1Tab[2], a1Cnt[2], a1Draws[2];  // table, per-list block counters, per-list table draws (+ telemetry, shared)
+	id<MTLBuffer> dummyBuf;
 	int a1ListsCap;
 	uint32_t exactPipeFallbacks;  // K_EXACT draws drawn as class draws: no specialized pipeline, or no table this frame
 	uint32_t exactAllocFailed;  // the table's buffers couldn't be made (sticky: no further tries; the lists draw their class draws)
@@ -505,7 +506,10 @@ void mco_cull(Own *w, Enc *enc, const void *frame, int frameLength, id<MTLBuffer
 		[c setBytes:&visWords length:4 atIndex:7];
 		[c setBuffer:prevVis offset:0 atIndex:8];
 		[c setBuffer:tested offset:0 atIndex:9];
-		[c setBuffer:fat offset:0 atIndex:10];
+		if (!w->dummyBuf) {
+			w->dummyBuf = [w->ctx->device newBufferWithLength:256 options:MTLResourceStorageModePrivate];
+		}
+		[c setBuffer:(!fat || fat.length < 32) ? w->dummyBuf : fat offset:0 atIndex:10];
 		ownBindSolid(w, c);
 		[c setComputePipelineState:w->reset];
 		[c dispatchThreads:MTLSizeMake(4, 1, 1) threadsPerThreadgroup:MTLSizeMake(4, 1, 1)];
@@ -1190,6 +1194,9 @@ static void ownA1Bind(Own *w, id<MTLComputeCommandEncoder> c) {
 			w->a1Mode = 0;
 		}
 	}
+	if (!w->dummyBuf) {
+		w->dummyBuf = [w->ctx->device newBufferWithLength:256 options:MTLResourceStorageModePrivate];
+	}
 	if (w->a1Mode && (lo | hi) && w->a1ListCap > 0 && !w->exactAllocFailed) {
 		int set = w->a1Set;
 		k[0] = lo;
@@ -1197,7 +1204,11 @@ static void ownA1Bind(Own *w, id<MTLComputeCommandEncoder> c) {
 		k[2] = w->a1Mode == 1 && w->a1Tab[set] ? 1 : 2;
 		[c setBuffer:w->a1Cnt[set] offset:0 atIndex:22];
 		[c setBuffer:w->a1Draws[set] offset:0 atIndex:24];
-		if (k[2] == 1) [c setBuffer:w->a1Tab[set] offset:0 atIndex:26];
+		[c setBuffer:(k[2] == 1 && w->a1Tab[set]) ? w->a1Tab[set] : w->dummyBuf offset:0 atIndex:26];
+	} else {
+		[c setBuffer:w->dummyBuf offset:0 atIndex:22];
+		[c setBuffer:w->dummyBuf offset:0 atIndex:24];
+		[c setBuffer:w->dummyBuf offset:0 atIndex:26];
 	}
 	[c setBytes:k length:sizeof k atIndex:27];
 }
@@ -1340,6 +1351,13 @@ void mco_frag_cull(Own *w, Enc *enc, const void *frame, int frameLength, const v
 			[c setBuffer:w->uoccVis offset:0 atIndex:13];
 			[c setBuffer:w->uoccT offset:0 atIndex:14];
 			[c setBuffer:w->uoccBArgs offset:0 atIndex:15];
+		} else {
+			if (!w->dummyBuf) {
+				w->dummyBuf = [w->ctx->device newBufferWithLength:256 options:MTLResourceStorageModePrivate];
+			}
+			[c setBuffer:w->dummyBuf offset:0 atIndex:13];
+			[c setBuffer:w->dummyBuf offset:0 atIndex:14];
+			[c setBuffer:w->dummyBuf offset:0 atIndex:15];
 		}
 		ownBindSolid(w, c);
 		ownA1Bind(w, c);

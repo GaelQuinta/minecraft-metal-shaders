@@ -2014,7 +2014,7 @@ public final class OwnTerrain {
 			});
 			this.rLists[i] = OwnNative.buffer(this.ctx, 4L * cap * 4, false);
 			this.rTested[i] = OwnNative.buffer(this.ctx, (long) cap * 4, false);
-			this.rFat[i] = OwnNative.buffer(this.ctx, FAT ? 4L * cap * 32 : QUADS_FATT ? (long) cap * 32 : 16, false);
+			this.rFat[i] = OwnNative.buffer(this.ctx, FAT ? 4L * cap * 32 : QUADS_FATT ? (long) cap * 32 : 64, false);
 		}
 		this.listCap = cap;
 		this.pickRing();
@@ -2304,7 +2304,7 @@ public final class OwnTerrain {
 			for (long b : new long[] {this.shLists[slot], this.shTested[slot], this.shFat[slot]}) if (b != 0) this.later(() -> OwnNative.release(b));
 			this.shLists[slot] = OwnNative.buffer(this.ctx, (long) SHADOW_LISTS * this.listCap * 4, false);
 			this.shTested[slot] = OwnNative.buffer(this.ctx, (long) this.listCap * 4, false);
-			this.shFat[slot] = OwnNative.buffer(this.ctx, FAT ? 4L * this.listCap * 32 : 16, false);
+			this.shFat[slot] = OwnNative.buffer(this.ctx, FAT ? 4L * this.listCap * 32 : 64, false);
 			if (this.shArgs[slot] == 0) this.shArgs[slot] = OwnNative.buffer(this.ctx, SHADOW_ARGS_BYTES, 2);
 			this.shCap[slot] = this.listCap;
 		}
