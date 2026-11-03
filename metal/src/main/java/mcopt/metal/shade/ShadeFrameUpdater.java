@@ -289,6 +289,7 @@ public final class ShadeFrameUpdater {
 		ShadeFoliage.frame(level, x, y, z, f.rain, f.thunder, partial); // (1.2.7) waving foliage
 		f.pack(ShadeBindings.nextSlot());
 		ShadePbr.frame();
+		if (mcopt.metal.shade.water.ShadeWater.ON) mcopt.metal.shade.water.ShadeWater.publishOpen(); // (after nextSlot: this frame's slot)
 		LOOK.pack(ShadeBindings.currentLook(), f);
 		mcopt.metal.shade.dims.ShadeDims.pack(ShadeBindings.currentLook(), ShadeBindings.currentSlot(), f);
 		if (mcopt.metal.shade.dims.ShadeXdr.active()) mcopt.metal.shade.dims.ShadeXdr.frame(Math.min(dt, 0.25f));

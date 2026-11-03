@@ -206,9 +206,9 @@ public final class ShadeWater {
 			int i = openNext;
 			if (OPEN_TEX[i] == 0) OPEN_TEX[i] = mcopt.metal.shade.ShadeRender.textureCpu(size, size, "mcopt shade water: open-water map " + i);
 			mcopt.metal.shade.ShadeRender.upload(OPEN_TEX[i], 0, 0, size, size, MemoryUtil.memAddress(rgba), size * 4);
-			mcopt.metal.shade.ShadeRender.resource(RES_OPEN, OPEN_TEX[i]);
+			openPending = OPEN_TEX[i];
+			openPendingFar = far;
 			openNext = (i + 1) % OPEN_TEX.length;
-			openFar = far;
 		} catch (Throwable e) {
 			openFailed = true;
 			openFar = -1f;
@@ -219,6 +219,24 @@ public final class ShadeWater {
 	/** (2026-11-02, S2) No open-water map (off, a new world): the shader scales the swell by 1 everywhere. */
 	static void openNone() {
 		openFar = -1f;
+		openPending = 0;
+	}
+
+	/** A map uploaded but not yet published (openMap runs before this frame's ShadeResources slot exists). */
+	private static long openPending;
+	private static float openPendingFar = -1f;
+
+	/**
+	 * (2026-11-03) Publishes the last uploaded open-water map as ShadeResources entry {@link #RES_OPEN}: right after the frame's
+	 * ShadeBindings.nextSlot (ShadeFrameUpdater), as the other per-frame resources. openMap runs in WaterFrame.update, before it:
+	 * publishing there wrote the entry into the slot the previous frame's encoders still read, which had made only the old map
+	 * resident (Metal validation with Distant Horizons: GPU address faults, 2-3 a run).
+	 */
+	public static void publishOpen() {
+		if (openPending == 0) return;
+		mcopt.metal.shade.ShadeRender.resource(RES_OPEN, openPending);
+		openFar = openPendingFar;
+		openPending = 0;
 	}
 
 	/** M3.4: the default soft shadow radius on water (blocks). */
