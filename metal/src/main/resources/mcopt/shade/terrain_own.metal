@@ -358,6 +358,15 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		// M2.1 fine ripples (baked waves): top faces, and the surface seen from below with the camera under water
 		if (!SHADE_WDEV_IS(sf, SHADE_WDEV_NO_DETAIL) && (n.y > 0.5h || (n.y < -0.5h && SHADE_CAMERA_UNDERWATER(sf))) && wp.state.w > 0.5) wi.detail = shadeWaterDetailIn(wi, sf, waterDetail);
 #endif
+#ifdef SHADE_WATER_SWELL
+		// (2026-11-02, water round 1) the swell (water.metal shadeWaterSwell; mcopt.shade.water.swell, 0 = none): still water's top
+		// faces seen from above (currents and falls keep their own look), computed here like the fine ripples; rain and thunder raise it
+		wi.swell = float4(0.0);
+		if (n.y > 0.5h && waterSprite == 1 && wp.swell.x > 0.0 && !SHADE_CAMERA_UNDERWATER(sf)) {
+			float amp = wp.swell.x * (1.0 + 0.8 * wp.state.z) * (1.0 + 0.6 * sf.weather.y);
+			wi.swell = shadeWaterSwell(shadeWaterXZ(p.xz, sf), shadeWaterTime(sf), wi.dxz, amp);
+		}
+#endif
 #if defined(SHADE_WAVE_BAKE) && !defined(SHADE_LEAN_NOFALLS)
 		// (FT2.11) falling water's sides (only in the variant drawn while moving water is near: WaterFlowScan): the ripples tilt
 		// the face normal the surface is shaded with (shadeWaterFallNormal)

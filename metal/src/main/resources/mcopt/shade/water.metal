@@ -880,6 +880,65 @@ static inline float shadeWaterMoving(float k, float3 p) {
 	return k * (1.0 - smoothstep(SHADE_WATER_FALL_RANGE * (2.0 / 3.0), SHADE_WATER_FALL_RANGE, length(p)));
 }
 
+#ifdef SHADE_WATER_SWELL
+// ---- the swell (2026-11-02, water round 1: work/notes/2026-11-02/water/DESIGN.md S1) ------------------------------------------
+// The long waves above are calmed (FT1.3) and the ripples fade with distance and at grazing views, so the far sea was a perfect
+// mirror (~0.05 degrees of tilt 100 blocks out from a shore). The swell is a third layer under them: 4 long waves of 23-41 blocks
+// (periods 6-8 s, around the near set's mean direction +x+z), sharpened like ours (a e^(sin - 1): our own profile), on a 512-block
+// lattice (periodic over shadeWaterXZ's 2048-block wrap: no jump). s1 and s2 are 21 degrees apart with close wavelengths: they
+// beat into sets of bigger waves every ~5-6 crests. RMS slope 0.038 at strength 1. Added AFTER the ripples' grazing flattening:
+// a 30-40 block wave bends the mirrored shores, trees and clouds in broad bands instead of shredding them, so it is not calmed
+// toward the horizon; instead each train fades where a pixel spans more than 1/8..1/4 of its wavelength along it (crests that
+// run along the view survive to the horizon) and what fades comes back as slope variance (a rough, not flat, surface: the
+// Fresnel's cosine and the glint's width), as Distant Horizons' water already does (dh_terrain.fs.metal cosV). World-locked
+// direction (a real swell comes from far storms; a 512-block pattern turning with the wind would slide). Computed by the terrain
+// fragment like the fine ripples (shadeWaterDetailIn; inside shadeWaterNormal such code crashed the Metal compiler), into
+// ShadeWaterIn.swell; shadeWaterAbove adds it. Live: ShadeWaterParams.swell (mcopt.shade.water.swell*), 0 = none.
+#define SHADE_SWELL_COUNT 4
+constant int3 SHADE_SWELL[SHADE_SWELL_COUNT] = { // 512-block lattice x, z (wavelengths 40.9, 33.8, 31.8, 22.8); slope a k in 1/1000
+	int3(11, 6, 80), int3(15, 2, 56), int3(8, 14, 48), int3(19, 12, 40),
+};
+constant float SHADE_SWELL_PHASE[SHADE_SWELL_COUNT] = {0.9, 3.7, 5.3, 2.2};
+#define SHADE_SWELL_MEAN 0.46576 // the mean of e^(sin - 1) = I0(1) / e: heights about the still level
+#define SHADE_SWELL_VAR 0.1076   // the mean of (cos e^(sin - 1))^2 = I1(2) / 2 e^-2: a train's slope variance per (a k)^2
+// x: absolute xz (shadeWaterXZ), t: shadeWaterTime, dxz: the position's screen derivatives (dfdx(p).xz, dfdy(p).xz), amp: the
+// strength (> 0). Returns xy the slope (dh/dx, dh/dz) at amp, z the height at strength 1 (blocks about the still level), w the
+// faded trains' slope variance at amp.
+static float4 shadeWaterSwell(float2 x, float t, float4 dxz, float amp) {
+	float4 o = 0.0;
+	const float base = 6.2831853 / 512.0;
+	for (int i = 0; i < SHADE_SWELL_COUNT; i++) {
+		int3 l = SHADE_SWELL[i];
+		float2 kv = float2(l.xy) * base;
+		float k = length(kv); // (constants once unrolled)
+		float2 dir = kv / k;
+		float s = float(l.z) * 1e-3;
+		// the pixel's extent along this train's wave vector, in wavelengths: full below 1/8, gone at 1/4
+		float ext = max(abs(dot(dir, dxz.xy)), abs(dot(dir, dxz.zw))) * (k * (1.0 / 6.2831853));
+		float lod = 1.0 - smoothstep(0.125, 0.25, ext);
+		float th = dot(kv, x) + shadeWaterOmega(sqrt(9.81 * k) * 0.62) * t + SHADE_SWELL_PHASE[i];
+		float c;
+		float sn = sincos(th, c);
+		float e = exp(sn - 1.0);
+		float sa = s * amp;
+		o.xy += dir * (sa * c * e * lod);
+		o.z += (s / k) * (e - SHADE_SWELL_MEAN) * lod;
+		o.w += sa * sa * SHADE_SWELL_VAR * (1.0 - lod * lod);
+	}
+	return o;
+}
+// The swell's slope s as the eye at unit view direction v (camera to point) sees it: a facet turned away from the eye by more
+// than k tan(depression) would mirror below the horizon; in reality it hides behind the crest in front (Smith-like masking), so
+// its slope along the view is clamped there (k 0.45 < 1/2: it mirrors just above the horizon, bright). Facets turned toward the
+// eye stay: they mirror the higher, bluer sky and their Fresnel drops (the light and dark bands of a real sea at grazing views),
+// and no reflected ray dips under the horizon for SSR to chase.
+static inline float2 shadeWaterSwellMask(float2 s, float3 v, float k) {
+	float2 vh = v.xz * rsqrt(max(dot(v.xz, v.xz), 1e-8));
+	float al = dot(s, vh);
+	return s + vh * (max(al, -k * (-v.y) * rsqrt(max(1.0 - v.y * v.y, 1e-6))) - al);
+}
+#endif
+
 // ---- the surface ------------------------------------------------------------------------------------------------------------
 struct ShadeWaterIn {
 	float3 p;        // camera-relative position of the surface fragment
@@ -903,6 +962,9 @@ struct ShadeWaterIn {
 	float3 fog;      // the game's fog colour as radiance before exposure (the water seen from below, the TIR fallback)
 	float4 detail;   // (SHADE_WATER_DETAIL, top faces) shadeWaterDetailIn: xy fine-ripple slope (world, before the strength),
 	                 // z their height, w the pixel pattern; 0 where not computed
+#ifdef SHADE_WATER_SWELL
+	float4 swell;    // (2026-11-02, still water's top faces seen from above) shadeWaterSwell at p; 0 = none
+#endif
 };
 
 #ifdef SHADE_WATER_DETAIL
@@ -1133,6 +1195,9 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	bool top = w.nFace.y > 0.5;
 	float height = 0.0, pattern = 0.0;
 	float3 n = w.nFace;
+#ifdef SHADE_WATER_SWELL
+	float cosV0 = 0.0; // (2026-11-02) the cosine without the swell, where there is one (wp.swell.w)
+#endif
 	if (top) {
 		n = shadeWaterNormal(w, f, wp, waves, height, pattern);
 #if defined(SHADE_WEATHER) && defined(SHADE_RIPPLES)
@@ -1148,8 +1213,25 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 		// grazing angles: normals average out across a pixel and the far water calms into a mirror
 		float graze = 1.0 - saturate(-v.y);
 		n = normalize(mix(n, float3(0.0, 1.0, 0.0), 0.8 * graze * graze * graze * graze));
+#ifdef SHADE_WATER_SWELL
+		// (2026-11-02) the swell after that flattening (a 23-41 block wave doesn't average out across a pixel; where it would, the
+		// caller's shadeWaterSwell has faded it into roughness), as the eye sees it (masked), its slope added to the ripples'
+		if (any(w.swell != 0.0)) {
+			cosV0 = max(dot(-v, n), 0.02);
+			float2 s = shadeWaterSwellMask(w.swell.xy, v, wp.swell.y);
+			n = normalize(n * (1.0 / n.y) + float3(-s.x, 0.0, -s.y));
+		}
+#endif
 	}
 	float cosV = max(dot(-v, n), 0.02);
+#ifdef SHADE_WATER_SWELL
+	if (cosV0 > 0.0) {
+		// its share in the Fresnel (wp.swell.w: 1 physical, facets toward the eye mirror less and show the body; 0 the cosine without
+		// it), and the trains a pixel averages over make the surface rough there, not flat
+		float c = mix(cosV0, cosV, wp.swell.w);
+		cosV = sqrt(c * c + w.swell.w * wp.swell.w);
+	}
+#endif
 	float fres = min(shadeWaterFresnel(cosV) * wp.tune.z, 1.0); // (1.2.7, audit B12: the Reflections slider above 100 % made the
 	// mix below extrapolate, the water brighter than the sky it mirrors, a white band toward the horizon)
 #ifdef SHADE_LEAN_ABOVE
@@ -1290,6 +1372,9 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	float far = saturate(dist / 110.0);
 #endif
 	float alpha = 0.035 + 0.10 * far + 0.06 * wp.state.z;
+#ifdef SHADE_WATER_SWELL
+	alpha = sqrt(alpha * alpha + w.swell.w); // (2026-11-02) the swell a pixel averages over widens the glitter road
+#endif
 	float spec = shadeGgxSpec(n, v, f.lightDirWorld.xyz, alpha);
 	float soft = smoothstep(0.15, 0.85, float(w.shadow));
 	float3 glint = f.sunColor.rgb * min(spec, 60.0) * soft * open * (1.0 - hitWeight);

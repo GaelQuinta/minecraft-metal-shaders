@@ -166,6 +166,23 @@ public final class ShadeWater {
 		return Math.max(mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.waterShadowContact", 0f), 0f);
 	}
 
+	/**
+	 * (2026-11-02, water round 1: work/notes/2026-11-02/water/DESIGN.md, ROUND1.md) {@code mcopt.shade.water.swellCode} (false, startup):
+	 * the round's per-pixel code compiled into the translucent terrain (water.metal SHADE_WATER_SWELL: the swell, its open-water map,
+	 * the light through its crests; SHADE_WATER_GLITTER: the glint's glitter, unless {@code mcopt.shade.water.glitterCode} says
+	 * otherwise). The water shader is bound by registers (code that never runs still costs ~0.1-0.3 ms), so it is out unless asked
+	 * for; once in, everything it does is read every frame (mcopt.shade.water.swell, .swellMask, .swellFresnel, .swellRefl,
+	 * .swellOpen, .swellGlow, .glitter) and its defaults are the look without it. Pricing the code's presence in one session:
+	 * -Dmcopt.shade.leanDev=SHADE_WATER_SWELL (and/or SHADE_WATER_GLITTER) with mcopt.shade.leanDev.on (ShadeLean).
+	 */
+	public static final boolean SWELL_CODE = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.swellCode", "false"));
+	static final boolean SWELL_DEV = mcopt.metal.shade.ShadeLean.DEV_DEFINES.contains("SHADE_WATER_SWELL ");
+
+	/** Whether the swell's code is in some variant of the translucent terrain (its CPU side, the open-water map, is then worth running). */
+	public static boolean swellCompiled() {
+		return ON && (SWELL_CODE || SWELL_DEV);
+	}
+
 	/** M3.4: the default soft shadow radius on water (blocks). */
 	static final float SHADOW_SOFT_DEFAULT = 2f;
 	/** M2.1: the water animates on a real-time clock instead of the (server-corrected, tick-based) game time. */
@@ -226,6 +243,7 @@ public final class ShadeWater {
 		if (SMOOTH && SSR_QUAD && Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrLane", "true"))) b.append("#define SHADE_SSR_LANE 1\n");
 		if (SMOOTH) b.append("#define SHADE_WATER_SMOOTH 1\n"); // (2026-11-02: calm and ripple are read every frame, ShadeWaterParams.swell2.zw)
 		if (GLINT_GRAZE) b.append("#define SHADE_WATER_GLINT_GRAZE 1\n");
+		if (SWELL_CODE) b.append("#define SHADE_WATER_SWELL 1\n"); // (2026-11-02, water round 1)
 		if (BAKE) b.append("#define SHADE_WAVE_BAKE 1\n#define SHADE_WAVE_BAKE_SIZE ").append(BAKE_SIZE).append('\n');
 		// TAAU (mcopt.shade.taa): the world draws into a live sub-rect of fixed-size targets (so do the copies), and the SSR
 		// jitter changes per frame for the temporal resolve to integrate. The sub-rect mapping is exact without TAAU too
@@ -349,7 +367,10 @@ public final class ShadeWater {
 			.putFloat(60, CAUSTICS ? mcopt.metal.shade.Live.f("mcopt.shade.user.caustics", 1f, 0f, 2f) : 0f);
 		// (2026-11-02, water round 1) swell (64), swell2 (80), swell3 (96): water.metal ShadeWaterParams. The calm of the long waves and the
 		// ripples' strength in clear weather (style photon), read every frame since round 1 (they were startup defines: now A/B-able in session)
-		p.putFloat(64, 0f).putFloat(68, 0.45f).putFloat(72, 0f).putFloat(76, 1f);
+		// the swell (mcopt.shade.water.swell 0..3, 0 = none: the look before it): its strength, its masking k (.swellMask), its share in the
+		// Fresnel (.swellFresnel, 1 physical, 0 = the cosine without it)
+		p.putFloat(64, mcopt.metal.shade.Live.f("mcopt.shade.water.swell", 0f, 0f, 3f)).putFloat(68, mcopt.metal.shade.Live.f("mcopt.shade.water.swellMask", 0.45f, 0f, 1f))
+			.putFloat(72, 0f).putFloat(76, mcopt.metal.shade.Live.f("mcopt.shade.water.swellFresnel", 1f, 0f, 1f));
 		p.putFloat(80, -1f).putFloat(84, 0f).putFloat(88, mcopt.metal.shade.Live.f("mcopt.shade.water.calm", CALM, 0.05f, 2f))
 			.putFloat(92, mcopt.metal.shade.Live.f("mcopt.shade.water.ripple", RIPPLE, 0f, 3f));
 		p.putFloat(96, 0.45f).putFloat(100, 0f).putFloat(104, 0f).putFloat(108, 0f);
