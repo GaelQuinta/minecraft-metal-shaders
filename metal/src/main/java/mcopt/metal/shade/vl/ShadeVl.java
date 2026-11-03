@@ -593,7 +593,10 @@ public final class ShadeVl {
 		// air8 (2026-11 godrays, round 1: work/notes/2026-11-02/godrays/DESIGN.md section 5; every default is the image before it,
 		// so one session can A/B each live key): x the air march's step spacing, y the golden-hour mist over the sky, z the forest
 		// air dimming what is behind it, w the temporal pass's spatial filter
-		put(b, 0f, 0f, 0f, 1f);
+		// (x, C2: mcopt.shade.vl.airLinear, live, 0..1: the steps' linear share; 0 = quadratic, FT2.3; 1 = Photon's even steps; 0.5
+		// puts more of them over 5-25 blocks, where the beams you walk through are once airNear is short)
+		float airLinear = air ? Math.max(0f, Math.min(1f, VlConfig.live("mcopt.shade.vl.airLinear", 0f))) : 0f;
+		put(b, airLinear, 0f, 0f, 1f);
 		// (air mode: the haze's shadows count wherever the sun is up, even with no forest around)
 		if (userRays <= 0f) return false;
 		if (userWater <= 0f) return false; // (1.1: under water with its shafts at 0 nothing is added: no passes, as above)

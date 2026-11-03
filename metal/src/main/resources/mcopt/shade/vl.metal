@@ -481,6 +481,10 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 		float D = min(dist, p.air2.x);
 		int na = clamp(int(p.air.y + p.air.z * D), 2, int(max(p.air.w, 2.0)));
 		float invN = 1.0 / float(na);
+		// (2026-11, air8.x: mcopt.shade.vl.airLinear) the steps' linear share: t = D u (u + (1 - u) lin). 0 = quadratic (FT2.3: most
+		// steps within the first few blocks, where the forest air fades in from the camera), 1 = uniform steps (Photon); 0.5: the
+		// first step ~2.6 % of D, the near shafts (5-25 blocks) get more of them
+		float lin = saturate(p.air8.x);
 		// (one transmittance for all three channels, from the haze's luminance: its colour matters in what it scatters, its
 		// extinction over the march is at most ~0.1, so a grey one costs nothing visible and a third of the exp per step)
 		float trans = 1.0, mistAll = 0.0, mistLit = 0.0, forestLit = 0.0, forestAll = 0.0;
@@ -499,9 +503,10 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 			if (local <= 0.0) tStop = 0.0;
 		}
 		for (int i = 0; i < na; i++) {
-			// quadratic spacing (dense near the camera, where the trees' shadows are), each texel offset on its own (bit 32)
+			// quadratic spacing (dense near the camera, where the trees' shadows are), each texel offset on its own (bit 32); lin
+			// moves it toward even steps
 			float u1 = float(i + 1) * invN, u = (float(i) + xi) * invN;
-			float b1 = D * u1 * u1, t = D * u * u, dt = b1 - prevB;
+			float b1 = D * u1 * mix(u1, 1.0, lin), t = D * u * mix(u, 1.0, lin), dt = b1 - prevB;
 			if (t > tStop) break;
 			prevB = b1;
 			float y = yc + dir.y * t;
