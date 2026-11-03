@@ -17,7 +17,7 @@
 //  2. The bindings, fragment stage only, on every render encoder native shading binds (ShadeBindings.bind):
 //       texture(18)  sceneCopy  texture2d<half>  the copy of colour attachment 0 (a 1x1 dummy until the first capture)
 //       texture(19)  depthCopy  depth2d<float>   the copy of the depth attachment (a 1x1 dummy until the first capture)
-//       buffer(23)   ShadeWaterParams (64 bytes, setFragmentBytes): this frame's water sprite rectangles and state; its
+//       buffer(23)   ShadeWaterParams (112 bytes, setFragmentBytes): this frame's water sprite rectangles and state; its
 //                    state.x is 1 only after this frame's capture, so shaders never trust last frame's copies.
 //     Slots: the bible reserves texture(17-19) for pass-local inputs (17 is M1's sky LUT); buffer 23 is free in every
 //     pipeline that binds shade globals (far terrain's own pipelines use 22-28 but rebind shade after drawing).
@@ -29,6 +29,9 @@ typedef struct {
 	float flow[4];   // the same for minecraft:block/water_flow
 	float state[4];  // x copies valid this frame (0/1), y water surface height above the eye (camera-relative y, under water), z wetness, w 0
 	float tune[4];   // x wave strength, y SSR max distance (blocks), z reflection strength, w caustic strength
+	float swell[4];  // (2026-11-02, water round 1) the swell: strength, masking k, crest glow, Fresnel share
+	float swell2[4]; // x open-water map's outer-ring mean (< 0: no map), y reserved, z calm, w ripple
+	float swell3[4]; // x the swell's share in the mirrored images' direction, y the glint's glitter, zw reserved
 } WaterParams;
 
 typedef struct {
@@ -83,7 +86,7 @@ void mc_water_free(WaterState *s) {
 	free(s);
 }
 
-// This frame's parameters (16 floats: still, flow, state, tune); state.x (copies valid) is cleared until the capture.
+// This frame's parameters (28 floats: still, flow, state, tune, swell, swell2, swell3); state.x (copies valid) is cleared until the capture.
 void mc_water_params(WaterState *s, const float *p) {
 	memcpy(&s->params, p, sizeof(WaterParams));
 	s->params.state[0] = 0.0f;

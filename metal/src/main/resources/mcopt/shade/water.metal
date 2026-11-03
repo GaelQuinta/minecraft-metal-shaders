@@ -52,13 +52,20 @@
 #define SHADE_SSR_STEPS 16
 #endif
 
-// Mirrors mcwater.m's WaterParams (64 bytes, written by ShadeWater.frame).
+// Mirrors mcwater.m's WaterParams (112 bytes, written by ShadeWater.frame).
 struct ShadeWaterParams {
 	float4 still;  // atlas uv rectangle (u0, v0, u1, v1) of minecraft:block/water_still (all 0: unknown)
 	float4 flow;   // the same for minecraft:block/water_flow
 	float4 state;  // x 1 when the copies hold this frame's opaque scene, y water surface height above the eye (under water),
 	               // z wetness 0..1, w 1 when texture(20) holds this frame's baked waves
 	float4 tune;   // x wave strength (mcopt.shade.waterWaves), y SSR max distance (blocks; (1.1) 0 = screen reflections off), z reflection strength, w caustics 0/1
+	// (2026-11-02, water round 1; all read every frame, defaults = the look before it; SHADE_WATER_SWELL / SHADE_WATER_GLITTER code)
+	float4 swell;  // x the swell's strength (mcopt.shade.water.swell, 0 = none), y its masking k (.swellMask, 0.45), z the light through
+	               // its crests at golden hour (.swellGlow, 0), w its share in the Fresnel (.swellFresnel, 1 = physical, 0 = as without it)
+	float4 swell2; // x the open-water map's mean in its outer ring, for the water beyond it (< 0: no map, the swell everywhere at its
+	               // strength), y reserved (whitecaps), z the long waves' calm (mcopt.shade.water.calm, 0.55), w the ripples' (.ripple, 2.0)
+	float4 swell3; // x the swell's share in the mirrored images' direction (.swellRefl, 0.45 = the ripples' share, 1 = all of it),
+	               // y the glint's glitter (.glitter, 0 = none), zw reserved
 };
 
 constexpr sampler shadeWaterLinear(filter::linear, address::clamp_to_edge, coord::normalized);
@@ -942,18 +949,15 @@ static inline float4 shadeWaterDetailIn(ShadeWaterIn w, constant ShadeFrame &f, 
 #endif
 
 #ifdef SHADE_WATER_SMOOTH
-#ifndef SHADE_WATER_CALM
-#define SHADE_WATER_CALM 0.55 // the waves' slopes in clear weather (x the M2.1 set); rain brings them back to 1 (and on, x 2.6)
-#endif
 // FT1.3 (style photon, after Photon's calm, mirror-like water: technique only, our own code): how much of the wave slopes the
 // surface shows at camera-relative p. Calmer in clear weather; patches of calmer and rougher water ~200 blocks across that
 // drift slowly (wind gusts, so a still lake isn't one repeated tile); flatter at grazing view angles, where the far surface
 // mirrors the sky and shores like a calm lake does (and the waves would only alias into noise).
 // x: the long swell's factor; y: the fine ripples' (they make the texture: they break the mirrored images into streaks and
 // the sun into sparkles, as on real water, while the calm swell keeps far shores and clouds readable).
-#ifndef SHADE_WATER_RIPPLE
-#define SHADE_WATER_RIPPLE 2.0 // the fine ripples' slopes in clear weather (x the M2.1 detail layer)
-#endif
+// In clear weather the long waves' slopes are wp.swell2.z (mcopt.shade.water.calm, 0.55 x the M2.1 set) and the fine ripples'
+// wp.swell2.w (mcopt.shade.water.ripple, 2.0 x the M2.1 detail layer); rain brings them to 1 and 1.3 (2026-11-02: read every frame,
+// they were startup defines).
 static inline float2 shadeWaterCalm(float3 p, constant ShadeFrame &f, constant ShadeWaterParams &wp) {
 	float t = shadeWaterTime(f);
 	float2 x = shadeWaterXZ(p.xz, f);
@@ -961,7 +965,7 @@ static inline float2 shadeWaterCalm(float3 p, constant ShadeFrame &f, constant S
 	float3 v = normalize(p - shadeEye(f.invViewProj));
 	float graze = 0.55 + 0.45 * smoothstep(0.0, 0.1, abs(v.y));
 	float rain = saturate(wp.state.z);
-	return float2(mix(SHADE_WATER_CALM, 1.0, rain) * (0.6 + 0.8 * patch), mix(SHADE_WATER_RIPPLE, 1.3, rain) * (0.75 + 0.5 * patch)) * graze;
+	return float2(mix(wp.swell2.z, 1.0, rain) * (0.6 + 0.8 * patch), mix(wp.swell2.w, 1.3, rain) * (0.75 + 0.5 * patch)) * graze;
 }
 #endif
 
