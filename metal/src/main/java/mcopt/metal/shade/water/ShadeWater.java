@@ -417,8 +417,17 @@ public final class ShadeWater {
 	 * rectangles (u0, v0, u1, v1; zeros = unknown, the shader then guesses water from the vertex colour like M1);
 	 * surfaceY: the water surface above the eye, camera-relative (under water; 0 otherwise); wetness 0..1.
 	 */
+	/**
+	 * (1.2.7 candidate 6, DESIGN.md S6) the swell's strength for Distant Horizons' sea (ShadeLook user2.z; dh_terrain.fs.metal): the near
+	 * water's past 120 blocks (swell x the open-water map's outer ring x the wet; the storm factor is applied in the shader), 0 without the
+	 * swell's code or with mcopt.shade.dh.waterSwell=0 (live; candidate 5's flat far sea). Written by frame(), read when ShadeLook packs.
+	 */
+	public static volatile float dhSwell;
+
 	public static void frame(long ctx, float[] still, float[] flow, float surfaceY, float wetness) {
 		if (!ready(ctx)) return;
+		dhSwell = swellCompiled() && mcopt.metal.shade.Live.f("mcopt.shade.dh.waterSwell", 1f, 0f, 1f) > 0.5f
+			? mcopt.metal.shade.Live.f("mcopt.shade.water.swell", 1.3f, 0f, 3f) * (openFar < 0f ? 1f : openFar) * (1f + 0.8f * wetness) : 0f;
 		ByteBuffer p = PARAMS;
 		for (int i = 0; i < 4; i++) p.putFloat(i * 4, still[i]);
 		for (int i = 0; i < 4; i++) p.putFloat(16 + i * 4, flow[i]);

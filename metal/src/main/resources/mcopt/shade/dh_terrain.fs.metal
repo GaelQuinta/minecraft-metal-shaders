@@ -63,6 +63,43 @@ static inline float dhBayer(float2 px) {
 	return float(b) / 16.0;
 }
 
+#ifdef SHADE_DH_TRANSLUCENT
+// (1.2.7 candidate 6; water DESIGN.md S6) the near water's swell on the LODs' sea, so the far sea keeps its long bands and there is no
+// seam where the chunks end. KEEP IN SYNC with water.metal (SHADE_SWELL / SHADE_SWELL_PHASE / shadeWaterSwell / shadeWaterSwellMask,
+// shadeWaterOmega, shadeWaterXZ): the same 4 waves on the same 512-block lattice, the same clock and the same pixel-footprint fade,
+// so at the edge of the chunks both draw the same surface. (water.metal is not in this library: a copy, prefixed dh.)
+constant int3 DH_SWELL[4] = { int3(11, 6, 80), int3(15, 2, 56), int3(8, 14, 48), int3(19, 12, 40) };
+constant float DH_SWELL_PHASE[4] = {0.9, 3.7, 5.3, 2.2};
+static inline float dhWaterOmega(float w) { return rint(w * (4096.0 / 6.2831853)) * (6.2831853 / 4096.0); }
+// xy the slope at amp, w the faded trains' slope variance at amp (water.metal shadeWaterSwell without the height)
+static float4 dhWaterSwell(float2 x, float t, float4 dxz, float amp) {
+	float4 o = 0.0;
+	const float base = 6.2831853 / 512.0;
+	for (int i = 0; i < 4; i++) {
+		int3 l = DH_SWELL[i];
+		float2 kv = float2(l.xy) * base;
+		float k = length(kv);
+		float2 dir = kv / k;
+		float s = float(l.z) * 1e-3;
+		float ext = max(abs(dot(dir, dxz.xy)), abs(dot(dir, dxz.zw))) * (k * (1.0 / 6.2831853));
+		float lod = 1.0 - smoothstep(0.125, 0.25, ext);
+		float th = dot(kv, x) + dhWaterOmega(sqrt(9.81 * k) * 0.62) * t + DH_SWELL_PHASE[i];
+		float c;
+		float sn = sincos(th, c);
+		float e = exp(sn - 1.0);
+		float sa = s * amp;
+		o.xy += dir * (sa * c * e * lod);
+		o.w += sa * sa * 0.1076 * (1.0 - lod * lod);
+	}
+	return o;
+}
+static inline float2 dhWaterSwellMask(float2 s, float3 v, float k) {
+	float2 vh = v.xz * rsqrt(max(dot(v.xz, v.xz), 1e-8));
+	float al = dot(s, vh);
+	return s + vh * (max(al, -k * (-v.y) * rsqrt(max(1.0 - v.y * v.y, 1e-6))) - al);
+}
+#endif
+
 fragment float4 main0(DhIn in [[stage_in]], constant DhFrag &u [[buffer(MCOPT_SLOT_fragUniformBlock)]],
                       texture2d<float> atlas [[texture(MCOPT_SLOT_uBlockAtlas)]], sampler atlasSmplr [[sampler(MCOPT_SLOT_uBlockAtlas)]],
                       constant ShadeFrame &sf [[buffer(16)]], constant ShadeLook &sl [[buffer(17)]], constant ShadeGpu &sg [[buffer(18)]],
@@ -82,6 +119,9 @@ fragment float4 main0(DhIn in [[stage_in]], constant DhFrag &u [[buffer(MCOPT_SL
 	float2 fc = dhFaceCoord(in.cell, face);
 	float mipScale = (sf.cameraBlock.w > 0.0 ? sf.cameraBlock.w : 1.0) * 16.0;
 	float2 tdx = dfdx(fc) * mipScale, tdy = dfdy(fc) * mipScale;
+#ifdef SHADE_DH_TRANSLUCENT
+	float4 pdxz = float4(dfdx(p).xz, dfdy(p).xz); // (candidate 6) the swell's footprint, here where the whole quad runs
+#endif
 	// the game's chunks own everything nearer than DH's clip distance: a hard cut, or a dithered one over 1-1.5x of it
 	// (SHADE_DH_NOCLIP, dev: none, to price the discard: a pipeline that may discard loses the GPU's hidden-surface removal)
 #ifndef SHADE_DH_NOCLIP
@@ -166,8 +206,25 @@ fragment float4 main0(DhIn in [[stage_in]], constant DhFrag &u [[buffer(MCOPT_SL
 			// steeper angle (less: Fresnel ~0.34, not 1) and higher into the sky (bluer than the horizon). As a flat mirror the far
 			// sea took the whole white horizon haze and read as milk (w1, Gael 2026-10-09: "se ve rara")
 			const float slope2 = 0.2 * 0.2;
-			float cosV = sqrt(v.y * v.y + slope2);
-			float3 r = float3(v.xz * (sqrt(max(1.0 - cosV * cosV, 0.0)) / max(length(v.xz), 1e-4)), cosV).xzy;
+			// (candidate 6, S6) the swell as the near water draws it past 120 blocks (sl.user2.z: its strength x the open sea's share x
+			// the wet, ShadeWater.dhSwell; 0 = candidate 5's flat statistical sea): the Fresnel with all of its slope, the mirrored
+			// direction with its share (sl.user2.w, mcopt.shade.water.swellRefl) as the near water's, the faded trains as roughness
+			float3 ns = float3(0.0, 1.0, 0.0), nr = ns;
+			float lost = 0.0;
+			if (sl.user2.z > 0.0) {
+				float t = sf.sunPath.w;
+				float2 x = p.xz + sf.cameraFract.xz + fmod(sf.cameraBlock.xz, 2048.0);
+				float4 sw = dhWaterSwell(x, t, pdxz, sl.user2.z * (1.0 + 0.6 * sf.weather.y));
+				float2 s = dhWaterSwellMask(sw.xy, v, 0.45);
+				ns = normalize(float3(-s.x, 1.0, -s.y));
+				nr = normalize(float3(-s.x * sl.user2.w, 1.0, -s.y * sl.user2.w));
+				lost = sw.w;
+			}
+			float c0 = max(dot(-v, ns), 0.0), cr = max(dot(-v, nr), 0.0);
+			float cosV = sqrt(c0 * c0 + slope2 + lost);
+			float cosR = sqrt(cr * cr + slope2 + lost);
+			float3 rf = reflect(v, nr);
+			float3 r = float3(rf.xz * (sqrt(max(1.0 - cosR * cosR, 0.0)) / max(length(rf.xz), 1e-4)), cosR).xzy;
 			float open = float(shadeSkyCurve(sky));
 			float m = 1.0 - saturate(cosV);
 			// (1.1) user1.x: the player's reflection strength (the near water's tune.z), at most a full mirror
@@ -181,7 +238,7 @@ fragment float4 main0(DhIn in [[stage_in]], constant DhFrag &u [[buffer(MCOPT_SL
 			// depth holds nearer than ~500 blocks (the game's own chunks) is not what the far sea mirrors: the dome / LUT there.
 			// Faded out over the last 1/8 of the screen. Needs TAAU's depth of that image (ShadeLook.ssr.y).
 			if (sl.ssr.x > 0.5 && sl.ssr.y > 0.5 && sl.user1.y > 0.5) { // (1.1) user1.y 0: the player chose sky-only reflections
-				float3 rm = float3(v.x, -v.y, v.z);
+				float3 rm = reflect(v, nr); // (candidate 6: along the swell's share; the flat mirror without it)
 				float4 pc = sl.prevViewProjNoJitter * float4(rm, 0.0); // (FT2.8, as audit idx 35: the TAA history is unjittered)
 				if (pc.w > 1e-4) {
 					// (FT2.8, audit idx 117) the edge fade from where the texel is actually read (last frame's, unclamped), not this
@@ -216,8 +273,8 @@ fragment float4 main0(DhIn in [[stage_in]], constant DhFrag &u [[buffer(MCOPT_SL
 			refl *= open;
 			// GGX glint (normal up), alpha 0.135: the near water's at 110+ blocks
 			float3 l = sf.lightDirWorld.xyz, h = normalize(l - v);
-			float nh = saturate(h.y), nl = saturate(l.y), nv = max(-v.y, 1e-3);
-			const float a2 = 0.135 * 0.135 * 0.135 * 0.135;
+			float nh = saturate(dot(ns, h)), nl = saturate(dot(ns, l)), nv = max(dot(ns, -v), 1e-3); // (candidate 6: the swell's normal; up without it)
+			const float a2 = 0.135 * 0.135 * 0.135 * 0.135 + lost; // (candidate 6) + the swell the pixel averages over, as the near water's
 			float dd = nh * nh * (a2 - 1.0) + 1.0;
 			float vis = 0.5 / max(nl * sqrt(nv * nv * (1.0 - a2) + a2) + nv * sqrt(nl * nl * (1.0 - a2) + a2), 1e-5);
 			float mh = 1.0 - saturate(dot(h, -v));

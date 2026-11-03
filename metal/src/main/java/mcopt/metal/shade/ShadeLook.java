@@ -426,8 +426,10 @@ public final class ShadeLook {
 		// user1: x Distant Horizons' far water: its reflections' strength (= the near water's, user waterReflect), y its screen-space
 		// part (1 on, 0 = the player's "sky only"), z the near water's foam (user.foam), w its refraction (user.refraction)
 		put4(b, USER1, ShadeSettings.reflect(), ShadeSettings.ssr() ? 1f : 0f, Live.f(U + "foam", 1f, 0f, 3f), Live.f(U + "refraction", 1f, 0f, 3f));
-		// user2: x the sun's glint on water (user.glint), y beacon radiance, zw free
-		put4(b, USER2, Live.f(U + "glint", 1f, 0f, 3f), Live.f("mcopt.shade.beaconBrightness", 1f, 1f, 8f), 0f, 0f);
+		// user2: x the sun's glint on water (user.glint), y beacon radiance, z (candidate 6) Distant Horizons' sea: the swell's strength
+		// (ShadeWater.dhSwell, 0 = flat), w its share in the mirrored direction (= the near water's mcopt.shade.water.swellRefl)
+		put4(b, USER2, Live.f(U + "glint", 1f, 0f, 3f), Live.f("mcopt.shade.beaconBrightness", 1f, 1f, 8f),
+			mcopt.metal.shade.water.ShadeWater.dhSwell, Live.f("mcopt.shade.water.swellRefl", 0.45f, 0f, 1f));
 		// x: daylight contrast strength 0..2. Zero preserves Current; 1 retains the original Natural look.
 		put4(b, USER3, f.naturalLighting, ShadePbr.strength("normal"), ShadePbr.strength("specular"), ShadePbr.strength("emission"));
 		mcopt.metal.shade.weather.ShadeWeather.pack(b); // M3 weather: wet, wind, flash
