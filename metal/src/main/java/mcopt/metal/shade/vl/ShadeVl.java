@@ -599,7 +599,11 @@ public final class ShadeVl {
 		// (x, C2: mcopt.shade.vl.airLinear, live, 0..1: the steps' linear share; 0 = quadratic, FT2.3; 1 = Photon's even steps; 0.5
 		// puts more of them over 5-25 blocks, where the beams you walk through are once airNear is short)
 		float airLinear = air ? Math.max(0f, Math.min(1f, VlConfig.live("mcopt.shade.vl.airLinear", 0f))) : 0f;
-		put(b, airLinear, 0f, 0f, 1f);
+		// (z, C5: mcopt.shade.vl.airDim, live, 0..4: the forest air dims what is behind it by e^-(airDim x its optical depth), Photon's
+		// scene x T + light; 0 = additive only, FT2.3. ~0.6 = its extinction about its scattered share 0.55 / albedo 0.9. On costs a
+		// R16F target and its history at the VL resolution and the fold's light + T again: mcvl.m)
+		float airDim = air ? Math.max(0f, Math.min(4f, VlConfig.live("mcopt.shade.vl.airDim", 0f))) : 0f;
+		put(b, airLinear, 0f, airDim, 1f);
 		// (air mode: the haze's shadows count wherever the sun is up, even with no forest around)
 		if (userRays <= 0f) return false;
 		if (userWater <= 0f) return false; // (1.1: under water with its shafts at 0 nothing is added: no passes, as above)

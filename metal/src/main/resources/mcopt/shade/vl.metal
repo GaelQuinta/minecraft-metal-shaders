@@ -397,6 +397,7 @@ static inline float vlMistDepth(float3 dir, float D, constant VlParams &p) {
 struct VlMarchOut {
 	half4 light [[color(0)]]; // rgb in-scattered radiance, a marched distance
 	half sky [[color(1)]];    // 1 where the pixel is sky (R8Unorm): next frame's crepuscular taps read this
+	half od [[color(2)]];     // (2026-11, air8.z) the optical depth the scene behind is dimmed by (R16F; 0 = none): the fold filters it
 };
 
 fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buffer(16)]], constant VlParams &p [[buffer(0)]],
@@ -423,6 +424,7 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 	float mu = dot(dir, L);
 	float canopy = p.gate.z >= 0.0 ? p.gate.z : max(st.canopy.x, p.tune.x);
 	float3 scatter = float3(0.0);
+	float od = 0.0; // (2026-11, air8.z) what dims the scene behind this pixel (air mode; vl_temporal_fold)
 	bool underwater = p.water2.y > 0.5;
 	int n = int(p.shape.z);
 	float3 c0o = (f.shadowViewProj[0] * float4(0.0, 0.0, 0.0, 1.0)).xyz, c0d = (f.shadowViewProj[0] * float4(dir, 0.0)).xyz;
@@ -488,6 +490,7 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 		// (one transmittance for all three channels, from the haze's luminance: its colour matters in what it scatters, its
 		// extinction over the march is at most ~0.1, so a grey one costs nothing visible and a third of the exp per step)
 		float trans = 1.0, mistAll = 0.0, mistLit = 0.0, forestLit = 0.0, forestAll = 0.0;
+		float forestOD = 0.0; // (2026-11, air8.z) the forest air's optical depth along the ray (at its density, x airDim below)
 		float hazeAll = 0.0, hazeLit = 0.0; // (FT2.7, audit idx 1: scalars, times sigR once after the loop)
 		float apAll = 0.0, apLit = 0.0; // (FT2.12) the ray's length and its sunlit part (the aerial blend's glow, uniform along it)
 		float lumR = dot(sigR, float3(0.2126, 0.7152, 0.0722));
@@ -558,6 +561,7 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 			apLit += v * dt;
 			forestLit += v * dF * seg;
 			forestAll += dF * seg;
+			forestOD += dF * dt;
 			trans *= stepT;
 		}
 		float3 hA = hazeAll * sigR, hL = hazeLit * sigR;
@@ -594,6 +598,11 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 		// the sky lights the air around the camera, shadeAirSky: a cave is all shade, so the forest air filled it with sky-blue fog)
 		float3 forest = p.light.rgb * (3.14159265 * phF * glow) * forestLit + f.ambientSky.rgb * (0.9 * p.air3.w * shadeAirSky(sl)) * forestAll;
 		scatter = shadowed * p.air2.z + forest * (p.air2.w * p.shape.x);
+		// (2026-11, C5: air8.z = mcopt.shade.vl.airDim, 0 = off) the forest air dims what is behind it as Photon's air does (scene x T +
+		// light): shadowed forest air darkens the background a little, lit shafts stand out of it instead of only adding light (the
+		// "milky" look of strong forest air). Its optical depth, x airDim (~ its extinction relative to the density), goes out as a
+		// third target; vl_temporal_fold filters it and puts T = e^-od in lightT.a, which the final pass multiplies the scene by
+		od = forestOD * abs(p.air8.z);
 	} else if (!underwater) {
 		float D = min(dist, p.shape.y);
 		float mist = p.medium.y;
@@ -810,6 +819,7 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 	// the sky mask: how open the sky is here; M3: the volumetric clouds' transmittance there, so next frame's crepuscular
 	// taps toward the sun see the clouds (dark rays across the aureole from the clouds around the sun)
 	o.sky = skyT;
+	o.od = half(min(od, 30.0));
 	return o;
 }
 
@@ -940,7 +950,59 @@ fragment half4 vl_temporal(VlOut in [[stage_in]], constant ShadeFrame &f [[buffe
 struct VlFoldOut {
 	half4 history [[color(0)]];
 	half4 lightT [[color(1)]];
+	half od [[color(2)]]; // (2026-11, air8.z) the filtered optical depth of what dims the scene (R16F): next frame's od history
 };
+
+// (2026-11, C5: air8.z) the optical depth the scene behind is dimmed by: this frame's (the march's third target, a 3x3 weighted by
+// depth: the density is smooth, its noise is the steps' per-texel offsets) blended with last frame's at this point, as the light's
+// history is (weight temporal.x, clamped to the neighbourhood's range, widened while the view is still). histOk false: no od history
+// to use (mcvl.m kept none last frame: air8.z < 0), then this frame's alone. T flickering at the march's noise would show on the
+// crisp scene it multiplies, so it gets the same temporal filtering as the light it goes with.
+static inline float vlOdTemporal(VlOut in, constant ShadeFrame &f, constant VlParams &p, texture2d<half> raw, texture2d<half> history,
+                                 texture2d<half> odRaw, texture2d<half> odPrev, bool histOk) {
+	int2 px = int2(in.position.xy), hi = int2(p.size.xy) - 1;
+	float d = float(raw.read(uint2(px)).a);
+	float tol = 0.03 * d + 0.3;
+	float sum = 0.0, wsum = 0.0, mn = 1e9, mx = -1e9;
+	for (int j = -1; j <= 1; j++) {
+		for (int i = -1; i <= 1; i++) {
+			uint2 q = uint2(clamp(px + int2(i, j), int2(0), hi));
+			float s = float(odRaw.read(q).r);
+			float w = i == 0 && j == 0 ? 2.0 : exp(-abs(float(raw.read(q).a) - d) / tol);
+			sum += s * w;
+			wsum += w;
+			if (w > 0.35) {
+				mn = min(mn, s);
+				mx = max(mx, s);
+			}
+		}
+	}
+	float cur = sum / wsum;
+	if (!histOk || p.temporal.y > 0.5) return cur;
+	// this point in last frame's view (as vlTemporalRaw)
+	float2 scale = p.size.zw / p.size.xy;
+	float2 fpos = floor(in.position.xy * scale) + 0.5;
+	float3 dir = vlDirection(fpos / p.size.zw * 2.0 - 1.0, f);
+	bool sky = d >= 9000.0;
+	float4 pc = sky ? f.prevViewProj * float4(dir, 0.0) : f.prevViewProj * float4(shadeEye(f.invViewProj) + dir * d, 1.0);
+	if (pc.w <= 1e-4) return cur;
+	float2 puv = (pc.xy / pc.w) * 0.5 + 0.5;
+	if (any(puv < 0.0) || any(puv > 1.0)) return cur;
+	constexpr sampler lin(filter::linear, address::clamp_to_edge);
+	float2 hs = p.carve.z > 0.0 ? p.carve.zw : float2(1.0);
+	float2 hdim = float2(odPrev.get_width(), odPrev.get_height());
+	float2 huv = clamp(puv * hs, 0.5 / hdim, hs - 0.5 / hdim);
+	// the same surface there (the light history's distance, bilinear: at a depth edge this frame's value alone)
+	float dPrev = sky ? 1e4 : length(dir * d + p.camDelta.xyz);
+	if (abs(float(history.sample(lin, huv).a) - dPrev) >= 0.08 * dPrev + 0.6) return cur;
+	float h = float(odPrev.sample(lin, huv).r);
+	float mid = 0.5 * (mn + mx), ext = 0.5 * (mx - mn) * 1.35 + 0.002 * (abs(mid) + 0.001);
+	if (p.sunPx.z > 0.0) {
+		float2 moved = puv * p.size.zw / scale - in.position.xy;
+		ext += (1.0 - smoothstep(0.75, 2.0, length(moved))) * p.sunPx.z * (abs(mid) + 0.5 * (mx - mn));
+	}
+	return max(mix(cur, clamp(h, mid - ext, mid + ext), p.temporal.x), 0.0);
+}
 
 // The shafts' local contrast (2026-10-09, Gael: the stronger god rays veiled the view "como un lente empanado"). Where a ray
 // crosses tens of blocks of lit mist (a low sun under the trees, the lit clearing behind a trunk) the in-scattered light is a
@@ -957,7 +1019,7 @@ static inline float vlVeilR(float3 light, float3 dir, float dist, constant VlPar
 
 fragment VlFoldOut vl_temporal_fold(VlOut in [[stage_in]], constant ShadeFrame &f [[buffer(16)]], constant VlParams &p [[buffer(0)]],
                                     constant VlState &st [[buffer(1)]], texture2d<half> raw [[texture(0)]], texture2d<half> history [[texture(1)]],
-                                    texture2d<half> veil [[texture(2)]]) {
+                                    texture2d<half> veil [[texture(2)]], texture2d<half> odRaw [[texture(3)]], texture2d<half> odPrev [[texture(4)]]) {
 	VlFoldOut o;
 	o.history = vlTemporal(in, f, p, raw, history);
 	float3 light = float3(o.history.rgb);
@@ -991,6 +1053,13 @@ fragment VlFoldOut vl_temporal_fold(VlOut in [[stage_in]], constant ShadeFrame &
 			light += p.mistAmb.rgb * (1.0 - T);
 		}
 	}
+	// (2026-11, C5: air8.z != 0, the air mode only) the forest air dims what is behind it (vl_march's od, filtered over time)
+	float od = 0.0;
+	if (p.air8.z != 0.0 && air) {
+		od = vlOdTemporal(in, f, p, raw, history, odRaw, odPrev, p.air8.z > 0.0);
+		T *= exp2(-1.442695 * od);
+	}
+	o.od = half(od);
 	o.lightT = half4(half3(min(light, 30000.0)), half(T));
 	return o;
 }
