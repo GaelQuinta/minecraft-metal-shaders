@@ -937,6 +937,18 @@ static inline float2 shadeWaterSwellMask(float2 s, float3 v, float k) {
 	float al = dot(s, vh);
 	return s + vh * (max(al, -k * (-v.y) * rsqrt(max(1.0 - v.y * v.y, 1e-6))) - al);
 }
+#ifdef MCOPT_HDR
+// (S2) How much of the swell the water at camera-relative p gets: the open-water map near the camera (ShadeResources.waterOpen,
+// WaterOpenScan: distance to the shore x the biome's gain; toroidal, 2 blocks per texel, 256 across: the 2048-block wrap of
+// shadeWaterXZ is 8 tiles, so they agree), its outer ring's mean (wp.swell2.x) farther than the map reaches (faded over 96-120 blocks,
+// which also hides the toroidal seam and a map a few frames behind a flight). 1 without a map (wp.swell2.x < 0).
+static inline float shadeWaterOpen(float3 p, constant ShadeFrame &f, constant ShadeWaterParams &wp, texture2d<half> open) {
+	if (wp.swell2.x < 0.0) return 1.0;
+	constexpr sampler s(filter::linear, address::repeat, coord::normalized);
+	float o = float(open.sample(s, shadeWaterXZ(p.xz, f) * (1.0 / 256.0), level(0.0)).r);
+	return mix(o, wp.swell2.x, smoothstep(96.0, 120.0, length(p.xz)));
+}
+#endif
 #endif
 
 // ---- the surface ------------------------------------------------------------------------------------------------------------

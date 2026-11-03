@@ -116,7 +116,7 @@ struct ShadeResources {
 	texture2d<half> shadowTint;  // 6  (M3 weather) coloured shadows: near cascade tint map (RGBA16F, rgb transmittance, a reversed-Z light depth of the nearest translucent caster)
 	texture2d<float> pbrNormal;
 	texture2d<float> pbrSpecular;
-	texture2d<half> reserved9;
+	texture2d<half> waterOpen;   // 9  (2026-11-02, water round 1) RGBA8 128^2 toroidal open-water map, 2 blocks per texel (water.metal shadeWaterOpen; ShadeWater.openMap)
 	texture2d<half> reserved10;
 	texture2d<half> aurora;      // 11 (M3.3 dims) RGBA16F the aurora for this frame's view at a fraction of the output size (aurora.metal; read when ShadeLook bit SHADE_DIMS_AURORA_TEX)
 	texture2d<half> cloudShadow; // 12 M3 clouds: R16F cumulus transmittance toward the light (ShadeLook.cloudShadowVP), 256^2

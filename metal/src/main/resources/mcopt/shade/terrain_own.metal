@@ -360,11 +360,18 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #endif
 #ifdef SHADE_WATER_SWELL
 		// (2026-11-02, water round 1) the swell (water.metal shadeWaterSwell; mcopt.shade.water.swell, 0 = none): still water's top
-		// faces seen from above (currents and falls keep their own look), computed here like the fine ripples; rain and thunder raise it
+		// faces seen from above (currents and falls keep their own look), computed here like the fine ripples; rain and thunder raise it,
+		// (S2) the open-water map decides where (the sea swells, lakes and rivers stay calm, shores calm it; HDR: ShadeResources)
 		wi.swell = float4(0.0);
+		float swellOpen = 0.0;
 		if (n.y > 0.5h && waterSprite == 1 && wp.swell.x > 0.0 && !SHADE_CAMERA_UNDERWATER(sf)) {
-			float amp = wp.swell.x * (1.0 + 0.8 * wp.state.z) * (1.0 + 0.6 * sf.weather.y);
-			wi.swell = shadeWaterSwell(shadeWaterXZ(p.xz, sf), shadeWaterTime(sf), wi.dxz, amp);
+#ifdef MCOPT_HDR
+			swellOpen = shadeWaterOpen(p, sf, wp, sr.waterOpen);
+#else
+			swellOpen = 1.0;
+#endif
+			float amp = wp.swell.x * (1.0 + 0.8 * wp.state.z) * (1.0 + 0.6 * sf.weather.y) * swellOpen;
+			if (amp > 0.0) wi.swell = shadeWaterSwell(shadeWaterXZ(p.xz, sf), shadeWaterTime(sf), wi.dxz, amp);
 		}
 #endif
 #if defined(SHADE_WAVE_BAKE) && !defined(SHADE_LEAN_NOFALLS)
@@ -415,6 +422,10 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #endif
 		alpha = 1.0; // the water composited what is behind it from the scene copy
 		if (debug == 7) radiance = float3(saturate(wi.footprint * 4.0), float(waterSprite == 2), saturate(length(p) / 128.0)) / max(ex, 1e-3);
+#ifdef SHADE_WATER_SWELL
+		// (2026-11-02, mcopt.shade.debug=9) the swell: r its open-water share, g its resolved slope (0.1 = 1), b the faded trains' roughness
+		if (debug == 9) radiance = float3(swellOpen, saturate(length(wi.swell.xy) * 10.0), saturate(sqrt(wi.swell.w) * 20.0)) / max(ex, 1e-3);
+#endif
 	} else
 #endif
 	if (water) {

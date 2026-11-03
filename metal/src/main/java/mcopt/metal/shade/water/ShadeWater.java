@@ -183,6 +183,42 @@ public final class ShadeWater {
 		return ON && (SWELL_CODE || SWELL_DEV);
 	}
 
+	/** (2026-11-02, S2) ShadeResources entry of the open-water map (shade_look.metal waterOpen). */
+	static final int RES_OPEN = 9;
+	/** The map's textures (WaterOpenScan's size, RGBA8, filled by the CPU): a ring, so a new map never overwrites one a frame in flight reads. */
+	private static final long[] OPEN_TEX = new long[3];
+	private static int openNext;
+	private static boolean openFailed;
+	/** The map's outer-ring mean for the water beyond it (ShadeWaterParams.swell2.x); < 0 = no map: the swell everywhere at its strength. */
+	private static float openFar = -1f;
+
+	/**
+	 * (2026-11-02, S2) A new open-water map (WaterOpenScan): size x size RGBA8 in the direct buffer rgba (toroidal: texel (x mod size, z mod size)
+	 * holds the 2x2-block cell (floor(X / 2), floor(Z / 2)); r = how open the water is there, 0..1), and far = its outer ring's mean, for
+	 * the water beyond it. Uploaded into the next texture of a small ring and published as ShadeResources entry {@link #RES_OPEN}; HDR
+	 * only (the terrain reads ShadeResources). Render thread.
+	 */
+	static void openMap(ByteBuffer rgba, int size, float far) {
+		if (openFailed || !mcopt.metal.shade.ShadeConfig.HDR) return;
+		try {
+			int i = openNext;
+			if (OPEN_TEX[i] == 0) OPEN_TEX[i] = mcopt.metal.shade.ShadeRender.textureCpu(size, size, "mcopt shade water: open-water map " + i);
+			mcopt.metal.shade.ShadeRender.upload(OPEN_TEX[i], 0, 0, size, size, MemoryUtil.memAddress(rgba), size * 4);
+			mcopt.metal.shade.ShadeRender.resource(RES_OPEN, OPEN_TEX[i]);
+			openNext = (i + 1) % OPEN_TEX.length;
+			openFar = far;
+		} catch (Throwable e) {
+			openFailed = true;
+			openFar = -1f;
+			System.out.println("[mcopt] shade: water open-water map failed, the swell is the same everywhere from now on: " + e);
+		}
+	}
+
+	/** (2026-11-02, S2) No open-water map (off, a new world): the shader scales the swell by 1 everywhere. */
+	static void openNone() {
+		openFar = -1f;
+	}
+
 	/** M3.4: the default soft shadow radius on water (blocks). */
 	static final float SHADOW_SOFT_DEFAULT = 2f;
 	/** M2.1: the water animates on a real-time clock instead of the (server-corrected, tick-based) game time. */
@@ -371,7 +407,7 @@ public final class ShadeWater {
 		// Fresnel (.swellFresnel, 1 physical, 0 = the cosine without it)
 		p.putFloat(64, mcopt.metal.shade.Live.f("mcopt.shade.water.swell", 0f, 0f, 3f)).putFloat(68, mcopt.metal.shade.Live.f("mcopt.shade.water.swellMask", 0.45f, 0f, 1f))
 			.putFloat(72, 0f).putFloat(76, mcopt.metal.shade.Live.f("mcopt.shade.water.swellFresnel", 1f, 0f, 1f));
-		p.putFloat(80, -1f).putFloat(84, 0f).putFloat(88, mcopt.metal.shade.Live.f("mcopt.shade.water.calm", CALM, 0.05f, 2f))
+		p.putFloat(80, openFar).putFloat(84, 0f).putFloat(88, mcopt.metal.shade.Live.f("mcopt.shade.water.calm", CALM, 0.05f, 2f))
 			.putFloat(92, mcopt.metal.shade.Live.f("mcopt.shade.water.ripple", RIPPLE, 0f, 3f));
 		// the swell's share in the mirrored images' direction (.swellRefl: 0.45 = the ripples' share, 1 = all of it; STUDY item 2)
 		p.putFloat(96, mcopt.metal.shade.Live.f("mcopt.shade.water.swellRefl", 0.45f, 0f, 1f)).putFloat(100, 0f).putFloat(104, 0f).putFloat(108, 0f);
