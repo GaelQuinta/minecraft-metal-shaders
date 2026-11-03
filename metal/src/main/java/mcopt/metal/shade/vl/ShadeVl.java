@@ -50,7 +50,7 @@ import org.lwjgl.system.MemoryUtil;
  * render3dHud mixin path (M1 LDR composite) remains for mcopt.shade.hdr=false. See VL.md and M2_INTEGRATION.md.
  */
 public final class ShadeVl {
-	private static final int PARAM_BYTES = 496; // VlParams (vl.metal), 31 x float4 since FT2.7
+	private static final int PARAM_BYTES = 512; // VlParams (vl.metal), 32 x float4 since 2026-11 (all of mcvl.m's local copy)
 	private static final int ERR = 2048;
 	private static final float SEA = 63f;
 	/** M2: the open-air medium = the base's haze / mist sigma x these (see pack). */
@@ -590,6 +590,10 @@ public final class ShadeVl {
 		// (w: the crepuscular taps reprojected into last frame's sky mask: mcopt.shade.vl.crepReproj, live)
 		put(b, VlConfig.live("mcopt.shade.vl.airColLo", 1.5f), VlConfig.live("mcopt.shade.vl.airColNear", 12f), VlConfig.live("mcopt.shade.vl.airColBox", 0f),
 			VlConfig.live("mcopt.shade.vl.crepReproj", 1f));
+		// air8 (2026-11 godrays, round 1: work/notes/2026-11-02/godrays/DESIGN.md section 5; every default is the image before it,
+		// so one session can A/B each live key): x the air march's step spacing, y the golden-hour mist over the sky, z the forest
+		// air dimming what is behind it, w the temporal pass's spatial filter
+		put(b, 0f, 0f, 0f, 1f);
 		// (air mode: the haze's shadows count wherever the sun is up, even with no forest around)
 		if (userRays <= 0f) return false;
 		if (userWater <= 0f) return false; // (1.1: under water with its shafts at 0 nothing is added: no passes, as above)

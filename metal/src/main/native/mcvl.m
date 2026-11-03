@@ -336,7 +336,7 @@ int mc_vl_render(Enc *enc, VlState *s, id<MTLTexture> color, id<MTLTexture> dept
 			s->height = vlHeight;
 			reset = 1;
 		}
-		float local[128]; // VlParams (448 bytes since godrays v3) and room to grow
+		float local[128]; // VlParams: 512 bytes since 2026-11 (air8), all of it; the next float4 needs float local[160]
 		if (paramBytes > (int) sizeof(local)) paramBytes = sizeof(local);
 		memcpy(local, params, paramBytes);
 		if (reset && paramBytes >= 38 * 4) local[37] = 1.0f; // VlParams.temporal.y: the temporal pass drops the history

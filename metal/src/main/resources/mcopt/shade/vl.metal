@@ -48,7 +48,8 @@
 
 constant bool VL_HDR [[function_constant(0)]];
 
-// Per-frame parameters (mcopt.metal.shade.vl.ShadeVl packs exactly this layout; 29 x float4 = 464 bytes since FT2.6).
+// Per-frame parameters (mcopt.metal.shade.vl.ShadeVl packs exactly this layout; 32 x float4 = 512 bytes since 2026-11, all of
+// mcvl.m's local copy: the next float4 needs a bigger one there).
 struct VlParams {
 	float4 size;      //   0 xy VL live size (px: the part of the VL targets this frame covers), zw full-resolution live size (px)
 	float4 shape;     //  16 x strength, y max march distance (blocks), z step count, w forward HG g
@@ -127,6 +128,11 @@ struct VlParams {
 	                  //     blocker within that many blocks toward the light shades a column's tap (leaves above, not a far tree), z > 0:
 	                  //     the columns and FT2.6's box both (the lesser open share), w > 0: the crepuscular taps march last frame's
 	                  //     sky mask where this pixel and the sun were last frame (audit idx 21)
+	float4 air8;      // 496 (2026-11 godrays, round 1; each 0 = as before unless said): x the air march's step spacing, its linear
+	                  //     share (0 = quadratic, FT2.3; 1 = Photon's uniform steps), y the golden-hour mist over the sky with the
+	                  //     shadows (sky pixels march to the end; 0 = none), z the forest air dims what is behind it (x its optical
+	                  //     depth; 0 = additive only, FT2.3; mcvl.m makes it negative on a frame whose od history is stale), w the
+	                  //     temporal pass's spatial filter, its neighbours' weight (1 = as before, 0 = the texel alone)
 };
 // The shade grid (godrays v3): a camera-centred block of cells holding the share of sunlit points around each (R8, trilinear)
 #define VL_GRID_X 64
