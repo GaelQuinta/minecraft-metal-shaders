@@ -125,6 +125,12 @@ public final class ShadeWater {
 	public static final float SSR_THICK = Math.clamp(floatProperty("mcopt.shade.water.ssrThick", 3f), 0.5f, 8f);
 	public static final boolean SSR_BEHIND = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrBehind", "true"));
 	/**
+	 * 1.2.7 (water.metal SHADE_SSR_TOP): how far past the top screen edge (NDC) the march goes on against the top row, fading to
+	 * nothing there (mcopt.shade.water.ssrTop, 0.15; 0 = candidate 3: the top edge ends it; candidate 4 went 0.5 at half weight and
+	 * streaked the top row down the water when looking down at a lake).
+	 */
+	public static final float SSR_TOP = Math.clamp(floatProperty("mcopt.shade.water.ssrTop", 0.15f), 0.001f, 1f);
+	/**
 	 * FT1.3 {@code mcopt.shade.water.style}: "photon" (default; Gael: "reflejos pixeleados", "agua como el mar de Photon"):
 	 * smooth ripples without M2.1's 1/16-block cells and crest pattern, calmer in clear weather (mcopt.shade.water.calm, 0.55
 	 * of the M2.1 slopes; rain brings them back), patches of calmer and rougher water, flatter at grazing angles (a near-mirror
@@ -286,7 +292,8 @@ public final class ShadeWater {
 			if (DETAIL_EXTRAS) b.append("#define SHADE_WATER_DETAIL_EXTRAS 1\n");
 		}
 		if (SSR_EDGE) b.append("#define SHADE_SSR_EDGE 1\n");
-		b.append("#define SHADE_SSR_THICK_K ").append(SSR_THICK).append("\n#define SHADE_SSR_BEHIND ").append(SSR_BEHIND ? 1 : 0).append('\n');
+		b.append("#define SHADE_SSR_THICK_K ").append(SSR_THICK).append("\n#define SHADE_SSR_BEHIND ").append(SSR_BEHIND ? 1 : 0)
+			.append("\n#define SHADE_SSR_TOP ").append(SSR_TOP).append('\n');
 		// 2026-10-08: the SSR march decides in reversed-Z depth (same decisions, no division per step); false = FT1.3's march
 		if (Boolean.parseBoolean(System.getProperty("mcopt.shade.water.rawz", "true"))) b.append("#define SHADE_SSR_RAWZ 1\n");
 		// (FT2.8, audit idx 57/58) the RAWZ march's bisection in 2 rounds of 3 reads and its fallback kept as one float: same image,
@@ -432,8 +439,10 @@ public final class ShadeWater {
 		p.putFloat(80, openFar).putFloat(84, 0f).putFloat(88, mcopt.metal.shade.Live.f("mcopt.shade.water.calm", CALM, 0.05f, 2f))
 			.putFloat(92, mcopt.metal.shade.Live.f("mcopt.shade.water.ripple", RIPPLE, 0f, 3f));
 		// the swell's share in the mirrored images' direction (.swellRefl: 0.45 = the ripples' share, 1 = all of it; STUDY item 2)
-		// and the glint's glitter (.glitter 0..3, 0 = none; STUDY item 3)
-		p.putFloat(96, mcopt.metal.shade.Live.f("mcopt.shade.water.swellRefl", 1f, 0f, 1f))
+		// and the glint's glitter (.glitter 0..3, 0 = none; STUDY item 3). 1.2.7 candidate 5 (Gael, 2026-11-03: "los reflejos se
+		// cortan de repente"): 1 -> 0.45. All of the swell tilted the mirrored rays by up to ~12 degrees: shores and trees mirrored
+		// far from where they stand, cut into slivers and doubled lines; at the ripples' share the images stay whole and wavy
+		p.putFloat(96, mcopt.metal.shade.Live.f("mcopt.shade.water.swellRefl", 0.45f, 0f, 1f))
 			.putFloat(100, mcopt.metal.shade.Live.f("mcopt.shade.water.glitter", 1f, 0f, 3f)).putFloat(104, 0f).putFloat(108, 0f);
 		WaterNative.params(state, MemoryUtil.memAddress(p));
 	}

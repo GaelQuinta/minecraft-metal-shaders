@@ -33,7 +33,7 @@ import net.minecraft.world.level.material.Fluids;
  * around the camera, {@link #N}^2 cells of 2x2 blocks (256 blocks across, toroidal by absolute cell so it scrolls without copying):
  * smoothstep(4, fetch, distance to the nearest land column in blocks; mcopt.shade.water.swellFetch, 48: raise it to calm bays and
  * lakes that are wide but enclosed) x the biome's gain (oceans 0.8-1, beaches 0.75, rivers 0.25,
- * swamps 0.15, anything else, i.e. inland lakes, mcopt.shade.water.swellLake, 0.4), blurred over 3x3 cells. The shader scales the
+ * swamps 0.15, anything else, i.e. inland lakes, mcopt.shade.water.swellLake, 0.25; 0.4 in candidate 4), blurred over 3x3 cells. The shader scales the
  * swell's strength by it near the camera and by its outer ring's mean (96-128 blocks) beyond (ShadeWaterParams.swell2.x).
  * <p>
  * Cheap and spread over frames: one column per cell (the client's MOTION_BLOCKING_NO_LEAVES heightmap, which counts fluids, and the
@@ -138,7 +138,7 @@ public final class WaterOpenScan {
 
 	private static void build(int ccx, int ccz) {
 		final int inf = 1 << 20;
-		float lake = Live.f("mcopt.shade.water.swellLake", 0.4f, 0f, 1f);
+		float lake = Live.f("mcopt.shade.water.swellLake", 0.25f, 0f, 1f); // (candidate 5: calmer lakes, mirrors as Gael likes them)
 		float fetch = Live.f("mcopt.shade.water.swellFetch", 48f, 8f, 120f);
 		int ox = ccx - N / 2, oz = ccz - N / 2;
 		for (int j = 0; j < N; j++) {
