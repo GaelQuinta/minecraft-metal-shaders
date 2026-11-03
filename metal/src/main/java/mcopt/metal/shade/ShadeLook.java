@@ -195,7 +195,7 @@ public final class ShadeLook {
 		// Portions adapted from Photon Shaders by Benjamin Stott ("sixthsurge"), MIT License, commit 26c2906e (full text:
 		// LICENSES/MIT-Photon.txt): program/c0_vl.vsh (air_fog_mie_coeff: the densities and the blue hour) and shaders.properties
 		// (the time uniforms me_fade, me_weight, time_sunrise, time_noon, time_sunset)
-		float gm = this.frames - this.vlAirFrame <= 2 ? Live.f("mcopt.shade.vl.goldenMist", 0f, 0f, 1.5f) : 0f;
+		float gm = this.frames - this.vlAirFrame <= 2 ? Live.f("mcopt.shade.vl.goldenMist", 1.2f, 0f, 1.5f) : 0f;
 		this.goldenMist = gm;
 		if (gm > 0f) {
 			float fade = sunY < 0.18f ? 0.37f + 1.2f * Math.max(0f, -sunY) : 1.7f;

@@ -515,7 +515,11 @@ public final class ShadeVl {
 		// tune2: x the far march's density gain, y its cut (mcopt.shade.vl.farGain / farCut, live)
 		// (z: the shafts' soft edge radius in blocks, mcopt.shade.vl.soft, live; 0 = sharp)
 		// (FT2.3: soft shaft edges, 0.8 blocks: the lit air under a big gap no longer reads as a hard-edged glass sheet)
-		put(b, VlConfig.live("mcopt.shade.vl.farGain", 1f), VlConfig.live("mcopt.shade.vl.farCut", hdr ? HDR_OPEN_CUT : 0.5f), VlConfig.look("mcopt.shade.vl.soft", 0.8f, 0f),
+		// 1.2.7 (Gael: god rays "mucho mejor"; work/notes/2026-11-02/godrays): new defaults, A/B in his seed forest and at golden hour:
+		// soft 0.8 -> 0.15 (crisp shaft edges), airNear 24 -> 6 (shafts near the player), airG 0.7 -> 0.45 / airIso 0.05 -> 0.2 /
+		// airForestGain 0.55 -> 0.8 (seen from the side, no blob at the sun), airLinear 0.5, airDim 0.6, spatial 0.3, goldenMist 1.2,
+		// skyMist 1.5 (round 1); same GPU time within noise at day
+		put(b, VlConfig.live("mcopt.shade.vl.farGain", 1f), VlConfig.live("mcopt.shade.vl.farCut", hdr ? HDR_OPEN_CUT : 0.5f), VlConfig.look("mcopt.shade.vl.soft", 0.15f, 0f),
 			VlConfig.live("mcopt.shade.vl.radialStep", 2f)); // w: the radial blur's tap spacing (VL pixels; v3i: 12 x 2 ~ the reference look)
 		// hp (2026-10-09, Gael: the stronger shafts veiled the view "como un lente empanado"): the shafts' local contrast under trees
 		// (vl.metal vlVeilR; fold only): x the share of the local mean glow kept, y the gain of what stands out of it, z the veil
@@ -545,7 +549,7 @@ public final class ShadeVl {
 		// shadows take out over the sky (mcopt.shade.vl.airSkyCut), gains (airShadow: the shadowed part, airForestGain)
 		// (airSkyCut 0: the final pass draws no haze over the sky, so the shadows have none to take out there; the sky's dark rays
 		// stay the screen-space ones)
-		put(b, airEnd, VlConfig.live("mcopt.shade.vl.airSkyCut", 0f), VlConfig.live("mcopt.shade.vl.airShadow", 1f), VlConfig.live("mcopt.shade.vl.airForestGain", 0.55f));
+		put(b, airEnd, VlConfig.live("mcopt.shade.vl.airSkyCut", 0f), VlConfig.live("mcopt.shade.vl.airShadow", 1f), VlConfig.live("mcopt.shade.vl.airForestGain", 0.8f));
 		// grid (godrays v3): the shade grid's corner (camera-relative; cells snapped to the world: 64 x 32 x 64 cells of
 		// mcopt.shade.vl.airCell blocks, from 3/8 of its height below the camera), and how far around a cell its taps reach
 		// (mcopt.shade.vl.airGridR, live)
@@ -561,7 +565,7 @@ public final class ShadeVl {
 		// share was a uniform bluish veil. trunk-w19, Gael: "un artefacto de luz sobre la parte de arriba del tronco, como si el haz
 		// lo atravesara": the lit forest air 5-8 blocks in front of a trunk lit it up; faded in over 24 blocks instead of 10 the
 		// trunk is clean and the beam past it stays)
-		put(b, VlConfig.live("mcopt.shade.vl.airLitLo", 0.3f), VlConfig.live("mcopt.shade.vl.airLitHi", 0.85f), VlConfig.live("mcopt.shade.vl.airNear", 24f),
+		put(b, VlConfig.live("mcopt.shade.vl.airLitLo", 0.3f), VlConfig.live("mcopt.shade.vl.airLitHi", 0.85f), VlConfig.live("mcopt.shade.vl.airNear", 6f),
 			VlConfig.live("mcopt.shade.vl.airSky", 0.05f));
 		// air4: the forest air's share over open sunlit land (mcopt.shade.vl.airBase), its phase (airG: a forward lobe's g, 0 =
 		// Photon's two lobes over four octaves; airIso: the isotropic share with it), live
@@ -573,7 +577,7 @@ public final class ShadeVl {
 		// frame & 3 left some world slices never refreshed, stripes of stale forest air every 8 blocks)
 		boolean gridAll = reset || cell != lastCell || VlConfig.live("mcopt.shade.vl.airGridAll", 0f) > 0.5f;
 		lastCell = cell;
-		put(b, VlConfig.live("mcopt.shade.vl.airBase", 0f), VlConfig.live("mcopt.shade.vl.airG", 0.7f), VlConfig.live("mcopt.shade.vl.airIso", 0.05f),
+		put(b, VlConfig.live("mcopt.shade.vl.airBase", 0f), VlConfig.live("mcopt.shade.vl.airG", 0.45f), VlConfig.live("mcopt.shade.vl.airIso", 0.2f),
 			gridAll ? -1f : (float) Math.floorMod((long) frame - cz, 4L));
 		// air5 (FT2.6): the forest air's fade-out with the distance from the camera (blocks: mcopt.shade.vl.airFar0 / airFar1, live;
 		// 0 = none, FT2.5)
@@ -598,19 +602,19 @@ public final class ShadeVl {
 		// air dimming what is behind it, w the temporal pass's spatial filter
 		// (x, C2: mcopt.shade.vl.airLinear, live, 0..1: the steps' linear share; 0 = quadratic, FT2.3; 1 = Photon's even steps; 0.5
 		// puts more of them over 5-25 blocks, where the beams you walk through are once airNear is short)
-		float airLinear = air ? Math.max(0f, Math.min(1f, VlConfig.live("mcopt.shade.vl.airLinear", 0f))) : 0f;
+		float airLinear = air ? Math.max(0f, Math.min(1f, VlConfig.live("mcopt.shade.vl.airLinear", 0.5f))) : 0f;
 		// (z, C5: mcopt.shade.vl.airDim, live, 0..4: the forest air dims what is behind it by e^-(airDim x its optical depth), Photon's
 		// scene x T + light; 0 = additive only, FT2.3. ~0.6 = its extinction about its scattered share 0.55 / albedo 0.9. On costs a
 		// R16F target and its history at the VL resolution and the fold's light + T again: mcvl.m)
-		float airDim = air ? Math.max(0f, Math.min(4f, VlConfig.live("mcopt.shade.vl.airDim", 0f))) : 0f;
+		float airDim = air ? Math.max(0f, Math.min(4f, VlConfig.live("mcopt.shade.vl.airDim", 0.6f))) : 0f;
 		// (w, C6: mcopt.shade.vl.spatial, live, 0..1: the temporal pass's spatial filter, its four neighbours' weight; 1 = as before, 0 =
 		// the texel alone, ~1 VL texel less blur every frame; every mode, not only the air mode)
-		float spatial = Math.max(0f, Math.min(1f, VlConfig.live("mcopt.shade.vl.spatial", 1f)));
+		float spatial = Math.max(0f, Math.min(1f, VlConfig.live("mcopt.shade.vl.spatial", 0.3f)));
 		// (y, C7: mcopt.shade.vl.skyMist, live, 0..2: the golden-hour mist over the sky, lit by the sun and cut by the shadows of hills,
 		// trees and cloud gaps: wedges fanning from a low sun across the sky; 0 = none, the sky's dark screen-space rays only. x the
 		// golden hour (all of it below sunY 0.1, none above 0.55: no cost by day) and the player's god rays. Sky pixels then march to
 		// the end instead of stopping at the shade grid's edge, ~+0.1-0.25 ms in the golden hour; with airDim it also dims the sky)
-		float skyMist = air && sunLight ? Math.max(0f, Math.min(2f, VlConfig.live("mcopt.shade.vl.skyMist", 0f))) * smoothstep(0.55f, 0.1f, sunY) * userRays : 0f;
+		float skyMist = air && sunLight ? Math.max(0f, Math.min(2f, VlConfig.live("mcopt.shade.vl.skyMist", 1.5f))) * smoothstep(0.55f, 0.1f, sunY) * userRays : 0f;
 		put(b, airLinear, skyMist, airDim, spatial);
 		// (air mode: the haze's shadows count wherever the sun is up, even with no forest around)
 		if (userRays <= 0f) return false;
