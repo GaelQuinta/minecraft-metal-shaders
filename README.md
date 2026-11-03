@@ -199,9 +199,9 @@ by Noah Dunnagan, so a star on his repo is a nice thank-you too.
 
 - **mcopt** by Noah Dunnagan — Apache-2.0. Since 1.2 (mcopt 0.3) nothing is derived from Sodium; versions up to 1.0-alpha.4
   had Sodium-derived terrain shaders under the PolyForm Shield 1.0.0 licence.
-- Portions of the clouds and volumetric light are adapted from **Photon Shaders** by sixthsurge, from its MIT-licensed
-  snapshot `26c2906e` (`LICENSES/MIT-Photon.txt`). Other techniques credited in `NOTICE` (SE Natural Bloom, MJP's
-  Catmull-Rom, public papers). No code from Complementary, BSL or SEUS: those were only studied.
+- Portions of the clouds, the volumetric light and the golden-hour mist are adapted from **Photon Shaders** by
+  sixthsurge, from its MIT-licensed snapshot `26c2906e` (`LICENSES/MIT-Photon.txt`). Other techniques credited in
+  `NOTICE` (SE Natural Bloom, MJP's Catmull-Rom, public papers). No code from Complementary, BSL or SEUS: those were only studied.
 - Distant Horizons is LGPL and is not included; install it separately.
 - Shader code and the harness: Apache-2.0. Not affiliated with Mojang or Microsoft.
 

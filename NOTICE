@@ -40,3 +40,9 @@ from the camera to the scene with the sun's shadow at every step and the per-ste
 air's phase function (a forward and a backward Henyey-Greenstein lobe, 0.7 / 0.3 with g 0.5 / -0.2, summed over four octaves
 of a multiple-scattering approximation). The shade grid (vl_shade_grid), the shadowed-difference output and the rest of the
 file are original (Apache-2.0).
+
+Native shading golden-hour mist (metal/src/main/java/mcopt/metal/shade/ShadeLook.java, mcopt.shade.vl.goldenMist): portions
+adapted from the same Photon Shaders commit 26c2906e, Copyright (c) 2025 Benjamin Stott ("sixthsurge"), MIT License (full
+text: LICENSES/MIT-Photon.txt): the mist's density by the time of day and the blue hour (program/c0_vl.vsh,
+air_fog_mie_coeff), the time weights behind it (shaders.properties: me_fade, me_weight, time_sunrise, time_noon,
+time_sunset) and the evening glow (include/fog/air_fog_vl.glsl). The rest of the file is original (Apache-2.0).

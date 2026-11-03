@@ -236,6 +236,9 @@ public final class ShadeVl {
 			// (1.1: the march's end this frame, the air mode's or mcopt.shade.vl.dist, live: pack's airEnd either way)
 			ShadePost.setVolumetric(MemoryUtil.memGetAddress(OUTPUTS_OUT), MemoryUtil.memGetAddress(OUTPUTS_OUT + 8), airEndUsed, (float) lw / vw,
 				(float) lh / vh, airActive ? Math.max(VlConfig.live("mcopt.shade.vl.airFloor", 0.3f), 1e-3f) : 0f);
+			// (2026-11 godrays, C4) the air mode shadowed the haze this frame: the art layer may make the golden-hour mist denser
+			// (mcopt.shade.vl.goldenMist; it stops two frames after the air mode does: VL off, under water, a cave, a failure)
+			if (airActive && look != null) look.markVlAir();
 		}
 		prevLiveW = lw;
 		prevLiveH = lh;
