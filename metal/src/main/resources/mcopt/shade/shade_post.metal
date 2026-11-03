@@ -445,12 +445,17 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 	return c;
 }
 
+// Smooth, monotonic shadow toe: derivative 1 - exp(-y / phi) is nonnegative. The old -3 exponent reversed the darkest
+// tones (a brighter texel could become darker), accentuating fine texture in shadows. Beyond 16 phi the lift rounds away.
+static inline float3 shadeBlackFloor(float3 y, float phi) {
+	if (phi > 0.0 && any(y < 16.0 * phi)) y += phi * exp(-y / max(phi, 1e-6));
+	return y;
+}
+
 // The SDR display value -> what main stores: black floor, sRGB, triangular dither (+-1 LSB), debug view 4.
 template <bool LEAN = false>
 static inline float3 shadeFinalEncode(float3 y, float4 position, constant ShadeFinalParams &P, constant ShadeLook &L, float lum) {
-	float phi = L.grade2.w;
-	// (FT2.8, audit idx 39) only near black: from 8 phi up the term is under half an ulp of y (and 0 when phi is 0)
-	if (any(y < 8.0 * phi)) y += phi * exp(-3.0 * y / max(phi, 1e-6));
+	y = shadeBlackFloor(y, L.grade2.w);
 	float3 srgb = shadeLinearToSrgbExact(saturate(y));
 	// triangular dither, +-1 LSB
 	float n0 = shadeNoise(position.xy, int(P.p.z)), n1 = shadeNoise(position.xy + 17.0, int(P.p.z) + 7);
@@ -515,8 +520,7 @@ static inline float3 shadeFullHdr(float3 scene, constant ShadeLook &L, constant 
 	c = shadeLottes(c, float4(L.tonemap.xy, P.x.zw));
 	float3 y = max(shadeRows(L.gradeOut, c), 0.0);
 	y = max(y * L.grade3.rgb + L.grade2.rgb, 0.0);
-	float phi = L.grade2.w;
-	if (any(y < 8.0 * phi)) y += phi * exp(-3.0 * y / max(phi, 1e-6));
+	y = shadeBlackFloor(y, L.grade2.w);
 	// Hue-preserving peak bound after grading; never independently clip colour channels.
 	return y / max(1.0, max(max(y.r, y.g), y.b) / P.x.y);
 }
