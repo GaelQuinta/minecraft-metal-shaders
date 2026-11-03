@@ -443,7 +443,11 @@ public final class ShadeWater {
 		// cortan de repente"): 1 -> 0.45. All of the swell tilted the mirrored rays by up to ~12 degrees: shores and trees mirrored
 		// far from where they stand, cut into slivers and doubled lines; at the ripples' share the images stay whole and wavy
 		p.putFloat(96, mcopt.metal.shade.Live.f("mcopt.shade.water.swellRefl", 0.45f, 0f, 1f))
-			.putFloat(100, mcopt.metal.shade.Live.f("mcopt.shade.water.glitter", 1f, 0f, 3f)).putFloat(104, 0f).putFloat(108, 0f);
+			// (candidate 5, Gael's Photon references: the sun's road a narrow column of separate dashes) the glitter 1 -> 1.5 and the glint's
+			// base roughness factor (.glintSharp 0.1..2; 1 = candidate 4's broad ribbon; 0.3: A/B at sunrise and sunset over the sea,
+			// work/notes/2026-11-03 ps-k2, against 0.5 and 0.2)
+			.putFloat(100, mcopt.metal.shade.Live.f("mcopt.shade.water.glitter", 1.5f, 0f, 3f))
+			.putFloat(104, mcopt.metal.shade.Live.f("mcopt.shade.water.glintSharp", 0.3f, 0.1f, 2f)).putFloat(108, 0f);
 		WaterNative.params(state, MemoryUtil.memAddress(p));
 	}
 }

@@ -72,7 +72,7 @@ struct ShadeWaterParams {
 	float4 swell2; // x the open-water map's mean in its outer ring, for the water beyond it (< 0: no map, the swell everywhere at its
 	               // strength), y reserved (whitecaps), z the long waves' calm (mcopt.shade.water.calm, 0.55), w the ripples' (.ripple, 2.0)
 	float4 swell3; // x the swell's share in the mirrored images' direction (.swellRefl, 0.45 = the ripples' share, 1 = all of it),
-	               // y the glint's glitter (.glitter, 0 = none), zw reserved
+	               // y the glint's glitter (.glitter, 0 = none), z the glint's base roughness factor (.glintSharp, 1 = candidate 4's), w reserved
 };
 
 constexpr sampler shadeWaterLinear(filter::linear, address::clamp_to_edge, coord::normalized);
@@ -1431,7 +1431,10 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 #else
 	float far = saturate(dist / 110.0);
 #endif
-	float alpha = 0.035 + 0.10 * far + 0.06 * wp.state.z;
+	// (candidate 5, Gael's Photon references: the sun's road there is a narrow column of separate bright dashes) the base roughness
+	// x wp.swell3.z (mcopt.shade.water.glintSharp): the resolved ripples already spread the road; 0.035 drew each facet's sun ~4x the
+	// sun disk, a broad smooth ribbon
+	float alpha = 0.035 * wp.swell3.z + 0.10 * far + 0.06 * wp.state.z;
 #ifdef SHADE_WATER_SWELL
 	alpha = sqrt(alpha * alpha + w.swell.w); // (2026-11-02) the swell a pixel averages over widens the glitter road
 #endif
