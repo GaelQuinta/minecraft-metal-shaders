@@ -50,7 +50,7 @@ import org.lwjgl.system.MemoryUtil;
  * render3dHud mixin path (M1 LDR composite) remains for mcopt.shade.hdr=false. See VL.md and M2_INTEGRATION.md.
  */
 public final class ShadeVl {
-	private static final int PARAM_BYTES = 512; // VlParams (vl.metal), 32 x float4 since 2026-11 (all of mcvl.m's local copy)
+	private static final int PARAM_BYTES = 528; // VlParams (vl.metal), 33 x float4 since 2026-11 (air9; mcvl.m copies up to 640)
 	private static final int ERR = 2048;
 	private static final float SEA = 63f;
 	/** M2: the open-air medium = the base's haze / mist sigma x these (see pack). */
@@ -616,6 +616,11 @@ public final class ShadeVl {
 		// the end instead of stopping at the shade grid's edge, ~+0.1-0.25 ms in the golden hour; with airDim it also dims the sky)
 		float skyMist = air && sunLight ? Math.max(0f, Math.min(2f, VlConfig.live("mcopt.shade.vl.skyMist", 1.5f))) * smoothstep(0.55f, 0.1f, sunY) * userRays : 0f;
 		put(b, airLinear, skyMist, airDim, spatial);
+		// air9 (2026-11 clouds): x the golden-hour sky mist's share over the volumetric clouds (mcopt.shade.vl.skyMistCloud, live, 0..1,
+		// by the clouds' transmittance). 1 = round 1 (candidate 4), where it veiled their sunset colours, the dark blue shadowed sides and
+		// the red lit ones (Gael 2026-11-03); 0.3: those back as in candidate 3, the clear sky and the ground keep the mist and its
+		// shafts (notes/2026-11-03/clouds, run scf-a)
+		put(b, Math.max(0f, Math.min(1f, VlConfig.live("mcopt.shade.vl.skyMistCloud", 0.3f))), 0f, 0f, 0f);
 		// (air mode: the haze's shadows count wherever the sun is up, even with no forest around)
 		if (userRays <= 0f) return false;
 		if (userWater <= 0f) return false; // (1.1: under water with its shafts at 0 nothing is added: no passes, as above)

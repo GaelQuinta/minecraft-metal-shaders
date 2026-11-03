@@ -48,8 +48,8 @@
 
 constant bool VL_HDR [[function_constant(0)]];
 
-// Per-frame parameters (mcopt.metal.shade.vl.ShadeVl packs exactly this layout; 32 x float4 = 512 bytes since 2026-11, all of
-// mcvl.m's local copy: the next float4 needs a bigger one there).
+// Per-frame parameters (mcopt.metal.shade.vl.ShadeVl packs exactly this layout; 33 x float4 = 528 bytes since 2026-11 (air9), in
+// mcvl.m's local copy of 160 floats).
 struct VlParams {
 	float4 size;      //   0 xy VL live size (px: the part of the VL targets this frame covers), zw full-resolution live size (px)
 	float4 shape;     //  16 x strength, y max march distance (blocks), z step count, w forward HG g
@@ -133,6 +133,8 @@ struct VlParams {
 	                  //     shadows (sky pixels march to the end; 0 = none), z the forest air dims what is behind it (x its optical
 	                  //     depth; 0 = additive only, FT2.3; mcvl.m makes it negative on a frame whose od history is stale), w the
 	                  //     temporal pass's spatial filter, its neighbours' weight (1 = as before, 0 = the texel alone)
+	float4 air9;      // 512 (2026-11 clouds) x the golden-hour sky mist's share over the volumetric clouds, by their transmittance
+	                  //     (1 = everywhere, round 1; 0 = clear sky only: the clouds keep their own sunset colours), yzw reserved
 };
 // The shade grid (godrays v3): a camera-centred block of cells holding the share of sunlit points around each (R8, trilinear)
 #define VL_GRID_X 64
@@ -590,9 +592,16 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 		// the sky, so the mist's whole sunlit part goes here (positive), E06's phase, glow and albedo, with its sky-lit part. Toward a low
 		// sun the mist over the horizon glows and the hills, trees and cloud gaps between cut dark and bright wedges into it, fanning
 		// from the sun (the far cascade's shadows to 128 blocks, the clouds' beyond)
-		if (skyPx && p.air8.y > 0.0) {
+		// (2026-11 clouds, air9.x = mcopt.shade.vl.skyMistCloud) less of it over the volumetric clouds, by their transmittance here: the
+		// mist is a few blocks deep over the ground, so toward the horizon a ray crosses hundreds of blocks of it before the clouds,
+		// and at full strength it veiled their dark blue shadowed sides and red lit ones into one milky pastel (Gael 2026-11-03,
+		// candidate 4). The clear sky between them keeps the mist and its shafts
+		float skyMistK = p.air8.y;
+		if (skyPx && skyMistK > 0.0 && p.air9.x < 1.0 && VL_HDR && !shadeCloudDev(sl, SHADE_CLOUD_DEV_NO_VL))
+			skyMistK *= mix(max(p.air9.x, 0.0), 1.0, float(shadeCloudsScreen(dir, sl, sr.cloudScreen).a));
+		if (skyPx && skyMistK > 0.0) {
 			float kM = alM / (1.0 - 0.5 * alM);
-			shadowed += p.air8.y * (E * (mistLit * (phM * glow * kM)) + f.ambientSky.rgb * (0.9 * shadeAirSky(sl) * kM * mistAll));
+			shadowed += skyMistK * (E * (mistLit * (phM * glow * kM)) + f.ambientSky.rgb * (0.9 * shadeAirSky(sl) * kM * mistAll));
 		}
 		// the forest air: Photon's two-lobe Mie phase over four multiple-scattering octaves (see the header)
 		// (air4.y > 0: one forward lobe of that g plus an isotropic share air4.z instead, x 1.875 = the octaves' total)
@@ -616,7 +625,7 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 		// third target; vl_temporal_fold filters it and puts T = e^-od in lightT.a, which the final pass multiplies the scene by
 		od = forestOD * abs(p.air8.z);
 		// (C7 with C5) the golden-hour sky mist dims the sky behind it too (Photon's sky x T + scattering), at the share it glows with
-		if (skyPx && p.air8.y > 0.0 && p.air8.z != 0.0) od += p.air8.y * mistOD;
+		if (skyPx && skyMistK > 0.0 && p.air8.z != 0.0) od += skyMistK * mistOD;
 	} else if (!underwater) {
 		float D = min(dist, p.shape.y);
 		float mist = p.medium.y;
