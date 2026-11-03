@@ -164,7 +164,7 @@ public final class OwnMesher {
 			: startedLayers != null ? translucent(startedLayers, builders, translucent) : Discard.INSTANCE;
 		// mcopt-shade (1.2.4, issue #9): water lit per corner, not one flat value per block (not in verify mode: vanilla's is flat)
 		mcopt.metal.shade.terrain.ShadeFluidLight[] fluidLight = new mcopt.metal.shade.terrain.ShadeFluidLight[1];
-		if (mcopt.metal.shade.terrain.ShadeFluidLight.ON && startedLayers != null) fluidOutput = mcopt.metal.shade.terrain.ShadeFluidLight.wrap(fluidOutput, level, minPos, fluidLight);
+		if (mcopt.metal.shade.Shade.ENABLED && startedLayers != null) fluidOutput = mcopt.metal.shade.terrain.ShadeFluidLight.wrap(fluidOutput, level, minPos, fluidLight);
 		// With Fabric API's renderer API loaded, blocks go through its renderer as Fabric API's own compile patch does
 		OwnApi.Mesher api = OwnApi.mesher(ambientOcclusion, blockColors, quads, () -> startedLayers != null ? translucent(startedLayers, builders, translucent) : Discard.INSTANCE);
 		// BlockPos.betweenClosed's order (x fastest, then y, then z) with its one mutable cursor, without the iterator
@@ -187,7 +187,11 @@ public final class OwnMesher {
 					}
 					FluidState fluidState = blockState.getFluidState();
 					if (!fluidState.isEmpty()) {
-						if (fluidLight[0] != null) fluidLight[0].water = fluidState.is(net.minecraft.tags.FluidTags.WATER);
+						if (fluidLight[0] != null) {
+                            fluidLight[0].water = fluidState.is(net.minecraft.tags.FluidTags.WATER);
+                            fluidLight[0].falling = fluidState.hasProperty(net.minecraft.world.level.material.FlowingFluid.FALLING)
+                                && fluidState.getValue(net.minecraft.world.level.material.FlowingFluid.FALLING);
+                        }
 						fluidRenderer.tesselate(level, pos, fluidOutput, blockState, fluidState);
 					}
 					if (blockState.getRenderShape() == RenderShape.MODEL && api != null) {

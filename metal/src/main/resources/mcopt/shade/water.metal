@@ -1031,8 +1031,9 @@ static float3 shadeWaterNormal(ShadeWaterIn w, constant ShadeFrame &f, constant 
 #define SHADE_WATER_FOAM_SCROLL (8960.0 / SHADE_WATER_CLOCK_WRAP) // noise cells per second down (2.19; whole cells per wrap: no jump)
 // Whether a water face of geometric normal ny (y component) is a falling water's side with this look on (mv = ShadeLook.bloom.w) and
 // this frame's bake there.
-static inline bool shadeWaterIsFall(float ny, float mv, constant ShadeWaterParams &wp) {
-	return mv > 0.0 && abs(ny) < 0.5 && wp.state.w > 0.5;
+static inline bool shadeWaterIsFall(float ny, float mv, constant ShadeWaterParams &wp, float vertexAlpha) {
+	// The mesher tags actual falling water as alpha 254; source-block sides remain ordinary water.
+	return int(round(vertexAlpha * 255.0)) == 254 && mv > 0.0 && abs(ny) < 0.5 && wp.state.w > 0.5;
 }
 // The face normal of a falling water's side tilted by its ripples (w: the surface as filled in for shadeWaterSurface, nFace still the
 // geometric one).
