@@ -310,6 +310,12 @@ static bool cloudSegment(CloudRay r, float yb, float yt, float ground, float max
 // map), 1 = + billows (3D), 2 = + fine detail.
 #define CLOUD_BLOCK 12.0
 
+// Regional variation must vanish with coverage: an additive offset left distant clouds even on a clear front.
+static inline float cloudCoverage(float region, constant CloudParams &c) {
+	float coverage = saturate(c.shape.x);
+	return saturate(coverage + (region - 0.5) * 0.55 * smoothstep(0.0, 0.25, coverage));
+}
+
 // Blocky style: whether the 12-block cell at wrapped world xz holds a cloud (the weather map's cells at the cell's centre,
 // with the day's coverage), like vanilla's cloud texture but following our weather.
 // (1.1) art.w 2: the game's own cloud texture (ShadeClouds: textures/environment/clouds.png as a 0/1 mask, bound in place of the
@@ -320,7 +326,7 @@ static inline bool cloudBlockFilled(float2 cell, constant CloudParams &c, textur
 		return weather.sample(cloudRep, (cell + 0.5) / size, level(0.0)).r > 0.5h;
 	}
 	half4 w = weather.sample(cloudRep, (cell + 0.5) * (CLOUD_BLOCK / CLOUD_WEATHER_TILE), level(0.0));
-	float cov = saturate(c.shape.x + (float(w.r) - 0.5) * 0.55);
+	float cov = cloudCoverage(float(w.r), c);
 	return float(w.g) > 1.0 - cov;
 }
 static inline bool cloudBlockCell(float2 xz, constant CloudParams &c, texture2d<half> weather) {
@@ -354,7 +360,7 @@ static float cloudDensity(float3 p, float y, int q, constant CloudParams &c, tex
 	h = cloudBaseH(h, w, spread);
 	if (h <= 0.0) return 0.0;
 	// coverage varies by region (the weather map's r), the cells (g) say where the cumulus stand
-	float cov = saturate(c.shape.x + (float(w.r) - 0.5) * 0.55);
+	float cov = cloudCoverage(float(w.r), c);
 	float cell = float(w.g);
 	float core = saturate((cell - (1.0 - cov)) / max(cov, 0.08)); // 0 at a cloud's footprint edge, 1 in its core
 	// vertical profile (after Photon's cumulus shaping): a flat base, the footprint shrinking toward an egg-shaped top; the
@@ -402,7 +408,7 @@ static inline float cloudDensityMath(half4 w, half4 n, half4 m, float h, int q, 
 	float spread = cloudSpread(rel, c);
 	h = cloudBaseH(h, w, spread);
 	if (h <= 0.0) return 0.0;
-	float cov = saturate(c.shape.x + (float(w.r) - 0.5) * 0.55);
+	float cov = cloudCoverage(float(w.r), c);
 	float cell = float(w.g);
 	float core = saturate((cell - (1.0 - cov)) / max(cov, 0.08));
 	float topH = mix(0.38, 1.0, c.shape.y) * (0.45 + 0.55 * core);

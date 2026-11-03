@@ -17,14 +17,14 @@ package mcopt.metal.shade.clouds;
 
 /**
  * The daily weather of the sky (bible E05, original): every Minecraft day gets its own humidity, warmth and wind from a
- * hash of the day number (and mcopt.shade.clouds.seed), so some days are clear with a few small fair-weather cumulus,
- * others crowded with tall ones, with streaky cirrus or without, calm or windy. The day's values hold from morning to
- * evening and change overnight (smoothly, between dusk and the next sunrise). Rain and thunder take over on top: coverage
+ * hash of successive half-day fronts (and mcopt.shade.clouds.seed), with clear intervals, scattered cumulus and more humid
+ * fronts. Values blend smoothly during the day as well as at night; dry fronts clear both cloud layers.
+ * Rain and thunder take over on top: coverage
  * closes in, bases darken, storms tower. Cosmetic and per client. Pure maths, no game types.
  */
 public final class CloudWeather {
 	/** Smoothed values for this frame. */
-	public float coverage = 0.45f, type = 0.5f, cirrus = 0.4f, storm, windSpeed = 4f;
+	public float coverage = 0.28f, type = 0.5f, cirrus = 0.2f, storm, windSpeed = 4f;
 	/** Unit wind direction (xz). */
 	public float windX = 1f, windZ = 0f;
 	private boolean started;
@@ -47,21 +47,23 @@ public final class CloudWeather {
 	 * frame, snap: jump to the target (first frame, teleports, a dimension change).
 	 */
 	public void update(double days, float rain, float thunder, float dt, boolean snap, long seed) {
-		long k = (long) Math.floor(days);
-		float u = (float) (days - Math.floor(days));
-		// the day's weather holds until evening (u 0.55 = 19:00), then turns into the next day's by sunrise
-		float w = smoothstep(0.55f, 1.0f, u);
+		double front = days * 2.0;
+		long k = (long) Math.floor(front);
+		float u = (float) (front - Math.floor(front));
+		// A front lasts ten real minutes at the normal game clock. Ease both ends so no boundary snaps.
+		float w = smoothstep(0.1f, 0.9f, u);
 		float[] a = day(k, seed), b = day(k + 1, seed);
 		float humidity = lerp(a[0], b[0], w), warmth = lerp(a[1], b[1], w), wind = lerp(a[2], b[2], w), cir = lerp(a[3], b[3], w);
 		float ax = (float) Math.cos(a[4]), az = (float) Math.sin(a[4]), bx = (float) Math.cos(b[4]), bz = (float) Math.sin(b[4]);
 		float dx = lerp(ax, bx, w), dz = lerp(az, bz, w), dl = (float) Math.sqrt(dx * dx + dz * dz);
 		if (dl < 1e-3f) { dx = 1f; dz = 0f; dl = 1f; }
 		// fair-weather days stay open; humid ones crowd; warm humid windy days tower
-		float cov = 0.22f + 0.5f * humidity - (warmth > 0.7f && humidity < 0.35f ? 0.12f : 0f);
+		float wet = smoothstep(0.32f, 0.95f, humidity);
+		float cov = 0.36f * wet;
 		float typ = clamp01(0.15f + 0.75f * humidity * warmth + 0.35f * wind - 0.1f);
-		float cirrusAmount = clamp01(cir * 1.3f - 0.25f) * (1f - 0.5f * humidity) + 0.1f;
+		float cirrusAmount = 0.28f * smoothstep(0.55f, 0.95f, cir) * smoothstep(0.32f, 0.6f, humidity);
 		float speed = 2.5f + 7.5f * wind * wind;
-		// (1.1) the player's cloud settings (live): coverage offset on the day's (0.10..0.72 without it, so the clamp leaves the
+		// (1.1) the player's cloud settings (live): coverage offset on the front's (0..0.36 without it, so the clamp leaves the
 		// default exact) and the day's type forced, both before the rain and thunder below, which still close in and tower
 		float userCoverage = CloudConfig.userCoverage(), userType = CloudConfig.userType();
 		cov = clamp01(cov + userCoverage);
@@ -93,6 +95,7 @@ public final class CloudWeather {
 		// rain thickens the clouds over a few seconds (the game's rain level itself ramps over ~5 s)
 		float f = 1f - (float) Math.exp(-Math.max(dt, 0f) / 4f);
 		this.coverage += (cov - this.coverage) * f;
+		if (cov == 0f && this.coverage < 0.0001f) this.coverage = 0f;
 		this.type += (typ - this.type) * f;
 		// (1.1: a change in the settings screen shows at once, not over the weather's ~4 s; the history blends it in in ~1 s)
 		if (userChanged) {
