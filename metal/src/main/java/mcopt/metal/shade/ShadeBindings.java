@@ -36,7 +36,7 @@ public final class ShadeBindings {
 	/** Ring slots: more than the frames that can be in flight (-Dmcopt.metal.inFlight, 2 by default) plus the one being written. */
 	private static final int RING = Math.max(3, Integer.getInteger("mcopt.metal.inFlight", 2) + 1);
 	/** ShadeFrame (1008 B) at 0, ShadeLook (1088 B since 1.1: its user0..3) at LOOK_OFFSET. */
-	private static final int SLOT_SIZE = 2304, LOOK_OFFSET = 1024;
+	private static final int SLOT_SIZE = 2816, LOOK_OFFSET = 1024; // LeafFrame: 272 B at offset 2304.
 
 	private static long ctx, state, compareSampler, dummyShadow, shadowMap, gpuBuffer;
 	private static ByteBuffer gpuView;
@@ -72,6 +72,7 @@ public final class ShadeBindings {
 			for (int i = 0; i < RING; i++) {
 				buffers[i] = MetalBridge.newBuffer(context, SLOT_SIZE);
 				views[i] = MemoryUtil.memByteBuffer(MetalBridge.bufferContents(buffers[i]), SLOT_SIZE);
+				LeafFrame.pack(views[i], ShadeFrameUpdater.FRAME);
 				ShadeFrameUpdater.FRAME.pack(views[i]); // defaults until the first level frame: never an unwritten buffer
 				ShadeFrameUpdater.LOOK.pack(views[i].slice(LOOK_OFFSET, ShadeLook.SIZE), ShadeFrameUpdater.FRAME);
 			}

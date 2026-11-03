@@ -7,6 +7,7 @@
 // that follow never lose an encoder merge. ARC is off: everything here is retained/released by hand.
 #import "mcmetal.h"
 #include <string.h>
+extern void mc_shade_bind_leaves(id<MTLRenderCommandEncoder> r, int mesh);
 
 #define CHUNK_QUADS 32     // ShadowCasters.CHUNK_QUADS (32: a third of the vertex launches were padding with 64)
 #define QUAD_INDICES (CHUNK_QUADS * 6)  // {0, 1, 2, 2, 3, 0} per quad
@@ -218,6 +219,8 @@ int mc_shadow_own_init(Shadow *s, id<MTLLibrary> lib, int compact, int fat, char
 		bool c = compact != 0, f = fat != 0;
 		[cv setConstantValue:&c type:MTLDataTypeBool atIndex:1];
 		[cv setConstantValue:&f type:MTLDataTypeBool atIndex:2];
+		bool translucent = false;
+		[cv setConstantValue:&translucent type:MTLDataTypeBool atIndex:4];
 		NSError *e = nil;
 		id<MTLFunction> vs = [[lib newFunctionWithName:@"own_shadow_vs" constantValues:cv error:&e] autorelease];
 		id<MTLFunction> fs = vs ? [[lib newFunctionWithName:@"own_shadow_cutout_fs"] autorelease] : nil;
@@ -485,6 +488,7 @@ int mc_shadow_render_ex(Enc *enc, Shadow *s, int layer, const void *cascade, int
 			[r drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:QUAD_INDICES indexType:MTLIndexTypeUInt16 indexBuffer:ib
 				indexBufferOffset:0 instanceCount:count baseVertex:0 baseInstance:first];
 		}
+		if (own) mc_shade_bind_leaves(r, 0);
 		ownDraw(s, r, own, atlas);  // (v12: mcopt's own terrain)
 		// M3: last frame's entities into the near cascade (shifted onto this frame's camera)
 		if (layer == 0 && s->readyCount > 0 && s->entity) {

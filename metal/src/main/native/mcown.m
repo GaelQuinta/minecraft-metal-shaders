@@ -3,6 +3,7 @@
 // Only called with -Dmcopt.own; the backend's own paths never reach it.
 #import "mcmetal.h"
 #include <string.h>
+extern void mc_shade_bind_leaves(id<MTLRenderCommandEncoder> r, int mesh);
 #include <os/lock.h>
 
 #define OWN_MAX_LAYOUTS 64
@@ -953,6 +954,7 @@ int mco_draw(Own *w, Enc *enc, int cutout, const void *frame, int frameLength, i
 		[r setFragmentSamplerState:lightSampler atIndex:15];
 	}
 drawCall:
+	if (w->shade) mc_shade_bind_leaves(r, mesh);
 	if (w->vcount && !mesh) [r setVertexBuffer:w->vcount offset:0 atIndex:28];
 	if (cutout & (1 << 30)) {
 		// the visibility oracle: the drawn units (vertex stage) and the units with a visible pixel (fragment stage), this sample's number

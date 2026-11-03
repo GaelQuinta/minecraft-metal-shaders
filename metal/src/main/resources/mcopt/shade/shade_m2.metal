@@ -81,13 +81,20 @@ static inline float3 shadeFinish2(float3 radiance, float vanillaFog, constant Sh
 // fill in shadow (light bounced off the sunlit surroundings), a broader block-light curve (hot core, long tail) that fades a
 // little by day, a cool minimum light in caves, and a gentle east/west face separation for readability. Light levels 0..1.
 static float3 shadeLit2(half3 albedo, half3 n, half sky, half block, half shadow, bool thin, bool foliage, constant ShadeFrame &f,
-                        constant ShadeLook &L) {
+						constant ShadeLook &L, bool leaf = false, float3 toEye = float3(0.0)) {
 	if (!shadeFeature(L, SHADE_FEATURE_LIGHT_V2)) return shadeLit(albedo, n, sky, block, shadow, thin, foliage, f);
 	float3 Ld = f.lightDirWorld.xyz;
 	half nl = half(dot(float3(n), Ld));
 	half ndl = thin ? half(0.3) + half(0.5) * abs(nl)
 		: foliage ? half(0.25) + half(0.75) * saturate(nl) + half(0.5 * L.user0.z) * saturate(-nl) // (1.1) user0.z: leaves' light through them
 		: (nl > half(0.0) ? (nl + half(0.08)) / half(1.08) : half(0.0));
+	// Leaves are a collection of thin surfaces, not a single hard cube face. Broad transmission follows the view
+	// toward the light and stays shadow/skylight gated; the existing leaf-light control scales it without emission.
+	if (leaf) {
+		half forward = half(pow(saturate(dot(-toEye, Ld)), 4.0));
+		ndl = 0.35h + 0.55h * saturate(nl)
+			+ half(L.user0.z) * (0.22h * saturate(-nl) + 0.38h * forward);
+	}
 	half gate = f.flags.z != 0 ? smoothstep(half(0.3), half(0.8), sky) : sky * sky * sky * sky;
 	half3 sun = half3(f.sunColor.xyz);
 	half3 direct = sun * (ndl * shadow * gate);
@@ -95,8 +102,12 @@ static float3 shadeLit2(half3 albedo, half3 n, half sky, half block, half shadow
 	half towardSun = half(dot(float2(n.xz), axis)) * half(0.5) + half(0.5);
 	half3 side = mix(half3(f.ambientAway.xyz), half3(f.ambientToward.xyz), towardSun);
 	half3 ambient = n.y >= half(0.0) ? mix(side, half3(f.ambientSky.xyz), n.y) : mix(side, half3(f.ambientGround.xyz), -n.y);
+	if (leaf) {
+		half3 canopy = (half3(f.ambientSky.xyz) + half3(f.ambientToward.xyz) + half3(f.ambientAway.xyz)) / 3.0h;
+		ambient = mix(ambient, canopy, 0.45h);
+	}
 	half g = shadeSkyCurve(sky);
-	ambient *= g * (foliage ? half(1.0 + 0.35 * L.user0.z) : half(1.0)) * half3(L.ambientArt.rgb);
+	ambient *= g * (foliage ? half(1.0 + (leaf ? 0.15 : 0.35) * L.user0.z) : half(1.0)) * half3(L.ambientArt.rgb);
 	// warm fill where the sun doesn't reach: what the sunlit ground and walls around bounce back
 	half3 fill = sun * (half(L.ambientArt.w) * (half(1.0) - shadow * saturate(nl)) * g * g * gate) * half3(L.bounce.rgb);
 	// block light: F(b) = 2.2 b^7 + 0.55 b^2.4 (normalized to 1 at b = 1), a little weaker in daylight
