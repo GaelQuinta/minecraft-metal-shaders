@@ -31,7 +31,8 @@ import net.minecraft.world.level.material.Fluids;
  * open sea swells, lakes stay near mirrors, rivers and ponds calm, and every shore calms the water next to it. Wind waves grow with
  * fetch (open water upwind); Minecraft's blocky shores read better calming toward them than shoaling. A map of "open water" 0..1
  * around the camera, {@link #N}^2 cells of 2x2 blocks (256 blocks across, toroidal by absolute cell so it scrolls without copying):
- * smoothstep(4, 48, distance to the nearest land column in blocks) x the biome's gain (oceans 0.8-1, beaches 0.75, rivers 0.25,
+ * smoothstep(4, fetch, distance to the nearest land column in blocks; mcopt.shade.water.swellFetch, 48: raise it to calm bays and
+ * lakes that are wide but enclosed) x the biome's gain (oceans 0.8-1, beaches 0.75, rivers 0.25,
  * swamps 0.15, anything else, i.e. inland lakes, mcopt.shade.water.swellLake, 0.4), blurred over 3x3 cells. The shader scales the
  * swell's strength by it near the camera and by its outer ring's mean (96-128 blocks) beyond (ShadeWaterParams.swell2.x).
  * <p>
@@ -138,6 +139,7 @@ public final class WaterOpenScan {
 	private static void build(int ccx, int ccz) {
 		final int inf = 1 << 20;
 		float lake = Live.f("mcopt.shade.water.swellLake", 0.4f, 0f, 1f);
+		float fetch = Live.f("mcopt.shade.water.swellFetch", 48f, 8f, 120f);
 		int ox = ccx - N / 2, oz = ccz - N / 2;
 		for (int j = 0; j < N; j++) {
 			for (int i = 0; i < N; i++) {
@@ -185,8 +187,8 @@ public final class WaterOpenScan {
 				float g = QUART_X[qi] == qx && QUART_Z[qi] == qz ? GAIN[qi] : -1f;
 				if (g < 0f) g = lake;
 				float blocks = DIST[k] * (2f / 3f);
-				float t = Math.clamp((blocks - 4f) / 44f, 0f, 1f);
-				TMP[k] = t * t * (3f - 2f * t) * g; // smoothstep(4, 48, distance to land) x the biome's gain
+				float t = Math.clamp((blocks - 4f) / (fetch - 4f), 0f, 1f);
+				TMP[k] = t * t * (3f - 2f * t) * g; // smoothstep(4, fetch, distance to land) x the biome's gain
 			}
 		}
 		// 3x3 box blur (edges clamped); the mean over the outer ring's water (96-128 blocks: 48-64 cells) for the water beyond it
