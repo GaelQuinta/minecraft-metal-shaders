@@ -45,7 +45,7 @@ final class ShadeNative {
 	private static final MethodHandle CPSO = fn("mc_shade_cpso", false, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle TEXTURE = fn("mc_shade_texture", false, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_LONG);
 	private static final MethodHandle BUFFER = fn("mc_shade_buffer", false, JAVA_LONG, JAVA_LONG, JAVA_LONG);
-	private static final MethodHandle PASS = fn("mc_shade_pass", false, null, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_LONG);
+	private static final MethodHandle PASS = fn("mc_shade_pass", false, null, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle DISPATCH = fn("mc_shade_dispatch", false, null, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_LONG, JAVA_INT, JAVA_LONG);
 	private static final MethodHandle BAKE = fn("mc_shade_bake", false, null, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle TEX_W = fn("mc_shade_texture_width", true, JAVA_INT, JAVA_LONG);
@@ -91,7 +91,7 @@ final class ShadeNative {
 	static long cpso(long ctx, long lib, long name, long err, int errCap) { try { return (long) CPSO.invokeExact(ctx, lib, name, err, errCap); } catch (Throwable t) { throw rethrow(t); } }
 	static long texture(long ctx, int format, int w, int h, int lossy, long label) { try { return (long) TEXTURE.invokeExact(ctx, format, w, h, lossy, label); } catch (Throwable t) { throw rethrow(t); } }
 	static long buffer(long ctx, long size) { try { return (long) BUFFER.invokeExact(ctx, size); } catch (Throwable t) { throw rethrow(t); } }
-	static void pass(long enc, long pso, long target, int load, long textures, int count, long bytes, int length, long label) { try { PASS.invokeExact(enc, pso, target, load, textures, count, bytes, length, label); } catch (Throwable t) { throw rethrow(t); } }
+	static void pass(long enc, long pso, long target, int load, long textures, int count, long bytes, int length, long label, int globals) { try { PASS.invokeExact(enc, pso, target, load, textures, count, bytes, length, label, globals); } catch (Throwable t) { throw rethrow(t); } }
 	static void dispatch(long enc, long pso, int w, int h, int tw, int th, long textures, int count, long bytes, int length, long label) { try { DISPATCH.invokeExact(enc, pso, w, h, tw, th, textures, count, bytes, length, label); } catch (Throwable t) { throw rethrow(t); } }
 	static void bake(long ctx, long pso, long target) { try { BAKE.invokeExact(ctx, pso, target); } catch (Throwable t) { throw rethrow(t); } }
 	static int textureWidth(long t) { try { return (int) TEX_W.invokeExact(t); } catch (Throwable t2) { throw rethrow(t2); } }

@@ -124,6 +124,7 @@ public final class ShadePost {
 	private static final ByteBuffer UPSCALE_PARAMS = ByteBuffer.allocateDirect(16).order(ByteOrder.LITTLE_ENDIAN);
 	private static final long[] hdr = new long[2];
 	private static long[] bloomLevels = new long[0], bloomAccum = new long[0];
+	private static final float[] bloomWeights = new float[ShadeConfig.BLOOM_LEVELS];
 	private static int width, height, frame, bloomWidth, bloomHeight;
 	/** World passes are being redirected (between LevelRenderer.render HEAD and the tone map). */
 	private static boolean world;
@@ -631,19 +632,22 @@ public final class ShadePost {
 			if (ShadeConfig.AUTO_EXPOSURE && n > 2) histogramSource = bloomLevels[2];
 			float spectrum = ShadeSettings.look() == 1 ? 0.9f : ShadeSettings.look() == 2 ? 0.3f : 0.6f;
 			float sum = 0f;
+			for (int i = 0; i < n; i++) {
+				bloomWeights[i] = (float) Math.pow(i + 1 + bloomShift, spectrum);
+				sum += bloomWeights[i];
+			}
+			// Normalize before storing intermediate accumulations, so broad HDR highlights cannot overflow RGBA16F.
 			// U_i = w_i L_i + tent(U_i+1) down to U_1; level 0 (half size) is added in the final pass (w0 L0 + bilinear U1):
 			// one half-size pass less, the biggest one
 			for (int i = n - 1; i >= 1; i--) {
-				float w = (float) Math.pow(i + 1 + bloomShift, spectrum);
-				sum += w;
+				float w = bloomWeights[i] / sum;
 				params.clear();
 				params.putFloat(w).putFloat(i == n - 1 ? 0f : 1f).putFloat(0f).putFloat(0f).flip();
 				long coarser = i == n - 1 ? bloomLevels[i] : bloomAccum[i + 1];
 				pass(psoUp, bloomAccum[i], ShadeRender.DONT_CARE, new long[] {bloomLevels[i], coarser}, params, "mcopt shade: bloom up");
 			}
-			w0 = (float) Math.pow(1 + bloomShift, spectrum);
-			sum += w0;
-			bloomNorm = 1f / sum;
+			w0 = bloomWeights[0] / sum;
+			bloomNorm = 1f;
 		}
 		params.clear();
 		boolean vl = vlLight != 0 && vlDist != 0;
@@ -753,7 +757,9 @@ public final class ShadePost {
 	/** ShadeRender.pass on this frame's encoder, named in the -Dmcopt.metal.trace output (its GPU time is the next encoder #). */
 	private static void pass(long pso, long target, int load, long @Nullable [] textures, @Nullable ByteBuffer p, String label) {
 		if (encoder != null && MetalBridge.tracing(encoder)) System.out.println("mcopt-metal trace: shade pass '" + label + "'");
-		ShadeRender.pass(enc, pso, target, load, textures, p, label);
+		int globals = pso == psoDown0 ? ShadeRender.GLOBALS_GPU
+			: pso == psoDown || pso == psoUp ? ShadeRender.GLOBALS_NONE : ShadeRender.GLOBALS_ALL;
+		ShadeRender.pass(enc, pso, target, load, textures, p, label, globals);
 	}
 
 	/** Whether Distant Horizons' passes went through the bridge this frame. */

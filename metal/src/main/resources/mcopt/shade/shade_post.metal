@@ -48,12 +48,14 @@ static inline half3 shadeDown13(texture2d<half> src, float2 uv, float2 texel, bo
 	half3 k = src.sample(shadeLinearClamp, uv + texel * float2(1, -1)).rgb;
 	half3 l = src.sample(shadeLinearClamp, uv + texel * float2(-1, 1)).rgb;
 	half3 m = src.sample(shadeLinearClamp, uv + texel * float2(1, 1)).rgb;
-	half3 g0 = (j + k + l + m) * 0.25h, g1 = (a + b + d + e) * 0.25h, g2 = (b + c + e + f) * 0.25h, g3 = (d + e + g + h) * 0.25h, g4 = (e + f + h + i) * 0.25h;
-	if (!karis) return g0 * 0.5h + (g1 + g2 + g3 + g4) * 0.125h;
-	half w0 = 1.0h / (1.0h + shadeLumaH(g0)), w1 = 1.0h / (1.0h + shadeLumaH(g1)), w2 = 1.0h / (1.0h + shadeLumaH(g2)),
-	     w3 = 1.0h / (1.0h + shadeLumaH(g3)), w4 = 1.0h / (1.0h + shadeLumaH(g4));
-	w0 *= 0.5h; w1 *= 0.125h; w2 *= 0.125h; w3 *= 0.125h; w4 *= 0.125h;
-	return (g0 * w0 + g1 * w1 + g2 * w2 + g3 * w3 + g4 * w4) / (w0 + w1 + w2 + w3 + w4);
+	// Accumulate in float: fast math can regroup weighted half sums and overflow before the final division.
+	float3 g0 = (float3(j) + float3(k) + float3(l) + float3(m)) * 0.25;
+	float3 g1 = (float3(a) + float3(b) + float3(d) + float3(e)) * 0.25, g2 = (float3(b) + float3(c) + float3(e) + float3(f)) * 0.25;
+	float3 g3 = (float3(d) + float3(e) + float3(g) + float3(h)) * 0.25, g4 = (float3(e) + float3(f) + float3(h) + float3(i)) * 0.25;
+	if (!karis) return half3(g0 * 0.5 + (g1 + g2 + g3 + g4) * 0.125);
+	float w0 = 0.5 / (1.0 + shadeLuma(g0)), w1 = 0.125 / (1.0 + shadeLuma(g1)), w2 = 0.125 / (1.0 + shadeLuma(g2)),
+	      w3 = 0.125 / (1.0 + shadeLuma(g3)), w4 = 0.125 / (1.0 + shadeLuma(g4));
+	return half3((g0 * w0 + g1 * w1 + g2 * w2 + g3 * w3 + g4 * w4) / (w0 + w1 + w2 + w3 + w4));
 }
 
 // The first level reads the full-resolution scene: 4 bilinear taps (a 4x4 texel box), each Karis-weighted 1 / (1 + luma) so
@@ -91,17 +93,30 @@ struct ShadeBloomUp { float4 w; };
 
 fragment half4 shade_bloom_up(ShadeFsOut in [[stage_in]], texture2d<half> level [[texture(0)]], texture2d<half> coarser [[texture(1)]],
                               constant ShadeBloomUp &p [[buffer(0)]]) {
-	half3 l = level.sample(shadeLinearClamp, in.uv).rgb;
-	float2 t = 1.0 / float2(coarser.get_width(), coarser.get_height());
-	// 3x3 tent upsample of the coarser accumulation
-	// (1.2.4, GitHub issue #8) the tent's weights (4, 2, 1) / 16 applied per tap: summed first, 16 taps of a sun core held at
-	// the first level's 30000 overflowed half (Inf, then NaN in the final pass)
-	half3 u = coarser.sample(shadeLinearClamp, in.uv).rgb * 0.25h;
-	u += coarser.sample(shadeLinearClamp, in.uv + float2(t.x, 0)).rgb * 0.125h + coarser.sample(shadeLinearClamp, in.uv - float2(t.x, 0)).rgb * 0.125h
-	    + coarser.sample(shadeLinearClamp, in.uv + float2(0, t.y)).rgb * 0.125h + coarser.sample(shadeLinearClamp, in.uv - float2(0, t.y)).rgb * 0.125h;
-	u += coarser.sample(shadeLinearClamp, in.uv + t).rgb * 0.0625h + coarser.sample(shadeLinearClamp, in.uv - t).rgb * 0.0625h
-	    + coarser.sample(shadeLinearClamp, in.uv + float2(t.x, -t.y)).rgb * 0.0625h + coarser.sample(shadeLinearClamp, in.uv + float2(-t.x, t.y)).rgb * 0.0625h;
-	return half4(l * half(p.w.x) + u * half(p.w.y), 1.0h);
+	float3 l = float3(level.sample(shadeLinearClamp, in.uv).rgb);
+	if (p.w.y == 0.0) return half4(half3(l * p.w.x), 1.0h); // coarsest level has no coarser contribution
+	float2 size = float2(coarser.get_width(), coarser.get_height());
+	float2 pos = in.uv * size - 0.5, base = floor(pos), f = pos - base;
+	// Pair the four source texels touched by each axis of the bilinear 3-tap tent. Phase-aware weights also cover odd
+	// resolutions; four bilinear fetches give the same ideal kernel as nine (sampler/half rounding may differ).
+	float2 wl = 0.75 - 0.5 * f, wr = 0.25 + 0.5 * f;
+	float2 a = (base - 0.5 + (0.5 - 0.25 * f) / wl) / size;
+	float2 b = (base + 1.5 + (0.25 * f) / wr) / size;
+	float3 u = float3(coarser.sample(shadeLinearClamp, a).rgb) * (wl.x * wl.y);
+	u += float3(coarser.sample(shadeLinearClamp, float2(b.x, a.y)).rgb) * (wr.x * wl.y);
+	u += float3(coarser.sample(shadeLinearClamp, float2(a.x, b.y)).rgb) * (wl.x * wr.y);
+	u += float3(coarser.sample(shadeLinearClamp, b).rgb) * (wr.x * wr.y);
+	return half4(half3(l * p.w.x + u * p.w.y), 1.0h);
+}
+
+// A restrained red/amber fringe in the narrow bloom footprint. Flat fields and bright cores get no halation;
+// cool lights contribute only their red component. Smooth threshold and shoulder avoid a hard halo at exposure changes.
+static inline float3 shadeBloomComposite(float3 scene, float3 blurred, float3 nearBloom, float mixAmount, float halation) {
+	float3 c = mix(scene, blurred, saturate(mixAmount));
+	float fringe = max(nearBloom.r - scene.r, 0.0);
+	float hot = smoothstep(0.75, 3.0, shadeLuma(nearBloom));
+	float glow = halation * hot * fringe / (1.0 + fringe * 0.25);
+	return c + float3(1.0, 0.18, 0.025) * glow;
 }
 
 // p: x 1 / (sum of the bloom weights), y bloom on (0/1), z frame index, w debug view; q: x weight of bloom level 0, y the
@@ -422,10 +437,11 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 		c = max(lit + add, lo);
 	}
 	if (P.p.y > 0.5) {
-		float3 b = float3(bloom.sample(shadeLinearClamp, in.uv).rgb + bloom0.sample(shadeLinearClamp, in.uv).rgb * half(P.q.x)) * P.p.x;
+		float3 nearBloom = float3(bloom0.sample(shadeLinearClamp, in.uv).rgb);
+		float3 b = (float3(bloom.sample(shadeLinearClamp, in.uv).rgb) + nearBloom * P.q.x) * P.p.x;
 		// fog glow: the haze and the canopy mist both soften what is behind them
 		float m = L.bloom.x + (d > 0.0 ? L.bloom.z * (1.0 - shadeLuma(T) * tv) : L.bloom.z * (0.25 + 0.75 * (1.0 - tv)));
-		c = mix(c, b, saturate(m));
+		c = shadeBloomComposite(c, b, nearBloom, m, L.user2.z);
 	}
 	// Purkinje: dim light (scene luminance, not exposed) shifts toward the rods' cool grey
 	lum = shadeLuma(c) / ex;
