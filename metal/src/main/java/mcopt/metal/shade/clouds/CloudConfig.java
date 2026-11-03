@@ -112,7 +112,14 @@ public final class CloudConfig {
 	 * day's amount. Higher (cells 1.7, extinction 1.6, edges 1.6) read dirty grey at noon and sliced the far clouds more.
 	 */
 	static final float CELL_SCALE = 1.6f, BILLOW_SCALE = 1.3f, EDGE = 1.2f, SIGMA_SCALE = 1.3f, ALTO = 1f, ALTO_ABOVE = 600f, ALTO_THICKNESS = 40f,
-		ALTO_SIGMA = 0.05f, PHOTON_LIGHT = 0.5f;
+		ALTO_SIGMA = 0.035f, PHOTON_LIGHT = 0.5f;
+	/**
+	 * (round 2, run r2-g) Defaults: the altocumulus' puffs ~2x larger (cells 4, was 8), softer and less contrasty (0.6), gathered in
+	 * fields and rows across the wind (0.8; first version: 8 / 1 / 0 / 0.6, sharp white confetti); the march's longest primary step 24
+	 * blocks (48: the smaller, crisper cells' mid-distance edges combed into horizontal stripes); the deck melts into the horizon sky
+	 * over its last ~5 degrees (0.6; 0 = M3: a hard pink line at dusk over the bare horizon).
+	 */
+	static final float ALTO_CELLS = 4f, ALTO_SOFT = 0.6f, ALTO_ROWS = 0.8f, ALTO_COVER = 0.8f, DT_MAX = 24f, HORIZON_AP = 0.6f;
 	/** Blocks of world per 1 km of the sky model's air for the light the layer gets (sunset light lingers on the clouds). */
 	public static final float ALTITUDE_SCALE = clamp(floatProperty("mcopt.shade.clouds.altitudeScale", 4f), 0f, 50f);
 	/** Most visits a history pixel averages (its march samples are jittered): fewer with a larger checkerboard (slower visits). */
@@ -301,6 +308,36 @@ public final class CloudConfig {
 	/** live: mcopt.shade.clouds.altoThickness, the altocumulus layer's thickness (blocks, 10..200). */
 	public static float altoThickness() {
 		return Live.f("mcopt.shade.clouds.altoThickness", ALTO_THICKNESS, 10f, 200f);
+	}
+
+	/** (round 2) live: mcopt.shade.clouds.altoCells, the altocumulus puffs' frequency (x 1/4096 blocks; 4 = ~64-block cells, 1..16). */
+	public static float altoCells() {
+		return Live.f("mcopt.shade.clouds.altoCells", ALTO_CELLS, 1f, 16f);
+	}
+
+	/** (round 2) live: mcopt.shade.clouds.altoSoft, the puffs' softness (x the edges' exponent and the erosion; 1 = Photon's, 0.2..2). */
+	public static float altoSoft() {
+		return Live.f("mcopt.shade.clouds.altoSoft", ALTO_SOFT, 0.2f, 2f);
+	}
+
+	/** (round 2) live: mcopt.shade.clouds.altoRows, the puffs gathered in rows across the wind (0 = evenly sprinkled .. 1). */
+	public static float altoRows() {
+		return Live.f("mcopt.shade.clouds.altoRows", ALTO_ROWS, 0f, 1f);
+	}
+
+	/** (round 2) live: mcopt.shade.clouds.altoCover, the coverage at a field's heart (0..1; 0.6 = the first version). */
+	public static float altoCover() {
+		return Live.f("mcopt.shade.clouds.altoCover", ALTO_COVER, 0f, 1f);
+	}
+
+	/** (round 2) live: mcopt.shade.clouds.dtMax, the cumulus march's longest primary step (blocks, 8..96; 48 = M3). */
+	public static float dtMax() {
+		return Live.f("mcopt.shade.clouds.dtMax", DT_MAX, 8f, 96f);
+	}
+
+	/** (round 2) live: mcopt.shade.clouds.horizonAp, the deck's aerial perspective growing over the last degrees above the horizon (0 = M3, 0..1). */
+	public static float horizonAp() {
+		return Live.f("mcopt.shade.clouds.horizonAp", HORIZON_AP, 0f, 1f);
 	}
 
 	/** live: mcopt.shade.clouds.altoSigma, the altocumulus extinction per block at density 1 (x the player's density; 0.01..1). */

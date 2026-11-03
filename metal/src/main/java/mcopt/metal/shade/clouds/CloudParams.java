@@ -29,7 +29,7 @@ import org.joml.Matrix4f;
  * ShadeFrame and CloudWeather, no game types: the offline preview packs it too.
  */
 public final class CloudParams {
-	public static final int SIZE = 496;
+	public static final int SIZE = 528;
 	/** Art knobs: multiple-scattering octave weight and extinction factors, sky-light extinction (diffuse) factor. */
 	static final float OCTAVE_WEIGHT = CloudConfig.floatProperty("mcopt.shade.clouds.octaveWeight", 0.68f),
 		OCTAVE_EXTINCTION = CloudConfig.floatProperty("mcopt.shade.clouds.octaveExtinction", 0.48f),
@@ -216,7 +216,12 @@ public final class CloudParams {
 		// (2026-11) from farStart to farEnd blocks the cumulus go back to M3's edges and extinction (the long grazing steps toward the
 		// horizon sliced crisp, dense small cells into stripes)
 		float farStart = Live.f("mcopt.shade.clouds.farStart", 1200f, 100f, 20000f);
-		put4(b, 480, farStart, Math.max(farStart + 100f, Live.f("mcopt.shade.clouds.farEnd", 4000f, 200f, 30000f)), 1f / CloudConfig.sigmaScale(), 0f);
+		put4(b, 480, farStart, Math.max(farStart + 100f, Live.f("mcopt.shade.clouds.farEnd", 4000f, 200f, 30000f)), 1f / CloudConfig.sigmaScale(),
+			CloudConfig.dtMax());
+		// (round 2) the altocumulus' look (its puffs' frequency a whole number of quarters: whole tiles per period, no seam) and the deck's
+		// aerial perspective at the horizon
+		put4(b, 496, Math.round(CloudConfig.altoCells() * 4f) / 4f, CloudConfig.altoSoft(), CloudConfig.altoRows(), CloudConfig.altoCover());
+		put4(b, 512, CloudConfig.horizonAp(), Live.f("mcopt.shade.clouds.horizonTop", 0.08f, 0.01f, 0.5f), 0f, 0f);
 		// (1.1: shadows on/off and their strength live; off = 0, the consumers read 1, ShadeClouds skips the map's pass)
 		this.shadowStrength = CloudConfig.shadows() ? CloudConfig.shadowStrength() * smoothstep(0.04f, 0.18f, f.sky.lightDir[1]) * this.opacity : 0f;
 

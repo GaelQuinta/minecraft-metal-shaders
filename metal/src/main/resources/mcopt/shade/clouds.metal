@@ -37,7 +37,7 @@
 #ifndef MCOPT_SHADE_CLOUDS_PASSES
 #define MCOPT_SHADE_CLOUDS_PASSES
 
-// Per-frame parameters (mcopt.metal.shade.clouds.CloudParams packs exactly this layout: 2 matrices + 23 float4 = 496 bytes).
+// Per-frame parameters (mcopt.metal.shade.clouds.CloudParams packs exactly this layout: 2 matrices + 25 float4 = 528 bytes).
 struct CloudParams {
 	float4x4 invViewProj;  //   0 this frame's clip -> camera-relative world, without the TAA jitter
 	float4x4 prevViewProj; //  64 last frame's camera-relative world (re-based on this camera) -> clip, without jitter
@@ -79,9 +79,17 @@ struct CloudParams {
 	                       //     (absolute y), z thickness (blocks), w extinction per block at density 1
 	float4 art3;           // 480 (2026-11) x, y the distance (blocks) over which the far cumulus go back to M3's edges and extinction
 	                       //     (art2.z, sigmaScale: crisp, dense small cells sliced into stripes along the long grazing steps toward
-	                       //     the horizon), z 1 / sigmaScale (the extinction there), w reserved
+	                       //     the horizon), z 1 / sigmaScale (the extinction there), w (round 2) the longest primary step (blocks;
+	                       //     0 = 48, M3): the crisp small cells' mid-distance stripes come from coarser steps than they are
+	float4 alto2;          // 496 (2026-11 round 2) the altocumulus' look: x the puffs' frequency (x 1/4096 of the weather map, a whole
+	                       //     number of quarters: 4 = ~64-block cells), y softness (x the edges' exponent and the erosion; 1 = Photon's
+	                       //     hard edges), z rows (0 = evenly sprinkled, 1 = the puffs gathered in bands across the wind, a mackerel
+	                       //     sky), w the coverage at a field's heart
+	float4 hz;             // 512 (round 2) the cloud deck at the horizon: x how much of the aerial perspective toward the sky behind grows
+	                       //     over the last degrees above the horizon (0 = M3: the lit deck ends on a hard line over the bare horizon
+	                       //     sky at dusk), y the ray height (dir.y) where that ramp starts, zw reserved
 };
-static_assert(sizeof(CloudParams) == 496, "CloudParams layout (CloudParams.java)");
+static_assert(sizeof(CloudParams) == 528, "CloudParams layout (CloudParams.java)");
 
 // M3.1 dev bits (CloudParams.lightDir.w; CloudConfig.DEV_*): an M3.1 saving switched back to M3's way, for pricing in game
 #define CLOUD_DEV_OLD_RESOLVE 1024 // the resolve reads its five march distances one by one (M3)
@@ -604,7 +612,9 @@ static CloudResult cloudMarch(float3 dir, int steps, int lsteps, int q, float ji
 	// fewer, longer steps where the stretch is short (straight up); along the long grazing stretches toward the horizon the
 	// steps stay at most ~48 blocks (up to 3x the steps): 100-200-block steps there sliced the far clouds into horizontal
 	// stripes of see-through sky at sunset (Gael's report 2026-10-07; steps=60 removed them, a bigger loop budget did not)
-	int n = clamp(int(max(float(steps) * saturate(len / 600.0), len / 48.0) + 0.999), max(steps / 2, 4), 3 * steps);
+	// (2026-11 round 2: at most art3.w blocks per step, 0 = 48: the smaller, crisper cells were sliced into stripes by 48-block steps)
+	float dtMax = c.art3.w > 0.0 ? c.art3.w : 48.0;
+	int n = clamp(int(max(float(steps) * saturate(len / 600.0), len / dtMax) + 0.999), max(steps / 2, 4), 3 * steps);
 	float dt = len / float(n);
 	// the fine detail (a ~30-block tile) fades out where the steps get too coarse to resolve it (it aliases into grain)
 	float detail = saturate((26.0 - dt) / 14.0);
@@ -847,7 +857,7 @@ static inline CloudResult cloudCirrusEnd(CloudCirrusPre pre, float3 dir, constan
 // passes 1 - coverage, the egg-shaped altitude carve, the Worley erosion damped in the puffs' dense cores, the edges hardening toward
 // the top over a wispy base) and its march (few primary steps, more toward the horizon, a short light march). Ours: blocks, the noise
 // from our weather map and 3D noise, the cirrus's frame and wind, two light samples on the puffs' 2D shape, our phase and ambient.
-#define CLOUD_ALTO_NOISE (400.0 / 16384.0) // the 3D noise over the puffs: a ~41-block tile, a whole number of them per cirrus period
+#define CLOUD_ALTO_NOISE (200.0 / 16384.0) // the 3D noise over the puffs: a ~82-block tile, a whole number of them per cirrus period
 
 // The layer's frame: the cirrus's (its axis windDir.xy, the camera at cirrus.zw, wrapped). rel: camera-relative xz.
 static inline float2 cloudAltoPos(float2 rel, constant CloudParams &c) {
@@ -855,17 +865,18 @@ static inline float2 cloudAltoPos(float2 rel, constant CloudParams &c) {
 	return c.cirrus.zw + float2(dot(rel, wd), dot(rel, wn));
 }
 
-// The share of the sky the layer covers around s: patches a few thousand blocks across (the weather map's b at half its frequency),
-// x the amount.
+// The share of the sky the layer covers around s: fields a few thousand blocks across (the weather map's b at half its frequency),
+// x the amount, x alto2.w at a field's heart.
 static inline float cloudAltoCover(float2 s, constant CloudParams &c, texture2d<half> weather) {
 	half4 w = weather.sample(cloudRep, s * (0.5 / CLOUD_WEATHER_TILE) + float2(0.37, 0.61), level(0.0));
-	return saturate(c.alto.x * 0.6 * smoothstep(0.3, 0.8, float(w.b)));
+	return saturate(c.alto.x * c.alto2.w * smoothstep(0.3, 0.8, float(w.b)));
 }
 
 // The puffs' 2D shape at height fraction h in the layer, coverage cov (Photon's coverage test and altitude carve): g the cumulus cells
-// at 8x (~32 blocks), a the fine fBm at 3x (clusters and gaps), each from the weather map (cloudAltoFetch).
-static inline float cloudAltoShape(half g, half a, float h, float cov) {
+// at alto2.x (~64 blocks at 4), a the fine fBm at 1.5 (clusters and gaps), r the rows' noise (cloudAltoRows), each from the weather map.
+static inline float cloudAltoShape(half g, half a, float rows, float h, float cov) {
 	if (h <= 0.0 || h >= 1.0) return 0.0;
+	cov *= rows;
 	float d = saturate((float(g) * 0.7 + float(a) * 0.3 - (1.0 - cov)) / max(cov, 1e-3));
 	d -= smoothstep(0.2, 1.0, h) * 0.6; // the egg-shaped carve
 	return d * smoothstep(0.0, 0.2, h);
@@ -875,13 +886,19 @@ static inline half4 cloudAltoFetch(float2 s, float freq, float2 off, texture2d<h
 	return weather.sample(cloudRep, s * (freq / CLOUD_WEATHER_TILE) + off, level(0.0));
 }
 
+// (round 2, alto2.z) the coverage's factor from the rows: the cirrus fBm stretched 4:1 across the wind (bands ~150-300 blocks apart
+// along it, long across it), so the puffs line up in the rows of a mackerel sky instead of an even sprinkle. rb: its fetch.
+static inline float cloudAltoRows(half rb, constant CloudParams &c) {
+	return mix(1.0, saturate(smoothstep(0.3, 0.7, float(rb)) * 1.6), c.alto2.z);
+}
+
 // The density's last steps: the Worley erosion (n: the 3D noise there; damped in the dense cores), the edges hardening toward the top
-// over a wispy base.
-static inline float cloudAltoFinish(float d, half4 n, float h) {
+// over a wispy base; soft (alto2.y) scales the erosion and the edges' exponent (1 = Photon's).
+static inline float cloudAltoFinish(float d, half4 n, float h, float soft) {
 	float wd = 1.0 - float(n.g);
 	float thin = saturate(1.0 - d);
-	d = max(d - 0.66 * wd * wd * thin * (2.0 - thin), 0.0);
-	d = 1.0 - pow(1.0 - d, mix(3.0, 8.0, h));
+	d = max(d - 0.66 * soft * wd * wd * thin * (2.0 - thin), 0.0);
+	d = 1.0 - pow(1.0 - d, mix(3.0, 8.0, h) * soft);
 	return d * (0.1 + 0.9 * smoothstep(0.2, 0.7, h));
 }
 
@@ -909,10 +926,11 @@ static CloudResult cloudAlto(float3 dir, float jitter, constant CloudParams &c, 
 	float sigma = c.alto.w, albedo = c.ambTop.w;
 	float a1 = c.art.x, b1 = c.art.y;
 	// the light's step in the layer's frame and height fraction
-	const float LS = 6.0;
+	const float LS = 10.0;
 	float2 sL = float2(dot(L.xz, c.windDir.xy), dot(L.xz, float2(-c.windDir.y, c.windDir.x))) * LS;
 	float hL = L.y * LS / thick;
-	const float2 OFF_G = float2(0.13, 0.29), OFF_A = float2(0.71, 0.43);
+	const float2 OFF_G = float2(0.13, 0.29), OFF_A = float2(0.71, 0.43), OFF_R = float2(0.23, 0.87);
+	float freq = c.alto2.x, soft = c.alto2.y;
 	float powderMix = saturate(mu * 1.5);
 	float3 S = 0.0;
 	float T = 1.0, dsum = 0.0, wsum = 0.0;
@@ -921,20 +939,24 @@ static CloudResult cloudAlto(float3 dir, float jitter, constant CloudParams &c, 
 		float y = cloudAltitude(r, t);
 		float h = (y - yb) / thick;
 		float2 s = cloudAltoPos(dir.xz * t, c);
-		half4 w = cloudAltoFetch(s, 8.0, OFF_G, weather), w2 = cloudAltoFetch(s, 3.0, OFF_A, weather);
-		half4 wl = cloudAltoFetch(s + sL, 8.0, OFF_G, weather);
-		float d = cloudAltoShape(w.g, w2.a, h, cov);
+		half4 w = cloudAltoFetch(s, freq, OFF_G, weather), w2 = cloudAltoFetch(s, 1.5, OFF_A, weather);
+		half4 wl = cloudAltoFetch(s + sL, freq, OFF_G, weather);
+		// (the rows: across the wind, s.x along it; 6 and 1.5 x 1/4096: whole tiles per period)
+		half4 wr = weather.sample(cloudRep, s * float2(6.0 / CLOUD_WEATHER_TILE, 1.5 / CLOUD_WEATHER_TILE) + OFF_R, level(0.0));
+		float rows = cloudAltoRows(wr.b, c);
+		float d = cloudAltoShape(w.g, w2.a, rows, h, cov);
 		if (d <= 0.0) continue;
-		float lod = max(log2(max(t * foot, 1e-3) * (64.0 / 40.96)), 0.0); // (the noise tile's 64 texels)
-		d = cloudAltoFinish(d, noise.sample(cloudRepMip, float3(s.x, y, s.y) * CLOUD_ALTO_NOISE, level(lod)), h);
+		float lod = max(log2(max(t * foot, 1e-3) * (64.0 / 81.92)), 0.0); // (the noise tile's 64 texels)
+		d = cloudAltoFinish(d, noise.sample(cloudRepMip, float3(s.x, y, s.y) * CLOUD_ALTO_NOISE, level(lod)), h, soft);
 		if (d <= 0.002) continue;
-		// toward the light: the puffs' shape one step on (its clusters from here) and this sample's own half step
-		float tauL = sigma * (max(cloudAltoShape(wl.g, w2.a, h + hL, cov), 0.0) * LS + d * 2.0);
+		// toward the light: the puffs' shape one step on (its clusters and rows from here) and this sample's own half step
+		float tauL = sigma * (max(cloudAltoShape(wl.g, w2.a, rows, h + hL, cov), 0.0) * LS + d * 2.0);
 		float st = d * sigma;
 		float stepT = exp(-st * dt);
 		float ms = exp(-tauL) * ph0 + a1 * exp(-b1 * tauL) * ph1 + a1 * a1 * exp(-b1 * b1 * tauL) * ph2;
 		// powder: the puffs' thin skin scatters less toward the eye than their cores (not looking toward the light)
-		ms *= mix(1.0 - c.look.x * exp(-d * 6.0), 1.0, powderMix);
+		// (round 2: x 1 / soft, the softer puffs less contrasty: their skins nearly as bright as their cores)
+		ms *= mix(1.0 - c.look.x * min(soft, 1.0) * exp(-d * 6.0), 1.0, powderMix);
 		float tauUp = d * sigma * (1.0 - h) * thick * c.art.z;
 		float3 amb = (c.ambTop.rgb * (0.6 + 0.4 * h) * exp(-tauUp) + c.ambBottom.rgb * 0.5) * c.ambBottom.w;
 		float wseg = T * (1.0 - stepT);
@@ -1079,6 +1101,9 @@ static CloudResult cloudSky(float3 dir, int steps, int lsteps, int q, float jitt
 	if (cu.dist >= 0.0 || ci.dist >= 0.0 || al.dist >= 0.0 || cloudDev(c, CLOUD_DEV_OLD_MARCH)) {
 		float3 sky = batch ? skyPre : shadeSkyLookup(dir, lut, lutS, f);
 		float hf = cloudHorizonFade(dir, c);
+		// (2026-11 round 2, hz) the deck melts into the sky behind it over the last degrees above the horizon instead of ending on a
+		// hard line over the bare horizon sky (a bright pink band at dusk once the golden-hour mist no longer covered it)
+		if (c.hz.x > 0.0) hf *= mix(1.0, smoothstep(-0.5 * c.hz.y, c.hz.y, dir.y), c.hz.x);
 		cu = cloudAerial(cu, sky, hf, c);
 		ci = cloudAerial(ci, sky, hf, c);
 		al = cloudAerial(al, sky, hf, c);

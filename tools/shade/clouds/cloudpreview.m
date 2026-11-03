@@ -79,7 +79,7 @@ int main(int argc, const char **argv) {
 		NSData *frame = [NSData dataWithContentsOfFile:[dir stringByAppendingFormat:@"/%@.frame", name]];
 		NSData *look = [NSData dataWithContentsOfFile:[dir stringByAppendingFormat:@"/%@.look", name]];
 		NSData *params = [NSData dataWithContentsOfFile:[dir stringByAppendingFormat:@"/%@.params", name]];
-		const int PB = 496; // CloudParams (clouds.metal; 2026-11: + art2, alto, art3)
+		const int PB = 528; // CloudParams (clouds.metal; 2026-11: + art2, alto, art3, alto2, hz)
 		int frames = (int) (params.length / PB);
 		frameBuf = [dev newBufferWithLength:2048 options:MTLResourceStorageModeShared];
 		memcpy(frameBuf.contents, frame.bytes, frame.length);
