@@ -80,6 +80,8 @@ public final class ShadeLook {
 	public float skyRose;
 	/** Rose strength per look (epic, storybook, natural). */
 	private static final float[] ROSE_LOOK = {1f, 1.15f, 0.6f};
+	/** (2026-11) The evening rose's default share (mcopt.shade.skyRoseAmount; 1 = M3 to candidate 4). */
+	static final float ROSE_AMOUNT = 0.25f; // (run at-e: 0.25-0.3 keeps a warm hint low down, the upper sky blue as Photon's)
 	/**
 	 * mcopt.shade.skyRose (default true; false = M2.1's evening sky, skyRose 0). Read every frame, so a bench can shoot the
 	 * same sunset with and without it in one session (mcbench EntityShots "rose").
@@ -195,7 +197,9 @@ public final class ShadeLook {
 		// Portions adapted from Photon Shaders by Benjamin Stott ("sixthsurge"), MIT License, commit 26c2906e (full text:
 		// LICENSES/MIT-Photon.txt): program/c0_vl.vsh (air_fog_mie_coeff: the densities and the blue hour) and shaders.properties
 		// (the time uniforms me_fade, me_weight, time_sunrise, time_noon, time_sunset)
-		float gm = this.frames - this.vlAirFrame <= 2 ? Live.f("mcopt.shade.vl.goldenMist", 1.2f, 0f, 1.5f) : 0f;
+		// (2026-11 clouds: 1.2 -> 1.0, Photon's own density. Gael wants Photon's golden hour; at 1.2, and 7 in the morning, the mist
+		// veiled the whole low sky and the clouds into one peach haze; the shafts stay, run at-e)
+		float gm = this.frames - this.vlAirFrame <= 2 ? Live.f("mcopt.shade.vl.goldenMist", 1.0f, 0f, 1.5f) : 0f;
 		this.goldenMist = gm;
 		if (gm > 0f) {
 			float fade = sunY < 0.18f ? 0.37f + 1.2f * Math.max(0f, -sunY) : 1.7f;
@@ -227,7 +231,9 @@ public final class ShadeLook {
 				break;
 			}
 		}
-		this.skyRose = roseOn() ? rose * goldK * ROSE_LOOK[look] : 0f;
+		// (2026-11, mcopt.shade.skyRoseAmount, live, 0..2: the rose's share; Gael asked for Photon's golden hour, a deep blue sky with the
+		// warm glow only around the sun and low down, and at full strength the rose turned the whole upper sky peach-lilac)
+		this.skyRose = roseOn() ? rose * goldK * ROSE_LOOK[look] * Live.f("mcopt.shade.skyRoseAmount", ROSE_AMOUNT, 0f, 2f) : 0f;
 		ShadeSky.sunsetArt = ShadeConfig.flag("mcopt.shade.sunsetArt", true); // read every frame (bench A/B in one session)
 		// (1.1) user.rainFog: the rain's share of the fog and mist terms below (and ShadeFrame's distance haze), 0 = rain adds none
 		float rainFog = rain * Live.f(U + "rainFog", 1f, 0f, 3f);

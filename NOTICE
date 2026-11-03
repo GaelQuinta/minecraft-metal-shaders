@@ -29,7 +29,9 @@ Native shading M3 volumetric clouds (metal/src/main/resources/mcopt/shade/clouds
 Shaders (https://github.com/sixthsurge/photon), commit 26c2906e, Copyright (c) 2025 Benjamin Stott ("sixthsurge"), MIT
 License (full text: LICENSES/MIT-Photon.txt): the cumulus altitude shaping, the "powder" term, the cloud phase function
 as a mix of forward and backward lobes, the octave loop of the multiple-scattering approximation, the aerial perspective
-blend by the clouds' apparent distance, and the checkerboard + reprojected-history upscaling. The history's 5-tap
+blend by the clouds' apparent distance, and the checkerboard + reprojected-history upscaling; since 1.2.7 also
+include/sky/clouds/altocumulus.glsl: the altocumulus layer's density (coverage test, altitude carve, damped Worley
+erosion, edges hardening toward the top over a wispy base) and its short march. The history's 5-tap
 Catmull-Rom fetch (cloudCatmullRom) is the MJP gist named under TAAU above, MIT License. The rest of the file is original
 (Apache-2.0).
 

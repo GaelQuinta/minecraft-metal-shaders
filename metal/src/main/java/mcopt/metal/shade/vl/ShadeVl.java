@@ -50,7 +50,7 @@ import org.lwjgl.system.MemoryUtil;
  * render3dHud mixin path (M1 LDR composite) remains for mcopt.shade.hdr=false. See VL.md and M2_INTEGRATION.md.
  */
 public final class ShadeVl {
-	private static final int PARAM_BYTES = 512; // VlParams (vl.metal), 32 x float4 since 2026-11 (all of mcvl.m's local copy)
+	private static final int PARAM_BYTES = 528; // VlParams (vl.metal), 33 x float4 since 2026-11 (air9; mcvl.m copies up to 640)
 	private static final int ERR = 2048;
 	private static final float SEA = 63f;
 	/** M2: the open-air medium = the base's haze / mist sigma x these (see pack). */
@@ -614,8 +614,15 @@ public final class ShadeVl {
 		// trees and cloud gaps: wedges fanning from a low sun across the sky; 0 = none, the sky's dark screen-space rays only. x the
 		// golden hour (all of it below sunY 0.1, none above 0.55: no cost by day) and the player's god rays. Sky pixels then march to
 		// the end instead of stopping at the shade grid's edge, ~+0.1-0.25 ms in the golden hour; with airDim it also dims the sky)
-		float skyMist = air && sunLight ? Math.max(0f, Math.min(2f, VlConfig.live("mcopt.shade.vl.skyMist", 1.5f))) * smoothstep(0.55f, 0.1f, sunY) * userRays : 0f;
+		// (2026-11 clouds: 1.5 -> 1.0, with goldenMist 1.0 and the share over the clouds below: the low sky keeps the mist's glow and
+		// shafts without the milky veil, run at-e)
+		float skyMist = air && sunLight ? Math.max(0f, Math.min(2f, VlConfig.live("mcopt.shade.vl.skyMist", 1.0f))) * smoothstep(0.55f, 0.1f, sunY) * userRays : 0f;
 		put(b, airLinear, skyMist, airDim, spatial);
+		// air9 (2026-11 clouds): x the golden-hour sky mist's share over the volumetric clouds (mcopt.shade.vl.skyMistCloud, live, 0..1,
+		// by the clouds' transmittance). 1 = round 1 (candidate 4), where it veiled their sunset colours, the dark blue shadowed sides and
+		// the red lit ones (Gael 2026-11-03); 0.3 brought those back as in candidate 3 (run scf-a), 0.2 with skyMist 1.0 the sunrise's
+		// blue-grey cloud shadows too (run at-e); the clear sky and the ground keep the mist and its shafts (notes/2026-11-03/clouds)
+		put(b, Math.max(0f, Math.min(1f, VlConfig.live("mcopt.shade.vl.skyMistCloud", 0.2f))), 0f, 0f, 0f);
 		// (air mode: the haze's shadows count wherever the sun is up, even with no forest around)
 		if (userRays <= 0f) return false;
 		if (userWater <= 0f) return false; // (1.1: under water with its shafts at 0 nothing is added: no passes, as above)
