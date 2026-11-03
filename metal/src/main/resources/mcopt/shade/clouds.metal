@@ -87,7 +87,9 @@ struct CloudParams {
 	                       //     sky), w the coverage at a field's heart
 	float4 hz;             // 512 (round 2) the cloud deck at the horizon: x how much of the aerial perspective toward the sky behind grows
 	                       //     over the last degrees above the horizon (0 = M3: the lit deck ends on a hard line over the bare horizon
-	                       //     sky at dusk), y the ray height (dir.y) where that ramp starts, zw reserved
+	                       //     sky at dusk), y the ray height (dir.y) where that ramp starts, z (round 4) the far light samples' weather
+	                       //     mip (cloudLightDepthB: the light march's third and fourth samples and the sky-light sample above read the
+	                       //     cloud's shape blurred over 2^z texels; 0 = the sharp map, M3), w their density's factor with z > 0
 };
 static_assert(sizeof(CloudParams) == 528, "CloudParams layout (CloudParams.java)");
 
@@ -131,6 +133,8 @@ constexpr sampler cloudRep(filter::linear, address::repeat);
 // history averages neighbouring levels: no contour where the level changes): march ~ -12 %, same look (CLOUDS.md M3.1).
 constexpr sampler cloudRepMip(filter::linear, mip_filter::nearest, address::repeat);
 constexpr sampler cloudClamp(filter::linear, address::clamp_to_edge);
+// (round 4) the weather map's mips (mcclouds.m bakes them): the far light samples' blurred shape (cloudLightDepthB)
+constexpr sampler cloudRepMipL(filter::linear, mip_filter::linear, address::repeat);
 
 // ---- bakes ---------------------------------------------------------------------------------------------------------------
 // Periodic gradient noise and Worley noise on integer lattices that wrap (the textures tile), hashed with shadeHash3.
@@ -496,15 +500,30 @@ static float cloudLightDepthB(float3 p, float y, float jitter, int steps, consta
 	float hUp = (yUp - c.layer.x) * inv;
 	float2 xzUp = c.origin.xy + pUp.xz;
 	half4 w0 = cloudWeatherAt(xz[0], hs[0], c, weather), w1 = cloudWeatherAt(xz[1], hs[1], c, weather);
-	half4 w2 = steps > 2 ? cloudWeatherAt(xz[2], hs[2], c, weather) : half4(0.0h);
-	half4 w3 = steps > 3 ? cloudWeatherAt(xz[3], hs[3], c, weather) : half4(0.0h);
-	half4 wUp = cloudWeatherAt(xzUp, hUp, c, weather);
+	// (2026-11 round 4, hz.z > 0) the far samples (30-55 blocks toward the sun and beyond) and the sky-light sample above from the weather
+	// map's mip hz.z: the coarse shape blurred over 2^hz.z texels (~5 blocks each), the far samples' density x hz.w (blurring lowers the
+	// cells' peaks; the sky-light sample's is left as it is). Read sharp, one point of the shape far toward the sun made the self-shadow
+	// a stack of crisp terraces, which a ray toward the horizon sees edge-on as fine level bands across the mid-distance clouds
+	// (notes/2026-11-03/clouds, rounds 3-4); blurred, the deep shadow stays (the sunset's dark undersides) and its edges go soft. The same
+	// fetches
+	half4 w2, w3, wUp;
+	if (c.hz.z > 0.0) {
+		float wk = c.art2.x / CLOUD_WEATHER_TILE;
+		w2 = steps > 2 ? weather.sample(cloudRepMipL, (xz[2] - c.shear.xy * hs[2]) * wk, level(c.hz.z)) : half4(0.0h);
+		w3 = steps > 3 ? weather.sample(cloudRepMipL, (xz[3] - c.shear.xy * hs[3]) * wk, level(c.hz.z + 1.0)) : half4(0.0h);
+		wUp = weather.sample(cloudRepMipL, (xzUp - c.shear.xy * hUp) * wk, level(c.hz.z));
+	} else {
+		w2 = steps > 2 ? cloudWeatherAt(xz[2], hs[2], c, weather) : half4(0.0h);
+		w3 = steps > 3 ? cloudWeatherAt(xz[3], hs[3], c, weather) : half4(0.0h);
+		wUp = cloudWeatherAt(xzUp, hUp, c, weather);
+	}
 	half4 n0 = noise.sample(cloudRepMip, cloudNoisePos(xz[0], yq[0], c) * (CLOUD_NOISE_SCALE * c.art2.y), level(lod));
 	half4 n1 = noise.sample(cloudRepMip, cloudNoisePos(xz[1], yq[1], c) * (CLOUD_NOISE_SCALE * c.art2.y), level(lod + 1.0));
 	float tau = cloudDensityMath(w0, n0, n0, hs[0], 1, c, 1.0, rl[0]) * len[0];
 	if (steps > 1) tau += cloudDensityMath(w1, n1, n1, hs[1], 1, c, 1.0, rl[1]) * len[1];
-	if (steps > 2) tau += cloudDensityMath(w2, w2, w2, hs[2], 0, c, 1.0, rl[2]) * len[2];
-	if (steps > 3) tau += cloudDensityMath(w3, w3, w3, hs[3], 0, c, 1.0, rl[3]) * len[3];
+	float farK = c.hz.z > 0.0 ? c.hz.w : 1.0;
+	if (steps > 2) tau += cloudDensityMath(w2, w2, w2, hs[2], 0, c, 1.0, rl[2]) * (len[2] * farK);
+	if (steps > 3) tau += cloudDensityMath(w3, w3, w3, hs[3], 0, c, 1.0, rl[3]) * (len[3] * farK);
 	dUp = cloudDensityMath(wUp, wUp, wUp, hUp, 0, c, 1.0, pUp.xz);
 	return tau * c.shape.z;
 }

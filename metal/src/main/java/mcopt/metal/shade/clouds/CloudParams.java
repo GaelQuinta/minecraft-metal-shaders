@@ -221,7 +221,9 @@ public final class CloudParams {
 		// (round 2) the altocumulus' look (its puffs' frequency a whole number of quarters: whole tiles per period, no seam) and the deck's
 		// aerial perspective at the horizon
 		put4(b, 496, Math.round(CloudConfig.altoCells() * 4f) / 4f, CloudConfig.altoSoft(), CloudConfig.altoRows(), CloudConfig.altoCover());
-		put4(b, 512, CloudConfig.horizonAp(), Live.f("mcopt.shade.clouds.horizonTop", 0.08f, 0.01f, 0.5f), 0f, 0f);
+		// (round 4) z, w: the far light samples' weather mip and density factor (the blocky style's cell mask has no mips: off)
+		put4(b, 512, CloudConfig.horizonAp(), Live.f("mcopt.shade.clouds.horizonTop", 0.08f, 0.01f, 0.5f), ShadeClouds.blocky() ? 0f : CloudConfig.farLightMip(),
+			CloudConfig.farLightGain());
 		// (1.1: shadows on/off and their strength live; off = 0, the consumers read 1, ShadeClouds skips the map's pass)
 		this.shadowStrength = CloudConfig.shadows() ? CloudConfig.shadowStrength() * smoothstep(0.04f, 0.18f, f.sky.lightDir[1]) * this.opacity : 0f;
 

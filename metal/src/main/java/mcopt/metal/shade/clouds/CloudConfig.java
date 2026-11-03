@@ -120,6 +120,12 @@ public final class CloudConfig {
 	 * over its last ~5 degrees (0.6; 0 = M3: a hard pink line at dusk over the bare horizon).
 	 */
 	static final float ALTO_CELLS = 4f, ALTO_SOFT = 0.6f, ALTO_ROWS = 0.8f, ALTO_COVER = 0.8f, DT_MAX = 24f, HORIZON_AP = 0.6f;
+	/**
+	 * (round 4, runs h4-a / h4-b) The far light samples from the weather map's mip 4 (~80 blocks), their density x 1.5: the band index
+	 * 1.10 -> 0.81 at golden hour, 1.40 -> 1.14 toward the sun at sunset, 1.13 -> 0.75 west and up, 0.83 -> 0.71 at noon; looking away
+	 * from the sun at sunset unchanged (1.43 -> 1.39); the sunset's dark undersides kept (mip 5 lightens them).
+	 */
+	static final float FAR_LIGHT_MIP = 4f, FAR_LIGHT_GAIN = 1.5f;
 	/** Blocks of world per 1 km of the sky model's air for the light the layer gets (sunset light lingers on the clouds). */
 	public static final float ALTITUDE_SCALE = clamp(floatProperty("mcopt.shade.clouds.altitudeScale", 4f), 0f, 50f);
 	/** Most visits a history pixel averages (its march samples are jittered): fewer with a larger checkerboard (slower visits). */
@@ -338,6 +344,20 @@ public final class CloudConfig {
 	/** (round 2) live: mcopt.shade.clouds.horizonAp, the deck's aerial perspective growing over the last degrees above the horizon (0 = M3, 0..1). */
 	public static float horizonAp() {
 		return Live.f("mcopt.shade.clouds.horizonAp", HORIZON_AP, 0f, 1f);
+	}
+
+	/**
+	 * (round 4) live: mcopt.shade.clouds.farLightMip, the weather-map mip the light march's far samples and the sky-light sample read
+	 * (the self-shadow from the cloud shape blurred over 2^mip texels: fewer level bands across the mid-distance clouds; 0 = the sharp
+	 * map, candidate 5 and M3; 0..6).
+	 */
+	public static float farLightMip() {
+		return Live.f("mcopt.shade.clouds.farLightMip", FAR_LIGHT_MIP, 0f, 6f);
+	}
+
+	/** (round 4) live: mcopt.shade.clouds.farLightGain, those blurred samples' density factor (1 = candidate 5; 0.5..3). */
+	public static float farLightGain() {
+		return Live.f("mcopt.shade.clouds.farLightGain", FAR_LIGHT_GAIN, 0.5f, 3f);
 	}
 
 	/** live: mcopt.shade.clouds.altoSigma, the altocumulus extinction per block at density 1 (x the player's density; 0.01..1). */
