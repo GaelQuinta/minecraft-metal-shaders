@@ -201,7 +201,7 @@ public final class ShadeWater {
 	 * only (the terrain reads ShadeResources). Render thread.
 	 */
 	static void openMap(ByteBuffer rgba, int size, float far) {
-		if (openFailed || !mcopt.metal.shade.ShadeConfig.HDR) return;
+		if (openFailed || !mcopt.metal.shade.ShadeConfig.HDR || !mcopt.metal.shade.ShadeRender.ready()) return; // (not set up yet: the next map)
 		try {
 			int i = openNext;
 			if (OPEN_TEX[i] == 0) OPEN_TEX[i] = mcopt.metal.shade.ShadeRender.textureCpu(size, size, "mcopt shade water: open-water map " + i);
