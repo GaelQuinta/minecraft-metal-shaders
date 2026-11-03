@@ -1351,6 +1351,23 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	// the block texture's light pixels but moving smoothly
 	body *= 1.0 + 0.13 * clamp(pattern, -1.5, 2.5) + 0.35 * smoothstep(0.9, 2.0, pattern);
 #endif
+#ifdef SHADE_WATER_SWELL
+	// (2026-11-02, S3; mcopt.shade.water.swellGlow, 0 = none) light through the crests: at golden hour, with the low sun ahead, the thin
+	// tops of the swell's faces turned toward the eye glow in the water's own colour (turquoise for the default water), the backlit
+	// wave. Sunlight that crossed ~1.5 blocks of crest, scattered forward (x4 stands for the forward-peaked phase function), into the
+	// body, so exactly where those facets mirror less (1 - F). It follows the swell's LOD (fades with it far away) and the shadows
+	// (terrain and clouds) at the surface.
+	if (top && wp.swell.z > 0.0 && f.lightDirWorld.w > 0.5 && any(w.swell.xy != 0.0)) {
+		float3 l = f.lightDirWorld.xyz;
+		float2 vh = v.xz * rsqrt(max(dot(v.xz, v.xz), 1e-8)), lh = l.xz * rsqrt(max(dot(l.xz, l.xz), 1e-8));
+		float ahead = saturate(dot(vh, lh));                                          // the sun behind the waves
+		float low = smoothstep(0.0, 0.05, l.y) * (1.0 - smoothstep(0.12, 0.45, l.y)); // golden hour only
+		float crest = saturate(w.swell.z * 2.5 + 0.5);                                 // 0 trough .. 1 crest
+		float face = saturate(dot(w.swell.xy, vh) * 20.0);                             // the face toward the eye
+		float g = wp.swell.z * ahead * ahead * ahead * low * crest * crest * face * float(w.shadow);
+		if (g > 0.0) body += f.sunColor.rgb * exp(-sigmaT * 1.5) * (SHADE_WATER_SIGMA_S / sigmaT) * (4.0 * g);
+	}
+#endif
 
 	// --- reflection: the sky (only as open as the sky light says), SSR over it, the sun's glint
 	float open = float(shadeSkyCurve(w.sky));
