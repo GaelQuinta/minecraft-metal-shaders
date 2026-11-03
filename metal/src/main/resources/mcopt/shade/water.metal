@@ -346,12 +346,14 @@ static inline bool shadeSsrSegment(float3 p0, float3 r, float maxDist, constant 
 	// M2.1: only the top and bottom edges end the segment. Past a side edge the march goes on against the edge column (the
 	// reads are clamped), which stands in for what is just off screen: a shore or a tree line that leaves the screen at the
 	// side keeps mirroring out to the screen edge instead of fading into the sky fallback (M2's cut-off reflections).
-	const float side = 2.0;
+	// 1.2.7 (audit B3b): the top edge too, half a screen past it against the top row: a shore hill or a tree line that rises past
+	// the top of the screen kept mirroring as white sky (the cloud dome) wherever the rays reached the top edge before the hill
+	const float side = 2.0, top = 1.5;
 #else
-	const float side = 1.0;
+	const float side = 1.0, top = 1.0;
 #endif
 	float tx = d.x > 1e-6 ? (side - s0.x) / d.x : d.x < -1e-6 ? (-side - s0.x) / d.x : 1e6;
-	float ty = d.y > 1e-6 ? (1.0 - s0.y) / d.y : d.y < -1e-6 ? (-1.0 - s0.y) / d.y : 1e6;
+	float ty = d.y > 1e-6 ? (top - s0.y) / d.y : d.y < -1e-6 ? (-1.0 - s0.y) / d.y : 1e6;
 	float tEnd = min(1.0, min(tx, ty));
 	if (tEnd <= 0.0) return false;
 	screenEnd = tEnd < 1.0;
@@ -443,17 +445,26 @@ static float4 shadeSsrMarch(float3 s0, float3 ds, bool screenEnd, int chunk, int
 		float2 uv = sh.xy * 0.5 + 0.5;
 		float zh = shadeSsrZ(depth, sh, size);
 #endif
+		// 1.2.7 (audit B1, Gael's white streaks next to shore grass): the coarse depth is the nearest of a 2x2 block, so the step
+		// can find a "crossing" that the full-resolution depth says the ray never reached (still in front of it). The thickness
+		// test below has no lower bound and took it at full weight: a false hit on the lake bottom or a far pixel, which won the
+		// quad's nearest-hit vote and then failed shadeSsrBelowStart, so the whole quad mirrored the white sky. No crossing here.
+		if (sh.z > zh) continue;
 		float wh = zh > 0.0 ? B / max(zh + A, 1e-7) : SHADE_WATER_SKY_W;
 		float wr = B / max(sh.z + A, 1e-7);
 		float wp = B / max(s0.z + ds.z * tPrev + A, 1e-7);
 		float thick = 0.3 + 0.02 * wh + abs(wr - wp) * thickK;
 		if (wh < SHADE_WATER_SKY_W && wr - wh < thick) {
 #ifdef SHADE_SSR_EDGE
-			float off = abs(sh.x) - 1.0;
-			float fade = smoothstep(0.0, 0.07, min(uv.y, 1.0 - uv.y)) * (1.0 - 0.5 * smoothstep(0.0, 1.0, off));
-			fade *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.5) * 4.0), saturate(off * 20.0));
-			fade *= 1.0 - smoothstep(0.6, 1.0, (wr - wh) / thick); // grazing passes fade, not pop
+			// past a side or (1.2.7, B3b) the top the edge column / row stands in, trusted less the further out; near the bottom
+			// edge the hit still fades. 1.2.7 (B3a): with `behind` the crossing just past the thickness comes back at full weight
+			// (below), so fading a grazing hit toward the bright sky first only drew a light ring around mirrored silhouettes.
+			float off = abs(sh.x) - 1.0, offT = sh.y - 1.0;
+			float fade = smoothstep(0.0, 0.07, uv.y) * (1.0 - 0.5 * smoothstep(0.0, 1.0, off)) * (1.0 - 0.5 * smoothstep(0.0, 0.5, offT));
+			fade *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.5) * 4.0), saturate(max(off, offT) * 20.0));
+			if (!behind) fade *= 1.0 - smoothstep(0.6, 1.0, (wr - wh) / thick); // grazing passes fade, not pop
 			uv.x = clamp(uv.x, 0.5 / size.x, 1.0 - 0.5 / size.x);
+			uv.y = min(uv.y, 1.0 - 0.5 / size.y);
 			if (!screenEnd) fade *= 1.0 - smoothstep(0.85, 1.0, wr / max(B / max(s0.z + ds.z + A, 1e-7), 1e-3));
 #else
 			float2 edge = smoothstep(0.0, 0.07, min(uv, 1.0 - uv));
@@ -474,11 +485,11 @@ static float4 shadeSsrMarch(float3 s0, float3 ds, bool screenEnd, int chunk, int
 	float zh = shadeSsrZ(depth, sh, size);
 	float wh = zh > 0.0 ? B / max(zh + A, 1e-7) : SHADE_WATER_SKY_W;
 	float wr = B / max(sh.z + A, 1e-7);
-	float off = abs(sh.x) - 1.0;
-	float bf = smoothstep(0.0, 0.07, min(uv.y, 1.0 - uv.y)) * (1.0 - 0.5 * smoothstep(0.0, 1.0, off));
-	bf *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.5) * 4.0), saturate(off * 20.0));
+	float off = abs(sh.x) - 1.0, offT = sh.y - 1.0;
+	float bf = smoothstep(0.0, 0.07, uv.y) * (1.0 - 0.5 * smoothstep(0.0, 1.0, off)) * (1.0 - 0.5 * smoothstep(0.0, 0.5, offT));
+	bf *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.5) * 4.0), saturate(max(off, offT) * 20.0));
 	if (!screenEnd) bf *= 1.0 - smoothstep(0.85, 1.0, wr / max(B / max(s0.z + ds.z + A, 1e-7), 1e-3));
-	return float4(clamp(uv.x, 0.5 / size.x, 1.0 - 0.5 / size.x), uv.y, bf, hiBack + 10.0);
+	return float4(clamp(uv.x, 0.5 / size.x, 1.0 - 0.5 / size.x), min(uv.y, 1.0 - 0.5 / size.y), bf, hiBack + 10.0);
 #else
 		if (behind && back.w < 0.0 && wh < SHADE_WATER_SKY_W && wh > B / max(s0.z + A, 1e-7)) {
 			float off = abs(sh.x) - 1.0;
@@ -522,22 +533,24 @@ static float4 shadeSsrMarch(float3 s0, float3 ds, bool screenEnd, int chunk, int
 		float2 uv = sh.xy * 0.5 + 0.5;
 		float wh = shadeWaterSceneW(depth, uint2(clamp(uv * size, float2(0.0), size - 1.0)), f);
 		float wr = B / max(sh.z + A, 1e-7);
+		if (wr < wh) continue; // (1.2.7, audit B1: as in the raw-z march, a crossing the full-resolution depth never saw)
 		float wp = B / max(s0.z + ds.z * ts[i - 1] + A, 1e-7);
 		float thick = 0.3 + 0.02 * wh + abs(wr - wp);
 		if (wh < SHADE_WATER_SKY_W && wr - wh < thick) {
 #ifdef SHADE_SSR_EDGE
-			// no fade at the sides (the edge column continues them), only at the top edge; past a side the hit is the edge
-			// column, trusted less the further off screen the ray went (x0.5 at the segment's end, NDC +-2); the far-end
-			// fade goes by distance (M2 faded by screen length: with 512-block rays a shore 100-200 blocks away lost half
-			// its reflection)
-			float off = abs(sh.x) - 1.0;
-			float fade = smoothstep(0.0, 0.07, min(uv.y, 1.0 - uv.y)) * (1.0 - 0.5 * smoothstep(0.0, 1.0, off));
+			// no fade at the sides (the edge column continues them) nor (1.2.7, B3b) past the top (the top row); past a side
+			// or the top the hit is the edge column / row, trusted less the further off screen the ray went (x0.5 at the
+			// segment's end, NDC +-2); the far-end fade goes by distance (M2 faded by screen length: with 512-block rays a shore
+			// 100-200 blocks away lost half its reflection)
+			float off = abs(sh.x) - 1.0, offT = sh.y - 1.0;
+			float fade = smoothstep(0.0, 0.07, uv.y) * (1.0 - 0.5 * smoothstep(0.0, 1.0, off)) * (1.0 - 0.5 * smoothstep(0.0, 0.5, offT));
 			// past a side the steps are long and the thickness test lets almost any crossing through: an edge column much
 			// NEARER than the ray (a tree trunk, a shore block at the screen edge) is not what the ray would hit off screen,
 			// and would smear sideways into the reflection (and flicker as things enter the edge): faded out
-			fade *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.5) * 4.0), saturate(off * 20.0));
+			fade *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.5) * 4.0), saturate(max(off, offT) * 20.0));
 			fade *= 1.0 - smoothstep(0.6, 1.0, (wr - wh) / thick); // grazing passes fade, not pop
 			uv.x = clamp(uv.x, 0.5 / size.x, 1.0 - 0.5 / size.x);
+			uv.y = min(uv.y, 1.0 - 0.5 / size.y);
 			if (!screenEnd) fade *= 1.0 - smoothstep(0.85, 1.0, wr / max(B / max(s0.z + ds.z + A, 1e-7), 1e-3));
 #else
 			float2 edge = smoothstep(0.0, 0.07, min(uv, 1.0 - uv));
@@ -744,7 +757,12 @@ static float4 shadeSsr(float3 p0, float3 r, float2 pixel, float maxDist, float e
 			// to haze from (it took the far plane's ~900 blocks of haze: a light dotted rim around mirrored crowns and shores)
 			if (uvl.y > 0.0 && uvl.y < 1.0) {
 				float2 ul = float2(clamp(uvl.x, 0.5 / sz.x, 1.0 - 0.5 / sz.x), uvl.y);
-				if (depth.read(uint2(clamp(ul * sz, float2(0.0), sz - 1.0))) > 0.0) h.xy = ul;
+				// 1.2.7 (audit B2): and only onto the same surface: ripples tilt the lanes' rays apart, and 100-250 blocks out a lane
+			// landed on the lake bottom or nearer foliage next to every mirrored silhouette, which read the lake's own bright
+			// sky reflection from last frame (wavy white streaks inside mirrored hills)
+			float zl = depth.read(uint2(clamp(ul * sz, float2(0.0), sz - 1.0)));
+			float wh = shadeLinearW(zh, f), wl = shadeLinearW(zl, f);
+			if (zl > 0.0 && abs(wl - wh) < max(1.5, 0.08 * wh)) h.xy = ul;
 			}
 		}
 	}
