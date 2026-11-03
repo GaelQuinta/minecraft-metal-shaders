@@ -175,7 +175,7 @@ public final class ShadeWater {
 	 * .swellOpen, .swellGlow, .glitter) and its defaults are the look without it. Pricing the code's presence in one session:
 	 * -Dmcopt.shade.leanDev=SHADE_WATER_SWELL (and/or SHADE_WATER_GLITTER) with mcopt.shade.leanDev.on (ShadeLean).
 	 */
-	public static final boolean SWELL_CODE = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.swellCode", "false"));
+	public static final boolean SWELL_CODE = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.swellCode", "true"));
 	/** The glint's glitter's code (water.metal SHADE_WATER_GLITTER, live mcopt.shade.water.glitter): with the swell's unless set on its own. */
 	public static final boolean GLITTER_CODE = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.glitterCode", String.valueOf(SWELL_CODE)));
 	static final boolean SWELL_DEV = mcopt.metal.shade.ShadeLean.DEV_DEFINES.contains("SHADE_WATER_SWELL ");
@@ -408,15 +408,15 @@ public final class ShadeWater {
 		// ripples' strength in clear weather (style photon), read every frame since round 1 (they were startup defines: now A/B-able in session)
 		// the swell (mcopt.shade.water.swell 0..3, 0 = none: the look before it): its strength, its masking k (.swellMask), the light through
 		// its crests at golden hour (.swellGlow 0..4, 0 = none), its share in the Fresnel (.swellFresnel, 1 physical, 0 = the cosine without it)
-		p.putFloat(64, mcopt.metal.shade.Live.f("mcopt.shade.water.swell", 0f, 0f, 3f)).putFloat(68, mcopt.metal.shade.Live.f("mcopt.shade.water.swellMask", 0.45f, 0f, 1f))
-			.putFloat(72, mcopt.metal.shade.Live.f("mcopt.shade.water.swellGlow", 0f, 0f, 4f))
+		p.putFloat(64, mcopt.metal.shade.Live.f("mcopt.shade.water.swell", 1.3f, 0f, 3f)).putFloat(68, mcopt.metal.shade.Live.f("mcopt.shade.water.swellMask", 0.45f, 0f, 1f))
+			.putFloat(72, mcopt.metal.shade.Live.f("mcopt.shade.water.swellGlow", 0.5f, 0f, 4f))
 			.putFloat(76, mcopt.metal.shade.Live.f("mcopt.shade.water.swellFresnel", 1f, 0f, 1f));
 		p.putFloat(80, openFar).putFloat(84, 0f).putFloat(88, mcopt.metal.shade.Live.f("mcopt.shade.water.calm", CALM, 0.05f, 2f))
 			.putFloat(92, mcopt.metal.shade.Live.f("mcopt.shade.water.ripple", RIPPLE, 0f, 3f));
 		// the swell's share in the mirrored images' direction (.swellRefl: 0.45 = the ripples' share, 1 = all of it; STUDY item 2)
 		// and the glint's glitter (.glitter 0..3, 0 = none; STUDY item 3)
-		p.putFloat(96, mcopt.metal.shade.Live.f("mcopt.shade.water.swellRefl", 0.45f, 0f, 1f))
-			.putFloat(100, mcopt.metal.shade.Live.f("mcopt.shade.water.glitter", 0f, 0f, 3f)).putFloat(104, 0f).putFloat(108, 0f);
+		p.putFloat(96, mcopt.metal.shade.Live.f("mcopt.shade.water.swellRefl", 1f, 0f, 1f))
+			.putFloat(100, mcopt.metal.shade.Live.f("mcopt.shade.water.glitter", 1f, 0f, 3f)).putFloat(104, 0f).putFloat(108, 0f);
 		WaterNative.params(state, MemoryUtil.memAddress(p));
 	}
 }

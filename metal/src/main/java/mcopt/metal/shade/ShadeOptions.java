@@ -307,6 +307,8 @@ public final class ShadeOptions {
 				new String[] {"Natural", "Azul", "Turquesa", "Verde", "Cristalina"}, new String[] {"Natural", "Blue", "Turquoise", "Green", "Clear"}, () -> 0),
 			pctInt("mcopt.shade.water.clarity", "Transparencia", "Clarity", "Qué tan lejos se ve dentro del agua.", "How far you can see into the water.", 25, 300, 100),
 			pct("mcopt.shade.waterWaves", "Olas", "Waves", "La altura de las olas.", "How high the waves are.", 0, 200, 100),
+			pct("mcopt.shade.water.swell", "Oleaje", "Swell", "Olas largas en mar abierto; lagos y ríos quedan tranquilos. 0 = como antes (más FPS mirando el mar).",
+				"Long waves on open water; lakes and rivers stay calm. 0 = as before (more FPS facing the sea).", 0, 200, 130),
 			pct(U + "waveSpeed", "Ritmo de olas", "Wave speed", "Qué tan rápido se mueve el agua.", "How fast the water moves.", 0, 300, 100),
 			pct("mcopt.shade.waterReflect", "Reflejos", "Reflections", "Qué tanto refleja el agua.", "How strongly the water reflects.", 0, 200, 100),
 			toggle(U + "ssr", "Reflejo del paisaje", "Scene reflections", "El agua refleja montañas, árboles y nubes en pantalla. No = solo el cielo (más FPS junto a lagos).",

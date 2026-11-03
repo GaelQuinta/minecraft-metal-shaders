@@ -70,7 +70,7 @@ public final class WaterOpenScan {
 	/** Once per frame (WaterFrame.update): the next slice of the map around the camera at (x, z), and a new map when a pass ends. */
 	static void update(ClientLevel level, double x, double z) {
 		boolean want = level != null && mcopt.metal.shade.ShadeConfig.HDR && ShadeWater.swellCompiled()
-			&& Live.f("mcopt.shade.water.swell", 0f) > 0f && Live.f("mcopt.shade.water.swellOpen", 1f) > 0f;
+			&& Live.f("mcopt.shade.water.swell", 1.3f) > 0f && Live.f("mcopt.shade.water.swellOpen", 1f) > 0f;
 		if (!want) {
 			if (active) ShadeWater.openNone();
 			active = false;

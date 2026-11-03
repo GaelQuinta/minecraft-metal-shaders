@@ -261,6 +261,8 @@
   "How far you can see into the water.": "水中的可视距离。",
   "Waves": "水波",
   "How high the waves are.": "水波的高度。",
+  "Swell": "涌浪",
+  "Long waves on open water; lakes and rivers stay calm. 0 = as before (more FPS facing the sea).": "开阔水面上的长浪；湖泊和河流保持平静。0 = 与以前相同（看海时帧率更高）。",
   "Wave speed": "水波速度",
   "How fast the water moves.": "水流动的速度。",
   "Reflections": "反射",
