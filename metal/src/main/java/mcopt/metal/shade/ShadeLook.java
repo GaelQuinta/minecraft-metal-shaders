@@ -121,6 +121,8 @@ public final class ShadeLook {
 	public float toneB, toneBeta, inset, exposureRef;
 	public float starBrightness, moonPhaseAngle, borderRadius;
 	private float eyeSky = 1f;
+	/** (1.2.7) The air around the camera gets neither sun nor sky this frame (caveAir in a cave): the air-mode god rays add nothing. */
+	public static volatile boolean caveAirOff;
 	/** (1.1) This frame's rain share of the fog terms (rain x user.rainFog). */
 	float rainFog;
 	private final float[] waterTint = new float[4];
@@ -357,6 +359,7 @@ public final class ShadeLook {
 		boolean caveAir = !"false".equalsIgnoreCase(System.getProperty("mcopt.shade.caveAir", "true").trim());
 		boolean caveSun = caveAir && !"false".equalsIgnoreCase(System.getProperty("mcopt.shade.caveAir.sun", "true").trim());
 		float airSky = caveAir ? smooth(2f / 15f, 10f / 15f, this.eyeSky) : 1f;
+		caveAirOff = caveSun && airSky <= 0f; // (1.2.7, audit P5: ShadeVl.pack)
 		put4(b, CLOCK2, f.skyTime, airSky, caveAir ? 1f : 0f, caveSun ? airSky : 1f);
 		b.putInt(TIER, ShadeConfig.TIER).putInt(TIER + 4, this.features).putInt(TIER + 8, ShadeSettings.look()).putInt(TIER + 12, f.debug);
 		putRows(b, GRADE_IN, this.gradeIn);

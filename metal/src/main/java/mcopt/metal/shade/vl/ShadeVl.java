@@ -593,7 +593,9 @@ public final class ShadeVl {
 		// (air mode: the haze's shadows count wherever the sun is up, even with no forest around)
 		if (userRays <= 0f) return false;
 		if (userWater <= 0f) return false; // (1.1: under water with its shafts at 0 nothing is added: no passes, as above)
-		return strength > 1e-3f || canopyMist > 1e-6f || f.underwater || air && lightUp > 1e-3f;
+		// (1.2.7, audit P5: not the air mode's term in a cave, where ShadeLook's caveAir zeroes the air's sun and sky: every pass ran
+		// by day to add 0, ~0.5-0.8 ms)
+		return strength > 1e-3f || canopyMist > 1e-6f || f.underwater || air && lightUp > 1e-3f && !mcopt.metal.shade.ShadeLook.caveAirOff;
 	}
 
 	/**

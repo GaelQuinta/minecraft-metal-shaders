@@ -163,6 +163,9 @@ public final class ShadeWeather {
 	static float wetness, puddles, snow, rain;
 	/** Wind direction (radians from +x toward +z), slant, gust; snowfall at the camera 0..1 (smoothed: snow flakes' look). */
 	static float windAngle, slant, gust, snowfall;
+	/** (1.2.7) windAngle's eased value (radians, unwrapped) and the time of its last step (0: not yet). */
+	private static double windEase;
+	private static long windNanos;
 
 	/** (1.2.7) The wind's direction (radians from +x toward +z), for the waving foliage. */
 	public static float windAngle() {
@@ -250,7 +253,15 @@ public final class ShadeWeather {
 		if (forceSnow >= 0f) snow = Math.min(forceSnow, 1f);
 		// wind: a direction per day that wanders slowly; storms lean the rain more and gust
 		double h = Math.sin(dayIndex * 12.9898 + 78.233) * 43758.5453;
-		windAngle = (float) ((h - Math.floor(h)) * Math.PI * 2 + 0.35 * Math.sin(seconds / 97.0));
+		double target = (h - Math.floor(h)) * Math.PI * 2 + 0.35 * Math.sin(seconds / 97.0);
+		// 1.2.7 (audit B11/D3): eased toward that along the shorter arc over a few seconds. It used to jump in one frame at every
+		// game day (a new hashed direction) and every hour (the wall clock's wrap): the rain's slant flipped, and with 1.2.7 every
+		// plant and leaf swung to the new lean at once
+		long now = System.nanoTime();
+		if (windNanos == 0) windEase = target;
+		else windEase += Math.IEEEremainder(target - windEase, Math.PI * 2) * (1 - Math.exp(-Math.min(1.0, (now - windNanos) / 1e9) / 6.0));
+		windNanos = now;
+		windAngle = (float) windEase;
 		gust = (float) (0.5 + 0.5 * Math.sin(seconds * 0.71) * Math.sin(seconds * 0.23 + 1.3));
 		slant = rainSlant() ? (0.12f + 0.22f * thunder) * (0.75f + 0.5f * gust) : 0f;
 	}

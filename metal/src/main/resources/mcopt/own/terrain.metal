@@ -1791,16 +1791,18 @@ static Vtx ownFetch(uint vi, device const void *arenaRaw) {
 // so v.pos + cam is the vertex's camera-relative position).
 static float3 ownSway(uint vi, int3 origin, float3 cam, device const void *arenaRaw, constant ShadeSway &sw, texture2d<float> cls) {
 	if (sw.info.x < 1.0) return float3(0);
-	Vtx v = ownFetch(vi, arenaRaw), o = ownFetch(vi ^ 2u, arenaRaw);
+	Vtx v = ownFetch(vi, arenaRaw);
+	float3 p = float3(v.pos);
+	// still past 48 blocks (fading from 24): sub-pixel motion there only shimmers under TAAU, and the far shadow cascade (opaque,
+	// unwaved leaves) takes over around there; still under cover (sky light under ~8; full from ~13.5). Tested before the opposite
+	// corner and the class map are read: most cutout vertices are past it (1.2.7, audit E4; the same zero either way)
+	float fade = 1.0 - smoothstep(24.0, 48.0, length(p + cam));
+	if (fade <= 0.0) return float3(0);
+	Vtx o = ownFetch(vi ^ 2u, arenaRaw);
 	float2 mid = (float2(v.uv0) + float2(o.uv0)) * 0.5;
 	uint k = uint(cls.read(uint2(clamp(mid * sw.info.xy, float2(0), sw.info.xy - 1.0))).r * 255.0 + 0.5);
 	if (k == 0 || k > 6) return float3(0);
-	float3 p = float3(v.pos);
 	float3 a = float3(origin & 1023) + p;  // (wrapped: every wavelength below divides 1024)
-	// still past 48 blocks (fading from 24): sub-pixel motion there only shimmers under TAAU, and the far shadow cascade (opaque,
-	// unwaved leaves) takes over around there; still under cover (sky light under ~8; full from ~13.5)
-	float fade = 1.0 - smoothstep(24.0, 48.0, length(p + cam));
-	if (fade <= 0.0) return float3(0);
 	float gate = smoothstep(0.55, 0.9, saturate(float(v.uv2.y) / 240.0)) * sw.wind.y * fade;
 	const float K = 6.2831853 / 32.0;
 	float3 d = float3(0);
@@ -1815,6 +1817,10 @@ static float3 ownSway(uint vi, int3 origin, float3 cam, device const void *arena
 	}
 	// rooted plants: weight by height (the opposite corner is the quad's other end), 0..1 over a double plant's two halves
 	float dy = p.y - float(o.pos.y);
+	// (1.2.7, audit D9) a plant that doesn't stand on a block's floor stays still: a flower or a sapling in a pot (4/16 up), which
+	// the wind tilted through the rim and passers-by bent out of the pot. Ground plants start at 0, crops on farmland at 15/16.
+	float base = fract(min(p.y, float(o.pos.y)));
+	if (base > 0.06 && base < 0.9) return float3(0);
 	float h = abs(dy) < 0.01 ? 0.0 : saturate(dy / abs(dy) * 0.5 + 0.5);  // (1 at the quad's top corners, 0 at its bottom ones)
 	float hw = k == 3 ? 0.5 * h : k == 4 ? 0.5 + 0.5 * h : h;
 	float w = hw * hw;

@@ -351,6 +351,10 @@ public final class ShadePost {
 	/** Applied after TAA (history remains sharp), before bloom and tonemapping; before hand/HUD draws. */
 	private static long motion(long scene, long depth) {
 		float strength = Live.f("mcopt.shade.motionBlur", 0f, 0f, 2f);
+		// 1.2.7 (audit A2): a still camera blurs nothing (the shader returns its input there) but the pass still cost a full-screen
+		// read and write, ~0.6-0.9 ms at 1440p: skipped, keeping its target for the next move
+		mcopt.metal.shade.taa.ShadeTaa stillTaa = mcopt.metal.shade.taa.ShadeTaa.current();
+		if (strength > 0f && stillTaa != null && stillTaa.still()) return scene;
 		if (strength <= 0f || depth == 0 || motionFailed) {
 			if (motionTarget != 0) { retired.add(new long[] {motionTarget, frame + 8}); motionTarget = 0; }
 			return scene;

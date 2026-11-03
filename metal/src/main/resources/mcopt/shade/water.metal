@@ -1146,7 +1146,8 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 		n = normalize(mix(n, float3(0.0, 1.0, 0.0), 0.8 * graze * graze * graze * graze));
 	}
 	float cosV = max(dot(-v, n), 0.02);
-	float fres = shadeWaterFresnel(cosV) * wp.tune.z;
+	float fres = min(shadeWaterFresnel(cosV) * wp.tune.z, 1.0); // (1.2.7, audit B12: the Reflections slider above 100 % made the
+	// mix below extrapolate, the water brighter than the sky it mirrors, a white band toward the horizon)
 #ifdef SHADE_LEAN_ABOVE
 	// reflected images stay readable: SSR and the rendered sky follow a calmer normal than the shading (ripples wobble,
 	// don't shred). (FT2.10, w.cave.y) Where no sky lights the water the reflected walls and torches are all its surface shows:

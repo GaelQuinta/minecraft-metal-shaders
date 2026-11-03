@@ -212,7 +212,10 @@ static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, fl
 	// Issue #19: the low-resolution footprint may see only foreground leaves while this full-resolution pixel sees sky.
 	// Find an observation at the actual depth before falling back; don't magnify a leaf's signed haze correction into a
 	// sky-sized rectangle. The common four-depth gather above still handles smooth areas with one filtered fetch.
-	if (mode < 0.5) {
+	// 1.2.7 (audit C2): the probes for every mode. They were only in mode 0, but the HDR pass always runs mode 1, where a sky
+	// pixel in a leaf gap took the leaves' value magnified by the depth ratio (VL-texel blocks in canopy gaps); mode 1 keeps its
+	// air-ratio estimate below as the fallback when no probe sees this pixel's depth.
+	{
 		// Four outer cardinal probes, not a wide blur: only discontinuities pay these depth reads, and the first
 		// same-surface observation is enough. This keeps the repair inside the post pass's bandwidth budget.
 		const int2 probes[4] = {int2(-1, 0), int2(2, 1), int2(0, 2), int2(1, -1)};
@@ -220,7 +223,7 @@ static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, fl
 			uint2 q = uint2(clamp(base + probes[k], int2(0), hi));
 			if (abs(float(vlD.read(q).a) - hd) < tolerance) return vlT.read(q);
 		}
-		if (hd > bestD + tolerance) return half4(0.0h, 0.0h, 0.0h, 1.0h);
+		if (mode < 0.5 && hd > bestD + tolerance) return half4(0.0h, 0.0h, 0.0h, 1.0h);
 	}
 	float mD = maxD;
 	if (mode > 0.5) { // the four by their bilinear weights, each scaled by its own air ratio

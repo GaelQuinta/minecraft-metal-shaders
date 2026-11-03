@@ -101,14 +101,16 @@ public final class ShadeFoliage {
 		return switch (p) {
 			case "short_grass", "fern", "dead_bush", "bush", "firefly_bush", "short_dry_grass", "tall_dry_grass", "dandelion", "poppy",
 				"blue_orchid", "allium", "azure_bluet", "red_tulip", "orange_tulip", "white_tulip", "pink_tulip", "oxeye_daisy", "cornflower",
-				"lily_of_the_valley", "wither_rose", "torchflower", "open_eyeblossom", "closed_eyeblossom", "cactus_flower" -> PLANT;
+				"lily_of_the_valley", "wither_rose", "torchflower", "open_eyeblossom", "closed_eyeblossom", "cactus_flower", "golden_dandelion",
+				// (1.2.7, audit D2) the glowing copies cross_emissive lays over these two: they must move with the plant
+				"open_eyeblossom_emissive", "firefly_bush_emissive" -> PLANT;
 			default -> 0;
 		};
 	}
 
 	private static boolean isDouble(String p) {
 		return switch (p) {
-			case "tall_grass", "large_fern", "lilac", "rose_bush", "peony", "sunflower", "pitcher_plant" -> true;
+			case "tall_grass", "large_fern", "lilac", "rose_bush", "peony", "sunflower" -> true; // (1.2.7: not the pitcher plant, cuboids)
 			default -> false;
 		};
 	}

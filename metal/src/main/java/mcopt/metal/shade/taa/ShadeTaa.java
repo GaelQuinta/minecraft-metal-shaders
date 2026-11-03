@@ -324,6 +324,13 @@ public final class ShadeTaa {
 	}
 
 	/** Whether the world target stands in for the main one right now (between beginWorld and resolve). */
+	/** (1.2.7) The last resolve's camera stood still (no move, the same reprojection): ShadePost skips the motion blur, which then returns its input. */
+	public boolean still() {
+		return this.still;
+	}
+
+	private boolean still;
+
 	public boolean swapped() {
 		return this.swapped;
 	}
@@ -410,6 +417,7 @@ public final class ShadeTaa {
 			this.prevViewProj.translate((float) d.x, (float) d.y, (float) d.z, this.reprojection); // last frame's clip from this frame's camera-relative world
 			still = d.lengthSqr() < 1e-8 && this.reprojection.equals(this.viewProj, 1e-6f);
 		}
+		this.still = still;
 		this.viewProj.invert(this.invViewProj);
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			long p = stack.nmalloc(16, PARAMS);
