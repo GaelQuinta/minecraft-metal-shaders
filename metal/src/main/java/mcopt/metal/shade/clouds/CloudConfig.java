@@ -104,6 +104,9 @@ public final class CloudConfig {
 	public static final long SEED = Long.getLong("mcopt.shade.clouds.seed", 0L);
 	public static final float DENSITY = clamp(floatProperty("mcopt.shade.clouds.density", 1f), 0.1f, 10f);
 	public static final float DETAIL = clamp(floatProperty("mcopt.shade.clouds.detail", 1f), 0f, 3f);
+	/** (2026-11) Defaults of the look keys toward Photon's (cellScale() and below; each 1 or 0 = M3's clouds). */
+	static final float CELL_SCALE = 1f, BILLOW_SCALE = 1f, EDGE = 1f, SIGMA_SCALE = 1f, ALTO = 0f, ALTO_ABOVE = 600f, ALTO_THICKNESS = 40f,
+		ALTO_SIGMA = 0.05f;
 	/** Blocks of world per 1 km of the sky model's air for the light the layer gets (sunset light lingers on the clouds). */
 	public static final float ALTITUDE_SCALE = clamp(floatProperty("mcopt.shade.clouds.altitudeScale", 4f), 0f, 50f);
 	/** Most visits a history pixel averages (its march samples are jittered): fewer with a larger checkerboard (slower visits). */
@@ -241,6 +244,54 @@ public final class CloudConfig {
 	/** (1.1) live, new: mcopt.shade.user.cirrusAmount (1, 0..2): a multiplier on the cirrus layer's coverage. */
 	public static float userCirrus() {
 		return Live.f("mcopt.shade.user.cirrusAmount", 1f, 0f, 2f);
+	}
+
+	// ---- (2026-11) toward Photon's clouds (Gael 2026-11-03: "las nubes de ellos me gustan mucho"): smaller, more numerous cumulus with
+	// crisper billows, and a thin altocumulus layer above them. Every key is live; at its "M3" value the clouds are exactly as before ----
+
+	/** live: mcopt.shade.clouds.cellScale, the cumulus cells' scale (the weather map's frequency; 1 = M3's ~250-block cells, 0.5..3). */
+	public static float cellScale() {
+		return Live.f("mcopt.shade.clouds.cellScale", CELL_SCALE, 0.5f, 3f);
+	}
+
+	/** live: mcopt.shade.clouds.billowScale, the billows' scale (the 3D noise's frequency; 1 = its 120-block tile, 0.5..3). */
+	public static float billowScale() {
+		return Live.f("mcopt.shade.clouds.billowScale", BILLOW_SCALE, 0.5f, 3f);
+	}
+
+	/** live: mcopt.shade.clouds.edge, how hard the edges are (the exponent toward the tops x this; 1 = M3, 0.5..3). */
+	public static float edge() {
+		return Live.f("mcopt.shade.clouds.edge", EDGE, 0.5f, 3f);
+	}
+
+	/** live: mcopt.shade.clouds.sigmaScale, the cumulus extinction x this under the player's density (1 = M3, 0.25..4). */
+	public static float sigmaScale() {
+		return Live.f("mcopt.shade.clouds.sigmaScale", SIGMA_SCALE, 0.25f, 4f);
+	}
+
+	/** live: mcopt.shade.clouds.alto, the player's altocumulus amount (x the day's; 0 = none, 0..2). */
+	public static float alto() {
+		return Live.f("mcopt.shade.clouds.alto", ALTO, 0f, 2f);
+	}
+
+	/** live: mcopt.shade.clouds.altoDay, the day's altocumulus amount forced (0..1; < 0 = the weather's), for look development. */
+	public static float altoDay() {
+		return Live.f("mcopt.shade.clouds.altoDay", -1f, -1f, 1f);
+	}
+
+	/** live: mcopt.shade.clouds.altoAbove, the altocumulus base over the cumulus top (blocks, 50..1500). */
+	public static float altoAbove() {
+		return Live.f("mcopt.shade.clouds.altoAbove", ALTO_ABOVE, 50f, 1500f);
+	}
+
+	/** live: mcopt.shade.clouds.altoThickness, the altocumulus layer's thickness (blocks, 10..200). */
+	public static float altoThickness() {
+		return Live.f("mcopt.shade.clouds.altoThickness", ALTO_THICKNESS, 10f, 200f);
+	}
+
+	/** live: mcopt.shade.clouds.altoSigma, the altocumulus extinction per block at density 1 (x the player's density; 0.01..1). */
+	public static float altoSigma() {
+		return Live.f("mcopt.shade.clouds.altoSigma", ALTO_SIGMA, 0.01f, 1f);
 	}
 	public static final int DEBUG = Integer.getInteger("mcopt.shade.clouds.debug", 0);
 	/**

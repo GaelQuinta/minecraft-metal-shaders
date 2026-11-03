@@ -25,6 +25,8 @@ package mcopt.metal.shade.clouds;
 public final class CloudWeather {
 	/** Smoothed values for this frame. */
 	public float coverage = 0.45f, type = 0.5f, cirrus = 0.4f, storm, windSpeed = 4f;
+	/** (2026-11) The day's altocumulus amount (0..1; CloudParams x the player's mcopt.shade.clouds.alto). */
+	public float alto;
 	/** Unit wind direction (xz). */
 	public float windX = 1f, windZ = 0f;
 	private boolean started;
@@ -33,7 +35,7 @@ public final class CloudWeather {
 	/** (1.1) The player's coverage offset and type last frame (a change takes the new coverage and type at once). */
 	private float lastUserCoverage, lastUserType = -1f;
 
-	/** Day values: humidity, warmth, wind, cirrus, wind angle (radians). */
+	/** Day values: humidity, warmth, wind, cirrus, wind angle (radians), altocumulus (2026-11). */
 	static float[] day(long day, long seed) {
 		long h = mix(day * 0x9E3779B97F4A7C15L + seed * 0xD1B54A32D192ED03L + 0x2545F4914F6CDD1DL);
 		float humidity = unit(h);
@@ -41,7 +43,8 @@ public final class CloudWeather {
 		float wind = unit(h = mix(h));
 		float cirrus = unit(h = mix(h));
 		float angle = unit(mix(h)) * 6.2831853f;
-		return new float[] {humidity, warmth, wind, cirrus, angle};
+		float alto = unit(mix(mix(h))); // (2026-11, after the others: they stay as they were)
+		return new float[] {humidity, warmth, wind, cirrus, angle, alto};
 	}
 
 	/**
@@ -66,6 +69,9 @@ public final class CloudWeather {
 		float cov = 0.22f + 0.5f * humidity - (warmth > 0.7f && humidity < 0.35f ? 0.12f : 0f);
 		float typ = clamp01(0.15f + 0.75f * humidity * warmth + 0.35f * wind - 0.1f);
 		float cirrusAmount = clamp01(cir * 1.3f - 0.25f) * (1f - 0.5f * humidity) + 0.1f;
+		// (2026-11) the altocumulus: none on about one day in six, a full field on about one in six, some in between; less on humid
+		// days (the cumulus crowd the sky), none in rain (the overcast hides it)
+		float altoAmount = smoothstep(0.15f, 0.85f, lerp(a[5], b[5], w)) * (1f - 0.4f * humidity);
 		float speed = 2.5f + 7.5f * wind * wind;
 		// (1.1) the player's cloud settings (live): coverage offset on the day's (0.10..0.72 without it, so the clamp leaves the
 		// default exact) and the day's type forced, both before the rain and thunder below, which still close in and tower
@@ -85,11 +91,13 @@ public final class CloudWeather {
 		if (CloudConfig.TYPE >= 0f) typ = clamp01(CloudConfig.TYPE);
 		speed *= CloudConfig.wind(); // (1.1: live)
 		cirrusAmount *= 1f - 0.7f * rain;
+		altoAmount *= 1f - rain;
 		if (!this.started || snap) {
 			this.started = true;
 			this.coverage = cov;
 			this.type = typ;
 			this.cirrus = cirrusAmount;
+			this.alto = altoAmount;
 			this.storm = stormy;
 			this.windSpeed = speed;
 			this.windX = dx / dl;
@@ -106,6 +114,7 @@ public final class CloudWeather {
 			this.type = typ;
 		}
 		this.cirrus += (cirrusAmount - this.cirrus) * f;
+		this.alto += (altoAmount - this.alto) * f;
 		this.storm += (stormy - this.storm) * f;
 		this.windSpeed += (speed - this.windSpeed) * f;
 		float nx = this.windX + (dx / dl - this.windX) * f, nz = this.windZ + (dz / dl - this.windZ) * f;

@@ -6,6 +6,7 @@
 # or times the passes at a given output size. Needs a built metal module (./gradlew :metal:build).
 #   tools/shade/clouds/run.sh png  [W H scale frames regex]   -> $OUT/png/<scenario>.png (+ _dome / _shadow variants)
 #   tools/shade/clouds/run.sh time [W H scale frames regex]   -> GPU ms per pass (default 3024x1964, scale 0.4: balanced)
+# CLOUDS_JOPTS="-Dkey=val ...": system properties for packing the frames (live look keys, e.g. -Dmcopt.shade.clouds.density=2).
 # CLOUDS_DEV=<bits>: CloudParams' M3.1 dev bits (CloudConfig.DEV_*; 3072 = M3's resolve taps and march sky lookups).
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -28,7 +29,7 @@ rm -rf "$OUT/classes" "$OUT/frames" && mkdir -p "$OUT/classes" "$OUT/frames" "$O
 "${JAVA_BIN}java" -cp "$OUT/classes:$CP" CloudPreviewSource "$OUT/clouds_preview.metal" "$OUT/lut.metal" "$HERE/preview_composite.metal"
 # CLOUDS_DEFS="#define X 1 ...": extra MSL defines ahead of the passes (experiments)
 if [ -n "$CLOUDS_DEFS" ]; then printf '%b\n' "$CLOUDS_DEFS" | cat - "$OUT/clouds_preview.metal" > "$OUT/cp.tmp" && mv "$OUT/cp.tmp" "$OUT/clouds_preview.metal"; fi
-"${JAVA_BIN}java" -Dclouds.dev="${CLOUDS_DEV:-0}" -Dclouds.yawRate="${CLOUDS_YAWRATE:-0}" -Dclouds.wind="${CLOUDS_WIND:-1}" -cp "$OUT/classes:$CP" CloudPreviewFrames "$OUT/frames" "$W" "$H" "$SCALE" "$FRAMES" "$ONLY"
+"${JAVA_BIN}java" ${CLOUDS_JOPTS:-} -Dclouds.dev="${CLOUDS_DEV:-0}" -Dclouds.yawRate="${CLOUDS_YAWRATE:-0}" -Dclouds.wind="${CLOUDS_WIND:-1}" -cp "$OUT/classes:$CP" CloudPreviewFrames "$OUT/frames" "$W" "$H" "$SCALE" "$FRAMES" "$ONLY"
 clang -fobjc-arc -O1 -Wno-enum-conversion -framework Foundation -framework Metal -framework CoreGraphics -framework ImageIO -framework UniformTypeIdentifiers \
 	"$HERE/cloudpreview.m" -o "$OUT/cloudpreview"
 cd "$OUT"
