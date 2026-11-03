@@ -35,13 +35,13 @@ fragment half4 shade_lut_fs(ShadeLutOut in [[stage_in]], constant ShadeFrame &f 
 	// M3: the evening sky's hue toward rose (upper sky, a little mauve) and peach (lower), at the same luminance: the warm
 	// pink-gold evening of the studied packs, our sun, rays and blue top kept (ShadeLook.skyGoldZ.w, 0 by day)
 	float rose = L.skyGoldZ.w;
-	if (rose > 0.0 && dir.y > 0.03) {
+	if (rose > 0.0 && dir.y > 0.0) {
 		float up = smoothstep(0.08, 0.6, dir.y);
 		float3 tint = mix(float3(1.6, 1.0, 0.6), float3(1.6, 0.88, 0.86), up); // gold-peach low, warm rose high (was mauve: read lilac-grey)
 		tint /= dot(tint, float3(0.2126, 0.7152, 0.0722));
 		float l = dot(sky, float3(0.2126, 0.7152, 0.0722));
-		// the gold horizon band stays as it is (smoothstep from 0.03): only the sky above it turns
-		float w = rose * (0.55 + 0.45 * toward) * (1.0 - 0.3 * smoothstep(0.55, 1.0, dir.y)) * smoothstep(0.03, 0.2, dir.y);
+		// Ease from the gold horizon across a broad band instead of a narrow pink stripe.
+		float w = rose * (0.55 + 0.45 * toward) * (1.0 - 0.3 * smoothstep(0.55, 1.0, dir.y)) * smoothstep(0.0, 0.35, dir.y);
 		sky = mix(sky, l * tint, w);
 	}
 	// Apply also to the art tint added above, so reducing the atmospheric chroma can't be undone by the rose overlay.
