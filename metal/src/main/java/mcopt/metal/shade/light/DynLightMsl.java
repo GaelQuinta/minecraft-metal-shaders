@@ -48,7 +48,7 @@ public final class DynLightMsl {
 	}
 
 	static String module() {
-		if (module == null) module = ShadeMsl.resource("dynlight.metal");
+		if (module == null) module = ShadeMsl.resource("torch_light.metal") + "\n" + ShadeMsl.resource("dynlight.metal");
 		return module;
 	}
 

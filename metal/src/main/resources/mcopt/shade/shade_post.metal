@@ -248,6 +248,20 @@ static inline float3 shadeWorldFromDepth(float2 uv, float d, constant ShadeFrame
 	return w.xyz / w.w;
 }
 
+// Low-light colour response shared by the final pass and the offscreen lighting probe.
+static inline float3 shadeLowLightColour(float3 c, float lum, constant ShadeLook &L) {
+	if (lum < 0.04 && L.grade1.w > 0.0) {
+		float rods = (1.0 - smoothstep(0.004, 0.04, lum)) * L.grade1.w;
+		// The outdoor night tint belongs to sky-lit surroundings. In an enclosed cave retain only
+		// a faint neutral loss of chroma, instead of blue shadows against orange torch light.
+		float openSky = smoothstep(2.0 / 15.0, 10.0 / 15.0, L.eye.w);
+		rods *= mix(0.3, 1.0, openSky);
+		float3 tint = mix(float3(1.0), float3(0.72, 0.88, 1.3), openSky);
+		c = mix(c, float3(shadeLuma(c)) * tint, rods);
+	}
+	return c;
+}
+
 // Everything of the final pass before the display transform: the exposed scene colour (haze, the dimension fogs, camera
 // media, VL, bloom, Purkinje, vignette, vibrance). lum: the scene luminance before exposure (debug view 4).
 // DIMS (M3): compiled with the Nether/End fog, End sky, heat shimmer and camera media; the overworld variant (DIMS false)
@@ -429,10 +443,7 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 	}
 	// Purkinje: dim light (scene luminance, not exposed) shifts toward the rods' cool grey
 	lum = shadeLuma(c) / ex;
-	if (lum < 0.04 && L.grade1.w > 0.0) { // (FT2.8, audit idx 39: elsewhere a mix by 0, the same pixel)
-		float rods = (1.0 - smoothstep(0.004, 0.04, lum)) * L.grade1.w;
-		c = mix(c, float3(shadeLuma(c)) * float3(0.72, 0.88, 1.3), rods);
-	}
+	c = shadeLowLightColour(c, lum, L);
 	// vignette (sparing what is bright)
 	float2 r = (in.uv - 0.5) * float2(float(scene.get_width()) / float(scene.get_height()), 1.0);
 	float vr = pow(saturate(length(r) * 1.25), 2.4);

@@ -100,7 +100,7 @@ public final class ShadeMsl {
 
 	public static String prelude() {
 		if (prelude == null) {
-			prelude = "#define MCOPT_SHADE\n" + HAZE_DEFINES + resource("shade_look.metal") + "\n" + resource("shade_common.metal") + "\n" + resource("shade_clouds.metal") + "\n"
+			prelude = "#define MCOPT_SHADE\n" + HAZE_DEFINES + resource("shade_look.metal") + "\n" + resource("torch_light.metal") + "\n" + resource("shade_common.metal") + "\n" + resource("shade_clouds.metal") + "\n"
 				+ resource("shade_m2.metal") + "\n"
 				+ resource("shade_dims.metal") + "\n" // M3 sky / dimensions (skydims)
 				+ mcopt.metal.shade.light.DynLightMsl.prelude() // M3 dynamic lights (empty when off)

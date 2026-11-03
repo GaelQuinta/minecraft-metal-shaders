@@ -131,7 +131,7 @@ static float4 shadeEntityShade(float4 vanilla, float4 albedoSrgb, float4 overlay
 	// the dynamic lights as the terrain takes them (irradiance volume, per pixel). Not the hand: its p is hand space, and
 	// m3-lights' DynLightEntityRendererMixin already raised the local player's packed light (block light here) to the
 	// dynamic level at the player.
-	if (kind != SHADE_ENT_HAND) radiance += float3(albedo) * f.ambientBlock.xyz * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, n, thin, block);
+	if (kind != SHADE_ENT_HAND) radiance += float3(albedo) * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, n, thin, block, f.ambientBlock.xyz);
 #endif
 #ifdef MCOPT_HAND
 	float vanillaFog = 0.0; // the hand gets no fog

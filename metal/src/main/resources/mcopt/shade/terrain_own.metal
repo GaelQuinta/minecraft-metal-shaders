@@ -369,11 +369,11 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		if (n.y > 0.5h) { // the surface seen from above: torchlight on the water body and its glint on the ripples
 			float3 V = -normalize(p - shadeEye(sf.invViewProj)); // toward the eye (view bobbing moves it)
 			float3 dlN = normalize(float3(0.0, 1.0, 0.0) + float3(wi.detail.x, 0.0, wi.detail.y) * 0.35);
-			wi.lit += sf.ambientBlock.xyz * shadeDynamicLightsSpec(dl, dlVis, p, dlN, blockLight, V, 160.0, dlSpec);
+			wi.lit += shadeDynamicLightsSpec(dl, dlVis, p, dlN, blockLight, V, 160.0, dlSpec, sf.ambientBlock.xyz);
 			float fres = 0.02 + 0.98 * pow(1.0 - saturate(dot(dlN, V)), 5.0);
-			dlSpec *= sf.ambientBlock.xyz * (0.25 + 3.0 * fres);
+			dlSpec *= (0.25 + 3.0 * fres);
 		} else {
-			wi.lit += sf.ambientBlock.xyz * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(n), false, blockLight);
+			wi.lit += shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(n), false, blockLight, sf.ambientBlock.xyz);
 		}
 #endif
 		wi.exposure = ex;
@@ -412,7 +412,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #ifdef SHADE_OWN_TRANSLUCENT
 		float3 lit = shadeLit2(half3(1.0h), n, skyLight, blockLight, shadow, false, false, sf, sl);
 #ifdef SHADE_DYNLIGHT
-		lit += sf.ambientBlock.xyz * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(n), false, blockLight);
+		lit += shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(n), false, blockLight, sf.ambientBlock.xyz);
 #endif
 		float4 w = shadeWater(lit, tint, shadeLumaH(half3(texel.rgb)), alpha, p, skyLight, shadow, skyLut, skyLutSmplr, sf);
 		radiance = w.rgb;
@@ -446,7 +446,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		radiance = shadeLit2(wetAlbedo, materialN, dims ? half(0.0) : skyLight, blockLight, dims ? half(0.0) : shadow, thin, foliage, sf, sl);
 		if (dims) radiance += shadeLitDimsExtra(wetAlbedo, materialN, shadow, thin, foliage, p, sf, sl);
 #ifdef SHADE_DYNLIGHT
-		radiance += float3(wetAlbedo) * sf.ambientBlock.xyz * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(materialN), thin, blockLight);
+		radiance += float3(wetAlbedo) * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(materialN), thin, blockLight, sf.ambientBlock.xyz);
 #endif
 #if defined(MCOPT_HDR) && defined(SHADE_PBR)
 		if (pbr) {

@@ -79,7 +79,7 @@ static inline float3 shadeFinish2(float3 radiance, float vanillaFog, constant Sh
 // ---- lighting model v2 (E09 steps 1-7, 11) -------------------------------------------------------------------------------
 // M1's directional sky light and foliage terms, plus: a slight wrap on the sun term, the art layer's ambient tint, a warm
 // fill in shadow (light bounced off the sunlit surroundings), a broader block-light curve (hot core, long tail) that fades a
-// little by day, a cool minimum light in caves, and a gentle east/west face separation for readability. Light levels 0..1.
+// little by day, a neutral minimum light in caves, and a gentle east/west face separation for readability. Light levels 0..1.
 static float3 shadeLit2(half3 albedo, half3 n, half sky, half block, half shadow, bool thin, bool foliage, constant ShadeFrame &f,
                         constant ShadeLook &L) {
 	if (!shadeFeature(L, SHADE_FEATURE_LIGHT_V2)) return shadeLit(albedo, n, sky, block, shadow, thin, foliage, f);
@@ -103,8 +103,9 @@ static float3 shadeLit2(half3 albedo, half3 n, half sky, half block, half shadow
 	half b7 = block * block * block; b7 = b7 * b7 * block;
 	half F = (half(2.2) * b7 + half(0.55) * pow(max(block, half(1e-3)), half(2.4))) * half(1.0 / 2.75);
 	half day = half(saturate(f.sunDirWorld.w * 4.0 + 0.2));
-	half3 torch = half3(f.ambientBlock.xyz) * F * (half(1.0) - half(0.25) * smoothstep(half(0.5), half(1.0), sky) * day);
-	half3 minimum = half(f.ambientBlock.w) * mix(half3(0.9h, 1.0h, 1.38h), half3(1.0h), g); // caves: a cool floor
+	half3 torch = half3(shadeTorchSpectrum(f.ambientBlock.xyz, float(block))) * F * (half(1.0) - half(0.25) * smoothstep(half(0.5), half(1.0), sky) * day);
+	// Unlit cave visibility has no coloured illuminant. Actual sky and torch light carry their own colours.
+	half3 minimum = half3(half(f.ambientBlock.w));
 	if (L.user3.x > 0.0) {
 		// Use the surface's skylight, never the camera's: a bright garden seen through a doorway stays bright.
 		// Open shade retains sky fill; enclosed surfaces lose more of the artistic ambient and bounce.
