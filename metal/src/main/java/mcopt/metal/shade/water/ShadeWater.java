@@ -373,7 +373,8 @@ public final class ShadeWater {
 			.putFloat(72, 0f).putFloat(76, mcopt.metal.shade.Live.f("mcopt.shade.water.swellFresnel", 1f, 0f, 1f));
 		p.putFloat(80, -1f).putFloat(84, 0f).putFloat(88, mcopt.metal.shade.Live.f("mcopt.shade.water.calm", CALM, 0.05f, 2f))
 			.putFloat(92, mcopt.metal.shade.Live.f("mcopt.shade.water.ripple", RIPPLE, 0f, 3f));
-		p.putFloat(96, 0.45f).putFloat(100, 0f).putFloat(104, 0f).putFloat(108, 0f);
+		// the swell's share in the mirrored images' direction (.swellRefl: 0.45 = the ripples' share, 1 = all of it; STUDY item 2)
+		p.putFloat(96, mcopt.metal.shade.Live.f("mcopt.shade.water.swellRefl", 0.45f, 0f, 1f)).putFloat(100, 0f).putFloat(104, 0f).putFloat(108, 0f);
 		WaterNative.params(state, MemoryUtil.memAddress(p));
 	}
 }

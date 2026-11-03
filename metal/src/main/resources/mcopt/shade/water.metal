@@ -1184,6 +1184,21 @@ static float shadeWaterCaustics(float3 pf, float dy, constant ShadeFrame &f, con
 	return min(1.0 / max(abs(det), 0.18), 4.0);
 }
 
+#ifdef SHADE_WATER_SWELL
+// (2026-11-02, water round 1; STUDY.md "what we could do: water" item 2) The normal the mirrored images (SSR, the rendered sky)
+// follow: calmer than the shading's for the ripples (n mixed toward the face's by calm: they wobble the images instead of shredding
+// them), and the swell's slope sw (as added to n) at its own share (wp.swell3.x, mcopt.shade.water.swellRefl): 0.45 = as the
+// ripples' (the swell is part of n); 1 = all of it: a long smooth wave bends whole shores and clouds without breaking them, so the
+// far sea shows the sky's light-and-dark bands as Complementary's does (study only). The atmosphere LUT's direction is
+// mix(rs, rr, 0.6): it follows 0.4 + 0.6 x share of the swell (0.67 at 0.45, all of it at 1), the ripples as before. The glint keeps
+// the shading normal n (the swell whole, the ripples whole: the sun's own glitter road).
+static inline float3 shadeWaterMirrorN(float3 n, float3 nFace, float calm, float2 sw, float share) {
+	if (all(sw == 0.0)) return normalize(mix(n, nFace, calm));
+	float3 nr = normalize(mix(normalize(n * (1.0 / n.y) + float3(sw.x, 0.0, sw.y)), nFace, calm)); // the ripples' part, calmed
+	return normalize(nr * (1.0 / nr.y) + float3(-sw.x, 0.0, -sw.y) * share);
+}
+#endif
+
 // Water seen from above (or a side face): reflection (SSR over the sky, sun glint), refraction of the bottom, absorption and
 // in-scattering along the path through the water, caustics on the bottom, shoreline foam. Composites what is behind the
 // water itself (draw with alpha 1). Radiance before exposure, without air fog between the camera and the surface.
@@ -1197,6 +1212,7 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	float3 n = w.nFace;
 #ifdef SHADE_WATER_SWELL
 	float cosV0 = 0.0; // (2026-11-02) the cosine without the swell, where there is one (wp.swell.w)
+	float2 sw = 0.0;   // the swell's slope as added to n (masked)
 #endif
 	if (top) {
 		n = shadeWaterNormal(w, f, wp, waves, height, pattern);
@@ -1218,8 +1234,8 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 		// caller's shadeWaterSwell has faded it into roughness), as the eye sees it (masked), its slope added to the ripples'
 		if (any(w.swell != 0.0)) {
 			cosV0 = max(dot(-v, n), 0.02);
-			float2 s = shadeWaterSwellMask(w.swell.xy, v, wp.swell.y);
-			n = normalize(n * (1.0 / n.y) + float3(-s.x, 0.0, -s.y));
+			sw = shadeWaterSwellMask(w.swell.xy, v, wp.swell.y);
+			n = normalize(n * (1.0 / n.y) + float3(-sw.x, 0.0, -sw.y));
 		}
 #endif
 	}
@@ -1238,7 +1254,11 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	// reflected images stay readable: SSR and the rendered sky follow a calmer normal than the shading (ripples wobble,
 	// don't shred). (FT2.10, w.cave.y) Where no sky lights the water the reflected walls and torches are all its surface shows:
 	// they follow the ripples like the sky's reflection on a lake shows its waves
+#ifdef SHADE_WATER_SWELL
+	float3 rr = reflect(v, shadeWaterMirrorN(n, w.nFace, 0.55 - 0.4 * float(w.cave.y), sw, wp.swell3.x)); // (2026-11-02: the swell at its own share)
+#else
 	float3 rr = reflect(v, normalize(mix(n, w.nFace, 0.55 - 0.4 * float(w.cave.y))));
+#endif
 	rr = normalize(float3(rr.x, max(rr.y, 0.01), rr.z));
 #endif
 #if defined(SHADE_SSR) && defined(SHADE_LEAN_ABOVE)
@@ -1327,7 +1347,11 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 #ifndef SHADE_LEAN_ABOVE
 	// reflected images stay readable: SSR and the rendered sky follow a calmer normal than the shading (ripples wobble,
 	// don't shred); FT2.10: more of the ripples where no sky lights the water (w.cave.y, as above)
+#ifdef SHADE_WATER_SWELL
+	float3 rr = reflect(v, shadeWaterMirrorN(n, w.nFace, 0.55 - 0.4 * float(w.cave.y), sw, wp.swell3.x)); // (2026-11-02: the swell at its own share)
+#else
 	float3 rr = reflect(v, normalize(mix(n, w.nFace, 0.55 - 0.4 * float(w.cave.y))));
+#endif
 	rr = normalize(float3(rr.x, max(rr.y, 0.01), rr.z));
 #endif
 	// the LUT sky follows a calmer direction too: the rippled one smeared the low sun's aureole over the near water as a
