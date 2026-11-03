@@ -116,13 +116,13 @@ struct ShadeResources {
 	texture2d<half> shadowTint;  // 6  (M3 weather) coloured shadows: near cascade tint map (RGBA16F, rgb transmittance, a reversed-Z light depth of the nearest translucent caster)
 	texture2d<float> pbrNormal;
 	texture2d<float> pbrSpecular;
-	texture2d<half> reserved9;
+	texture2d<float> cloudDistance; // 9 R32F, current march distance
 	texture2d<half> reserved10;
 	texture2d<half> aurora;      // 11 (M3.3 dims) RGBA16F the aurora for this frame's view at a fraction of the output size (aurora.metal; read when ShadeLook bit SHADE_DIMS_AURORA_TEX)
 	texture2d<half> cloudShadow; // 12 M3 clouds: R16F cumulus transmittance toward the light (ShadeLook.cloudShadowVP), 256^2
 	texture2d<half> cloudDome;   // 13 M3 clouds: RGBA16F (scattered light before exposure, transmittance) by direction, upper hemisphere
 	texture2d<half> cloudScreen; // 14 M3 clouds: RGBA16F the same for this frame's view (no TAA jitter), reconstructed history
-	texture2d<half> reserved15;
+	texture2d<ushort> cloudHistoryData; // 15 R16Uint, stable history age and distance
 };
 
 // (FT2.9, mcopt.shade.caveAir) the share of the sky's light that reaches the air around the camera: from the sky light at the eye

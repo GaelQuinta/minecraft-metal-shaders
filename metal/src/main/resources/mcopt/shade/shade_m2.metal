@@ -331,10 +331,9 @@ static float3 shadeFogAir2(float3 radiance, float3 p, float vanillaFog, float ch
 			// the clouds the sky pass drew in this pixel's own direction v, not in the clamped one: below the horizon vs is the
 			// horizon at the same azimuth, so every pixel of land and sea under a horizon cloud (or gap) took that cloud's value
 			// = thin vertical streaks across the sea and bright columns over the far terrain at sunset (Gael, 2026-10-07).
-			// Below the horizon, from under the layer, the march has faded the clouds into the horizon haze already (nothing
-			// there to streak); from inside or above the layer the clouds below the horizon are in front of the terrain
-			// (cloud_over composites them), not behind it: none here.
-			float wc = v.y >= 0.0 ? 1.0 : smoothstep(0.0, 24.0, L.clouds0.x);
+			// Inside or above the layer, foreground clouds use the surface distance (cloud_over for near
+			// chunks, shadeCloudsForeground for DH). Fade the background term uniformly across the horizon.
+			float wc = smoothstep(0.0, 24.0, L.clouds0.x);
 			// M3.1: the clouds reach this pixel only through the blend weights below (ap x 0.6 toward the sky behind: under ~5 %
 			// within the render distance; the border fog's edge: up to all of it). Where both are tiny the clouds' part cannot
 			// show: no lookup there (terrain nearer than ~75 blocks), faded in over 1.5-3.5 % so no contour appears; the border

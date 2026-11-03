@@ -457,11 +457,15 @@ void mc_clouds_over(Enc *enc, CloudState *s, id<MTLTexture> scene, id<MTLTexture
 	}
 }
 
-// out[0] the cloud shadow map, out[1] the dome, out[2] the screen history written last (MTLTexture pointers).
-void mc_clouds_outputs(CloudState *s, id<MTLTexture> *out) {
+// Five retained-by-consumer MTLTexture pointers: shadow, dome, screen, march distance and stable data.
+// The return value identifies which distance representation belongs to this screen history.
+int mc_clouds_outputs(CloudState *s, id<MTLTexture> *out) {
 	out[0] = s ? s->shadowMap : nil;
 	out[1] = s ? s->domeTex[s->domeCur] : nil;
 	out[2] = s ? s->hist[s->cur] : nil;
+	out[3] = s ? s->marchDist : nil;
+	out[4] = s ? s->dataSt[s->cur] : nil;
+	return s ? s->histSt : 0;
 }
 
 // (parallel compile, mcopt.metal.shade.ShadeCompile) mc_clouds_new's pipelines, built from lib (the clouds source compiled

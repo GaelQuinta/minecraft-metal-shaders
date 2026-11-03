@@ -48,7 +48,7 @@ public final class ShadeClouds {
 	private static final CloudWeather WEATHER = new CloudWeather();
 	private static final CloudParams PARAMS = new CloudParams();
 	private static final ByteBuffer PACKED = MemoryUtil.memAlloc(CloudParams.SIZE).order(ByteOrder.nativeOrder());
-	private static final long OUT = MemoryUtil.nmemCalloc(3, 8);
+	private static final long OUT = MemoryUtil.nmemCalloc(5, 8);
 	private static final long TIMES = MemoryUtil.nmemCalloc(5, 4);
 	private static long lastNanos, lastLog;
 	private static int frame, domeFrames;
@@ -343,10 +343,12 @@ public final class ShadeClouds {
 			}
 			CloudNative.render(enc, state, MemoryUtil.memAddress(PACKED), CloudParams.SIZE, flags);
 			if ((flags & 4) != 0) domeFrames++;
-			CloudNative.outputs(state, OUT);
+			int stableHistory = CloudNative.outputs(state, OUT);
 			ShadeRender.resource(RESOURCE_SHADOW, MemoryUtil.memGetAddress(OUT));
 			ShadeRender.resource(RESOURCE_DOME, MemoryUtil.memGetAddress(OUT + 8));
 			ShadeRender.resource(RESOURCE_SCREEN, MemoryUtil.memGetAddress(OUT + 16));
+			ShadeRender.resource(9, MemoryUtil.memGetAddress(OUT + 24));
+			ShadeRender.resource(15, MemoryUtil.memGetAddress(OUT + 32));
 			active = true;
 			wasActive = true;
 			// up at (or above) the cloud layer, clouds stand in front of the world too: composited before the tone map
@@ -356,6 +358,8 @@ public final class ShadeClouds {
 				ShadePost.addBeforeTonemap(HOOK_ORDER, ShadeClouds::beforeTonemap);
 			}
 			PARAMS.packLook(look, true);
+			// 1 = active, 3 = active with distance in the stable history.
+			look.duplicate().order(java.nio.ByteOrder.LITTLE_ENDIAN).putFloat(mcopt.metal.shade.ShadeLook.CLOUDS0 + 12, stableHistory != 0 ? 3f : 1f);
 			if (CloudConfig.LOG && now - lastLog > 2_000_000_000L) {
 				lastLog = now;
 				String times = "";
@@ -379,9 +383,8 @@ public final class ShadeClouds {
 	private static void beforeTonemap(ShadePost.Context c) {
 		if (!active || !over || failed || state == 0 || c.depth() == 0 || c.scene() == 0) return;
 		try {
-			// Distant Horizons' LODs are not in the world depth (empty there): with DH drawn this frame, pixels below the horizon
-			// without world depth are taken as far terrain behind the clouds (mode 1)
-			CloudNative.over(c.enc(), state, c.scene(), c.depth(), c.width(), c.height(), DH && ShadePost.bridgedThisFrame() ? 1 : 0);
+			// DH surfaces handle their own foreground clouds; the post pass handles near terrain only.
+			CloudNative.over(c.enc(), state, c.scene(), c.depth(), c.width(), c.height(), 0);
 		} catch (Throwable t) {
 			System.out.println("[mcopt] shade: clouds over the world failed: " + t);
 			over = false;

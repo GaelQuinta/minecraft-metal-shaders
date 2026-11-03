@@ -231,6 +231,10 @@ fragment float4 main0(DhIn in [[stage_in]], constant DhFrag &u [[buffer(MCOPT_SL
 #endif
 		radiance = shadeFogAir2(radiance, p, 0.0, 0.0, skyLut, skyLutSmplr, sf, sl, &sr);
 	}
+	if (overworld && sf.fogColor.a < 0.5) {
+		float4 cloud = shadeCloudsForeground(p, sl, sr);
+		radiance = radiance * cloud.a + cloud.rgb;
+	}
 	if (shadeDev(sf, SHADE_DEV_FLAT_LIGHT)) radiance = float3(albedo) * sf.ambientSky.xyz;
 	if (sf.flags.w == 2) radiance = (float3(n) * 0.5 + 0.5) / ex * 0.18; // debug view 2: normals
 	float3 c = min(max(radiance, 0.0) * ex, 60000.0);

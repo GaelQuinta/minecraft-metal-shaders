@@ -63,7 +63,8 @@ static id<MTLTexture> resourceSlots[SHADE_RES_RING_MAX][SHADE_RESOURCES];  // re
 static int resourceSlot;
 #define resourceBuffer resourceBuffers[resourceSlot]
 #define resourceTextures resourceSlots[resourceSlot]
-static id<MTLTexture> dummyTexture;
+static id<MTLTexture> dummyTexture, dummyCloudData;
+static id<MTLTexture> resourceDummy(int index) { return index == 15 ? dummyCloudData : dummyTexture; }
 
 ShadeState *mc_shade_new(Ctx *ctx) {
 	@autoreleasepool {
@@ -213,7 +214,7 @@ static void useResources(id<MTLRenderCommandEncoder> r, MTLRenderStages stages) 
 	id<MTLResource> list[SHADE_RESOURCES];
 	NSUInteger n = 0;
 	for (int i = 0; i < SHADE_RESOURCES; i++) {
-		id<MTLTexture> t = resourceTextures[i] ? resourceTextures[i] : dummyTexture;
+		id<MTLTexture> t = resourceTextures[i] ? resourceTextures[i] : resourceDummy(i);
 		if (t) list[n++] = t;
 	}
 	if (n) [r useResources:list count:n usage:MTLResourceUsageRead stages:stages];
@@ -281,11 +282,14 @@ void mc_shade_set_m2(Ctx *ctx, id<MTLBuffer> look, uint64_t lookOff, id<MTLBuffe
 			td.usage = MTLTextureUsageShaderRead;
 			dummyTexture = [ctx->device newTextureWithDescriptor:td];
 			dummyTexture.label = @"mcopt shade: dummy";
+			td.pixelFormat = MTLPixelFormatR16Uint;
+			dummyCloudData = [ctx->device newTextureWithDescriptor:td];
+			dummyCloudData.label = @"mcopt shade: no cloud distance";
 			for (int k = 0; k < SHADE_RES_RING_MAX; k++) {
 				resourceBuffers[k] = [ctx->device newBufferWithLength:SHADE_RESOURCES * 8 options:MTLResourceStorageModeShared];
 				resourceBuffers[k].label = @"mcopt shade: ShadeResources";
 				uint64_t *ids = resourceBuffers[k].contents;
-				for (int i = 0; i < SHADE_RESOURCES; i++) ids[i] = dummyTexture.gpuResourceID._impl;
+				for (int i = 0; i < SHADE_RESOURCES; i++) ids[i] = resourceDummy(i).gpuResourceID._impl;
 			}
 		}
 	}
@@ -299,7 +303,7 @@ void mc_shade_resource(int index, id<MTLTexture> texture) {
 	[texture retain];
 	[resourceTextures[index] release];
 	resourceTextures[index] = texture;
-	((uint64_t *)resourceBuffer.contents)[index] = (texture ? texture : dummyTexture).gpuResourceID._impl;
+	((uint64_t *)resourceBuffer.contents)[index] = (texture ? texture : resourceDummy(index)).gpuResourceID._impl;
 }
 
 // The next ShadeResources slot (ring of `ring` slots, 2..SHADE_RES_RING_MAX: more than the frames in flight), starting as a

@@ -384,11 +384,11 @@ static float cloudDensity(float3 p, float y, int q, constant CloudParams &c, tex
 	}
 	// inner texture: the billow noise varies the density inside the cloud too (mottled bases and bellies seen from below,
 	// uneven light through the body), not only its edges
-	d *= 0.6 + 0.8 * float(n.r);
+	d *= mix(0.85 + 0.3 * float(n.r), 0.6 + 0.8 * float(n.r), c.wind.w);
 	d = saturate(d);
-	// edges sharpen with height: crisp cauliflower tops, softer ragged bases
-	d = 1.0 - pow(1.0 - d, mix(3.0, 7.0, h));
-	return d * (0.5 + 0.5 * smoothstep(0.0, 0.2, h));
+	// A broad low-density fringe lets the sky remain visible through the cloud boundary.
+	float feather = smoothstep(0.0, 0.5, d);
+	return feather * d * (0.5 + 0.5 * smoothstep(0.0, 0.2, h));
 }
 
 // ---- M3.3 (CLOUD_MODE_BATCH): the same densities with every texture fetch of a sample issued before any of them is used ----
@@ -420,10 +420,10 @@ static inline float cloudDensityMath(half4 w, half4 n, half4 m, float h, int q, 
 		float fade = 0.6 + 0.2 * smoothstep(0.85, 1.0, 1.0 - h) - 0.35 * smoothstep(0.05, 0.5, h);
 		d -= 0.55 * c.misc.w * detail * wd2 * wd2 * thin * fade;
 	}
-	d *= 0.6 + 0.8 * float(n.r);
+	d *= mix(0.85 + 0.3 * float(n.r), 0.6 + 0.8 * float(n.r), c.wind.w);
 	d = saturate(d);
-	d = 1.0 - pow(1.0 - d, mix(3.0, 7.0, h));
-	return d * (0.5 + 0.5 * smoothstep(0.0, 0.2, h));
+	float feather = smoothstep(0.0, 0.5, d);
+	return feather * d * (0.5 + 0.5 * smoothstep(0.0, 0.2, h));
 }
 
 static inline half4 cloudWeatherAt(float2 xz, float h, constant CloudParams &c, texture2d<half> weather) {
@@ -541,7 +541,10 @@ static inline float3 cloudSampleLight(float tauL, float dUp, float d, float st, 
 	float powder = 1.0 - pw * exp(-st * 28.0);
 	ms *= mix(powder, 1.0, saturate(mu * 1.5));
 	float3 direct = c.light.rgb * ms;
-	float3 amb = (c.ambTop.rgb * exp(-tauUp) * (0.55 + 0.45 * h) + c.ambBottom.rgb * exp(-tauDown)) * c.ambBottom.w;
+	// Diffuse multiple scattering keeps the interior lit even when the direct sun is occluded.
+	float skyFill = 0.5 + 0.5 * exp(-tauUp);
+	float groundFill = 0.35 + 0.65 * exp(-tauDown);
+	float3 amb = (c.ambTop.rgb * skyFill * (0.55 + 0.45 * h) + c.ambBottom.rgb * groundFill) * c.ambBottom.w;
 	return direct + amb;
 }
 
@@ -705,7 +708,7 @@ static CloudResult cloudMarch(float3 dir, int steps, int lsteps, int q, float ji
 	// a sample still waiting for its neighbour's light: the last one's
 	if (odd) Sacc += (albedo * pst * cloudSampleLight(lastTauL, lastUp, pd, pst, ph, py, mu, pw, ph0, ph1, ph2, ph3, c)) * (pw0 / max(pst, 1e-6));
 	o.S = Sacc;
-	o.T = saturate((T - 0.02) / 0.98);
+	o.T = T; // Preserve the remaining sky transmission instead of remapping it toward opaque.
 	o.dist = wsum > 1e-5 ? dsum / wsum : t0;
 	return o;
 }
@@ -1250,24 +1253,13 @@ fragment half4 cloud_over(CloudVsOut in [[stage_in]], constant ShadeFrame &f [[b
                           constant ShadeGpu &g [[buffer(18)]], depth2d<float> depth [[texture(0)]], texture2d<float> cdist [[texture(1)]],
                           texture2d<half> hist [[texture(2)]], texture2d<ushort> hdata [[texture(3)]], constant uint &mode [[buffer(0)]]) {
 	float d = depth.read(uint2(in.position.xy));
-	// mode bit 1 (Distant Horizons drew this frame): its LODs are not in the world depth, so an empty pixel below the horizon is
-	// taken as far terrain behind the clouds (true sky there gets the clouds a second time: rare with the LODs to the horizon)
-	if (d <= 0.0 && (mode & 1u) == 0u) discard_fragment();
-	// (FT2.7, audit idx 9) ...but only from inside or above the layer: from under its base the clouds below the horizon are the
-	// curved world's far deck, which shadeFogAir2 already puts BEHIND the LODs (wc = smoothstep(0, 24, base - camY)); here its
-	// complement, so they are never drawn twice (a hazy band of far clouds over the LOD mountains under the horizon, popping in
-	// at camY = base - 48)
-	float kEmpty = d > 0.0 ? 1.0 : 1.0 - smoothstep(0.0, 24.0, L.clouds0.x);
-	if (kEmpty <= 0.001) discard_fragment();
+	// Empty depth is sky. DH composites clouds at its actual surface distance in dh_terrain.
+	if (d <= 0.0) discard_fragment();
 	float2 ndc = in.position.xy * f.screen.zw * 2.0 - 1.0;
 	float4 w = f.invViewProj * float4(ndc, d > 0.0 ? d : 0.5, 1.0);
 	float3 p = w.xyz / w.w - shadeEye(f.invViewProj); // from the eye (view bobbing moves it): the ray cloudDirection holds
 	float dist = length(p);
 	float3 dir = p / max(dist, 1e-4);
-	if (d <= 0.0) {
-		if (dir.y >= 0.0) discard_fragment();
-		dist = 1e9;
-	}
 	float4 cp = L.viewProjNoJitter * float4(dir, 0.0);
 	if (cp.w <= 1e-6) discard_fragment();
 	float2 uv = cp.xy / cp.w * 0.5 + 0.5;
@@ -1296,7 +1288,7 @@ fragment half4 cloud_over(CloudVsOut in [[stage_in]], constant ShadeFrame &f [[b
 		float2 fw = dp - float2(d0);
 		cd = mix(mix(cdist.read(d0).r, cdist.read(uint2(d1.x, d0.y)).r, fw.x), mix(cdist.read(uint2(d0.x, d1.y)).r, cdist.read(d1).r, fw.x), fw.y);
 	}
-	float k = smoothstep(cd * 0.8, cd * 1.05, dist) * kEmpty;
+	float k = smoothstep(cd * 0.8, cd * 1.05, dist);
 	if (k <= 0.001) discard_fragment();
 	half4 cl = hist.sample(cloudClamp, uv);
 	float T = mix(1.0, float(cl.a), k);
