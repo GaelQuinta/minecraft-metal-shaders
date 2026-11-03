@@ -29,7 +29,7 @@ import org.joml.Matrix4f;
  * ShadeFrame and CloudWeather, no game types: the offline preview packs it too.
  */
 public final class CloudParams {
-	public static final int SIZE = 480;
+	public static final int SIZE = 496;
 	/** Art knobs: multiple-scattering octave weight and extinction factors, sky-light extinction (diffuse) factor. */
 	static final float OCTAVE_WEIGHT = CloudConfig.floatProperty("mcopt.shade.clouds.octaveWeight", 0.68f),
 		OCTAVE_EXTINCTION = CloudConfig.floatProperty("mcopt.shade.clouds.octaveExtinction", 0.48f),
@@ -209,10 +209,14 @@ public final class CloudParams {
 		float shear = ShadeClouds.blocky() ? 0f : 25f + 3f * w.windSpeed;
 		put4(b, 432, w.windX * shear, w.windZ * shear, OD_STEP, OD_MIN);
 		// (2026-11) toward Photon's look: the cells' and billows' scales, the edges; the altocumulus layer (none with the blocky style)
-		put4(b, 448, this.cellScale, this.billowScale, ShadeClouds.blocky() ? 1f : CloudConfig.edge(), 0f);
+		put4(b, 448, this.cellScale, this.billowScale, ShadeClouds.blocky() ? 1f : CloudConfig.edge(), CloudConfig.photonLight());
 		float altoDay = CloudConfig.altoDay();
 		float alto = ShadeClouds.blocky() || this.vanillaCells ? 0f : (altoDay >= 0f ? altoDay : w.alto) * CloudConfig.alto();
 		put4(b, 464, alto, this.top + CloudConfig.altoAbove(), CloudConfig.altoThickness(), CloudConfig.altoSigma() * CloudConfig.density());
+		// (2026-11) from farStart to farEnd blocks the cumulus go back to M3's edges and extinction (the long grazing steps toward the
+		// horizon sliced crisp, dense small cells into stripes)
+		float farStart = Live.f("mcopt.shade.clouds.farStart", 1200f, 100f, 20000f);
+		put4(b, 480, farStart, Math.max(farStart + 100f, Live.f("mcopt.shade.clouds.farEnd", 4000f, 200f, 30000f)), 1f / CloudConfig.sigmaScale(), 0f);
 		// (1.1: shadows on/off and their strength live; off = 0, the consumers read 1, ShadeClouds skips the map's pass)
 		this.shadowStrength = CloudConfig.shadows() ? CloudConfig.shadowStrength() * smoothstep(0.04f, 0.18f, f.sky.lightDir[1]) * this.opacity : 0f;
 

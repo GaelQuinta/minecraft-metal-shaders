@@ -37,7 +37,7 @@
 #ifndef MCOPT_SHADE_CLOUDS_PASSES
 #define MCOPT_SHADE_CLOUDS_PASSES
 
-// Per-frame parameters (mcopt.metal.shade.clouds.CloudParams packs exactly this layout: 2 matrices + 22 float4 = 480 bytes).
+// Per-frame parameters (mcopt.metal.shade.clouds.CloudParams packs exactly this layout: 2 matrices + 23 float4 = 496 bytes).
 struct CloudParams {
 	float4x4 invViewProj;  //   0 this frame's clip -> camera-relative world, without the TAA jitter
 	float4x4 prevViewProj; //  64 last frame's camera-relative world (re-based on this camera) -> clip, without jitter
@@ -72,11 +72,16 @@ struct CloudParams {
 	float4 art2;           // 448 (2026-11, toward Photon's look) x the cumulus cells' scale (the weather map's frequency: 1 = M3's ~250-block
 	                       //     cells, more = smaller, more numerous clouds with sky between; origin.xy wraps to match), y the billows'
 	                       //     scale (the 3D noise's frequency, 1 = its 120-block tile; origin.zw wraps to match), z the edges'
-	                       //     sharpening (x the exponent that hardens the density toward the tops; 1 = M3), w reserved
+	                       //     sharpening (x the exponent that hardens the density toward the tops; 1 = M3), w Photon's octaves (the
+	                       //     multiple scattering's octaves grown by the density's powder term: bright dense cores, darker thin
+	                       //     skins between the lobes; 0 = M3's, 1 = Photon's, blended)
 	float4 alto;           // 464 (2026-11) the altocumulus layer (after Photon's, MIT snapshot 26c2906e): x amount (0 = none), y its base
 	                       //     (absolute y), z thickness (blocks), w extinction per block at density 1
+	float4 art3;           // 480 (2026-11) x, y the distance (blocks) over which the far cumulus go back to M3's edges and extinction
+	                       //     (art2.z, sigmaScale: crisp, dense small cells sliced into stripes along the long grazing steps toward
+	                       //     the horizon), z 1 / sigmaScale (the extinction there), w reserved
 };
-static_assert(sizeof(CloudParams) == 480, "CloudParams layout (CloudParams.java)");
+static_assert(sizeof(CloudParams) == 496, "CloudParams layout (CloudParams.java)");
 
 // M3.1 dev bits (CloudParams.lightDir.w; CloudConfig.DEV_*): an M3.1 saving switched back to M3's way, for pricing in game
 #define CLOUD_DEV_OLD_RESOLVE 1024 // the resolve reads its five march distances one by one (M3)
@@ -348,6 +353,11 @@ static inline float cloudBaseH(float h, half4 w, float spread) {
 	return off > 0.0 ? (h - off) / (1.0 - off) : h;
 }
 
+// (2026-11, art3) 0 near .. 1 far: the far cumulus' share of M3's edges and extinction. dist: the point's distance (blocks).
+static inline float cloudFarK(float dist, constant CloudParams &c) {
+	return smoothstep(c.art3.x, c.art3.y, dist);
+}
+
 // lod: mip level of the 3D noise (log2 of the sample's footprint in billow texels): far samples read blurred noise
 // instead of aliasing it into grain.
 static float cloudDensity(float3 p, float y, int q, constant CloudParams &c, texture2d<half> weather, texture3d<half> noise,
@@ -394,7 +404,7 @@ static float cloudDensity(float3 p, float y, int q, constant CloudParams &c, tex
 	d *= 0.6 + 0.8 * float(n.r);
 	d = saturate(d);
 	// edges sharpen with height: crisp cauliflower tops, softer ragged bases (2026-11: x art2.z)
-	d = 1.0 - pow(1.0 - d, mix(3.0, 7.0, h) * c.art2.z);
+	d = 1.0 - pow(1.0 - d, mix(3.0, 7.0, h) * mix(c.art2.z, 1.0, cloudFarK(length(p.xz), c)));
 	return d * (0.5 + 0.5 * smoothstep(0.0, 0.2, h));
 }
 
@@ -429,7 +439,7 @@ static inline float cloudDensityMath(half4 w, half4 n, half4 m, float h, int q, 
 	}
 	d *= 0.6 + 0.8 * float(n.r);
 	d = saturate(d);
-	d = 1.0 - pow(1.0 - d, mix(3.0, 7.0, h) * c.art2.z);
+	d = 1.0 - pow(1.0 - d, mix(3.0, 7.0, h) * mix(c.art2.z, 1.0, cloudFarK(length(rel), c)));
 	return d * (0.5 + 0.5 * smoothstep(0.0, 0.2, h));
 }
 
@@ -549,6 +559,28 @@ static inline float3 cloudSampleLight(float tauL, float dUp, float d, float st, 
 	ms *= mix(powder, 1.0, saturate(mu * 1.5));
 	float3 direct = c.light.rgb * ms;
 	float3 amb = (c.ambTop.rgb * exp(-tauUp) * (0.55 + 0.45 * h) + c.ambBottom.rgb * exp(-tauDown)) * c.ambBottom.w;
+	if (c.art2.w > 0.0) {
+		// (2026-11, art2.w) Photon's octaves, adapted from Photon Shaders by Benjamin Stott ("sixthsurge"), MIT License, commit 26c2906e
+		// (include/sky/clouds/common.glsl clouds_powder_effect, cumulus.glsl clouds_cumulus_scattering): each octave's weight grows by
+		// 0.55 x the powder term pi d / (d + 0.15) (more toward the light), its extinction shrinks by 0.4 and its powder eases toward
+		// 1, for the direct light and the sky's alike. Dense cores stay bright deep inside, the thin skin between the lobes keeps only
+		// the first octave: the lobes stand out. Our phases per octave (ph0..ph3), 4 octaves, scaled by 0.5 to meet ours in brightness
+		float m01 = mu * 0.5 + 0.5;
+		float P = 3.14159265 * d / (d + 0.15);
+		P = mix(P, 1.0, 0.8 * m01 * m01);
+		float grow = 0.55 * mix(0.75, 1.0, m01);
+		float sc = 1.0, ex = 1.0, dP = 0.0, aP = 0.0;
+		float phs[4] = {ph0, ph1, ph2, ph3};
+		for (int k = 0; k < 4; k++) {
+			dP += sc * exp(-ex * tauL) * phs[k];
+			aP += sc * exp(-ex * tauUp);
+			sc *= grow * P;
+			ex *= 0.4;
+			P = mix(P, sqrt(P), 0.5);
+		}
+		direct = mix(direct, c.light.rgb * (dP * 0.5), c.art2.w);
+		amb = mix(amb, (c.ambTop.rgb * aP * (0.55 + 0.45 * h) * 0.5 + c.ambBottom.rgb * exp(-tauDown)) * c.ambBottom.w, c.art2.w);
+	}
 	return direct + amb;
 }
 
@@ -670,7 +702,7 @@ static CloudResult cloudMarch(float3 dir, int steps, int lsteps, int q, float ji
 			continue;
 		}
 		miss = 0;
-		float st = d * sigma;
+		float st = d * sigma * mix(1.0, c.art3.z, cloudFarK(t, c)); // (2026-11: M3's extinction far away, art3)
 		// in dense cloud a whole step would jump from lit to opaque: at most shear.z optical depths per sample (down to
 		// shear.w of a step), so where the ray starts in the cloud (the jitter) matters less
 		float ds = clamp(c.shear.z / max(st, 1e-4), dtl * c.shear.w, dtl);
