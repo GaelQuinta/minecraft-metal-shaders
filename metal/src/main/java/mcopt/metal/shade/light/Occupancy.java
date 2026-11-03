@@ -59,8 +59,10 @@ final class Occupancy {
 	private final IntBuffer bits;
 	private final long[] held = new long[SLOTS];
 	private final boolean[] dirty = new boolean[SLOTS];
+	private int dirtyCount;
 	private final int[] retry = new int[SLOTS];
 	private final int[] scratch = new int[WORDS];
+	private final int[] air = new int[WORDS];
 	private int ox = Integer.MIN_VALUE, oy, oz; // the window's min section
 	private int refresh;
 	private ClientLevel level;
@@ -97,6 +99,7 @@ final class Occupancy {
 		if (full != fullOnly) { // the rule changed (a bench variant): every section is read again
 			fullOnly = full;
 			java.util.Arrays.fill(this.dirty, true);
+			this.dirtyCount = SLOTS;
 			java.util.Arrays.fill(this.retry, 0);
 		}
 		if (lvl != this.level) {
@@ -117,7 +120,8 @@ final class Occupancy {
 						long k = key(sx, sy, sz);
 						if (this.held[s] != k) {
 							this.held[s] = k;
-							this.bits.put(s * WORDS, new int[WORDS], 0, WORDS); // air until filled
+							this.bits.put(s * WORDS, this.air, 0, WORDS); // air until filled, without a per-section allocation
+							if (!this.dirty[s]) this.dirtyCount++;
 							this.dirty[s] = true;
 							this.retry[s] = 0;
 							this.slotGen[s] = ++this.generation;
@@ -131,7 +135,8 @@ final class Occupancy {
 		int filled = 0;
 		long deadline = t0 + budgetNanos;
 		// nearest dirty sections first (512 slots: a linear pick per fill is cheap next to a fill)
-		while (System.nanoTime() < deadline) {
+		// A settled window has no dirty sections. Keep the round-robin refresh below, but skip the 512-slot search.
+		while (this.dirtyCount > 0 && System.nanoTime() < deadline) {
 			int best = -1, bestD = Integer.MAX_VALUE, waiting = 0;
 			for (int dy = 0; dy < SPAN; dy++) {
 				for (int dz = 0; dz < SPAN; dz++) {
@@ -157,11 +162,13 @@ final class Occupancy {
 			int sx = (int) (k >> 42), sz = (int) (k << 22 >> 42), sy = (int) (k << 44 >> 44);
 			if (fill(lvl, best, sx, sy, sz)) {
 				this.dirty[best] = false;
+				this.dirtyCount--;
 			} else {
 				this.retry[best] = 30; // chunk not loaded yet: look again in a while
 			}
 			filled++;
 		}
+		if (this.dirtyCount == 0) this.pending = 0;
 		// one slot per frame is read again regardless (missed updates heal within ~4 s at 120 fps)
 		if (System.nanoTime() < deadline + budgetNanos / 2) {
 			this.refresh = (this.refresh + 1) % SLOTS;
@@ -264,6 +271,7 @@ final class Occupancy {
 		if (sx < this.ox || sx >= this.ox + SPAN || sy < this.oy || sy >= this.oy + SPAN || sz < this.oz || sz >= this.oz + SPAN) return;
 		int s = slot(sx, sy, sz);
 		if (this.held[s] != key(sx, sy, sz)) return;
+		if (!this.dirty[s]) this.dirtyCount++;
 		this.dirty[s] = true;
 		this.retry[s] = 0;
 	}
