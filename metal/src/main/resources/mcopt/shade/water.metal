@@ -1429,6 +1429,34 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	alpha = sqrt(alpha * alpha + w.swell.w); // (2026-11-02) the swell a pixel averages over widens the glitter road
 #endif
 	float spec = shadeGgxSpec(n, v, f.lightDirWorld.xyz, alpha);
+#if defined(SHADE_WATER_GLITTER) && defined(SHADE_WATER_DETAIL)
+	// (2026-11-02; STUDY.md "what we could do: water" item 3, after Complementary's sparkle term: technique only, our own code;
+	// mcopt.shade.water.glitter, 0 = none) glitter: the glint times a facet contrast ((n_r.l) / (n.l))^4 from a rougher normal n_r:
+	// facets tilted toward the sun light up, those tilted away go dark, so near the camera the road breaks into sparkles. n_r is n
+	// plus the fine ripples' slope turned 90 degrees, at 1.5x the waves' strength: the same ripple features, but a tilt uncorrelated
+	// with n's (a rougher normal made of n's own ripples would light exactly the facets the glint already picks, n ~ h, and only
+	// reshape the road). Divided by its mean for that spread (E(1 + d)^4 = 1 + 6 s2 + 3 s2^2; s2 = the extra tilt's variance along
+	// the sun, RMS ripple slope 0.077 per axis x 1.5 x the waves' strength, less what the mips average away at this footprint and
+	// the ripples' own fade with distance, over (n.l)^2), so the road keeps ~0.8-0.95 of its energy (a Monte Carlo of the formula, sun
+	// elevation sine 0.05-0.8; ~6-8 % of the road's pixels over 3x at golden hour). With a grazing sun the extra tilt is capped so
+	// that spread stays <= 0.3 (else a few clamped sparkles and a dark road). It fades back to the plain glint by 0.6 blocks per pixel
+	// (no sub-pixel sparkles to flicker under TAAU): far away the road stays smooth.
+	if (top && wp.swell3.y > 0.0 && spec > 0.0) {
+		float near = (1.0 - smoothstep(0.08, 0.6, w.footprint)) * wp.swell3.y;
+		if (near > 0.0) {
+			float3 l = f.lightDirWorld.xyz;
+			float nl = max(dot(n, l), 0.02);
+			float k = min(1.5 * wp.tune.x, 7.1 * nl * rsqrt(max(1.0 - nl * nl, 1e-4))); // (the cap: 0.0059 k^2 (1 - nl^2) / nl^2 <= 0.3)
+			float3 nr = normalize(n * (1.0 / max(n.y, 0.1)) + float3(w.detail.y * k, 0.0, -w.detail.x * k)); // + the ripples' slope turned 90 degrees
+			float r = max(dot(nr, l), 0.0) / nl;
+			float dfar = 1.0 - smoothstep(0.6 * SHADE_WATER_DETAIL_FAR, SHADE_WATER_DETAIL_FAR, length(w.p));
+			float keep = saturate(log2(1.9 / max(w.footprint, 1e-3)) * (1.0 / 4.3)); // the ripple octaves the mips keep
+			float s2 = 0.0059 * k * k * dfar * dfar * keep * saturate(1.0 - nl * nl) / (nl * nl);
+			float contrast = (r * r) * (r * r) / (1.0 + 6.0 * s2 + 3.0 * s2 * s2);
+			spec *= clamp(1.0 + (contrast - 1.0) * near, 0.0, 16.0);
+		}
+	}
+#endif
 	float soft = smoothstep(0.15, 0.85, float(w.shadow));
 	float3 glint = f.sunColor.rgb * min(spec, 60.0) * soft * open * (1.0 - hitWeight);
 

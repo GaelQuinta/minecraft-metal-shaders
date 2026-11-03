@@ -176,6 +176,8 @@ public final class ShadeWater {
 	 * -Dmcopt.shade.leanDev=SHADE_WATER_SWELL (and/or SHADE_WATER_GLITTER) with mcopt.shade.leanDev.on (ShadeLean).
 	 */
 	public static final boolean SWELL_CODE = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.swellCode", "false"));
+	/** The glint's glitter's code (water.metal SHADE_WATER_GLITTER, live mcopt.shade.water.glitter): with the swell's unless set on its own. */
+	public static final boolean GLITTER_CODE = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.glitterCode", String.valueOf(SWELL_CODE)));
 	static final boolean SWELL_DEV = mcopt.metal.shade.ShadeLean.DEV_DEFINES.contains("SHADE_WATER_SWELL ");
 
 	/** Whether the swell's code is in some variant of the translucent terrain (its CPU side, the open-water map, is then worth running). */
@@ -280,6 +282,7 @@ public final class ShadeWater {
 		if (SMOOTH) b.append("#define SHADE_WATER_SMOOTH 1\n"); // (2026-11-02: calm and ripple are read every frame, ShadeWaterParams.swell2.zw)
 		if (GLINT_GRAZE) b.append("#define SHADE_WATER_GLINT_GRAZE 1\n");
 		if (SWELL_CODE) b.append("#define SHADE_WATER_SWELL 1\n"); // (2026-11-02, water round 1)
+		if (GLITTER_CODE) b.append("#define SHADE_WATER_GLITTER 1\n");
 		if (BAKE) b.append("#define SHADE_WAVE_BAKE 1\n#define SHADE_WAVE_BAKE_SIZE ").append(BAKE_SIZE).append('\n');
 		// TAAU (mcopt.shade.taa): the world draws into a live sub-rect of fixed-size targets (so do the copies), and the SSR
 		// jitter changes per frame for the temporal resolve to integrate. The sub-rect mapping is exact without TAAU too
@@ -411,7 +414,9 @@ public final class ShadeWater {
 		p.putFloat(80, openFar).putFloat(84, 0f).putFloat(88, mcopt.metal.shade.Live.f("mcopt.shade.water.calm", CALM, 0.05f, 2f))
 			.putFloat(92, mcopt.metal.shade.Live.f("mcopt.shade.water.ripple", RIPPLE, 0f, 3f));
 		// the swell's share in the mirrored images' direction (.swellRefl: 0.45 = the ripples' share, 1 = all of it; STUDY item 2)
-		p.putFloat(96, mcopt.metal.shade.Live.f("mcopt.shade.water.swellRefl", 0.45f, 0f, 1f)).putFloat(100, 0f).putFloat(104, 0f).putFloat(108, 0f);
+		// and the glint's glitter (.glitter 0..3, 0 = none; STUDY item 3)
+		p.putFloat(96, mcopt.metal.shade.Live.f("mcopt.shade.water.swellRefl", 0.45f, 0f, 1f))
+			.putFloat(100, mcopt.metal.shade.Live.f("mcopt.shade.water.glitter", 0f, 0f, 3f)).putFloat(104, 0f).putFloat(108, 0f);
 		WaterNative.params(state, MemoryUtil.memAddress(p));
 	}
 }
