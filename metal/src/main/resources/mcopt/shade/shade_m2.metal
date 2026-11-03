@@ -419,7 +419,7 @@ static float3 shadeStars(float3 s, float airmass, float time, float sigmaCells) 
 	for (int j = 0; j < 4; j++) {
 		int2 c = int2(base) + int2(j & 1, j >> 1);
 		uint h = shadeHash3(int3(c, int(face)), 0x5bd1e995u);
-		if (shadeHash01(h) > 0.07) continue;
+		if (shadeHash01(h) > 0.025) continue; // Fewer stars; keep the retained stars' positions, sizes and brightness.
 		float2 pos = float2(c) + 0.2 + 0.6 * float2(shadeHash01(h ^ 0x68e31da4u), shadeHash01(h ^ 0xb5297a4du));
 		float2 dd = cell - pos;
 		float r2 = dot(dd, dd);
