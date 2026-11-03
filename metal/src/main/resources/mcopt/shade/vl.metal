@@ -491,6 +491,7 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 		// extinction over the march is at most ~0.1, so a grey one costs nothing visible and a third of the exp per step)
 		float trans = 1.0, mistAll = 0.0, mistLit = 0.0, forestLit = 0.0, forestAll = 0.0;
 		float forestOD = 0.0; // (2026-11, air8.z) the forest air's optical depth along the ray (at its density, x airDim below)
+		float mistOD = 0.0;   // (2026-11, air8.y with air8.z) the mist's, for a sky pixel's dimming under the golden-hour sky mist
 		float hazeAll = 0.0, hazeLit = 0.0; // (FT2.7, audit idx 1: scalars, times sigR once after the loop)
 		float apAll = 0.0, apLit = 0.0; // (FT2.12) the ray's length and its sunlit part (the aerial blend's glow, uniform along it)
 		float lumR = dot(sigR, float3(0.2126, 0.7152, 0.0722));
@@ -498,8 +499,9 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 		// (FT2.7, audit idx 0; air6.w > 0) a sky pixel with airSkyCut and airBase 0: past the shade grid (and the forest air's
 		// fade-out) every step only feeds sums the sky multiplies by 0 (shadowed *= air2.y below; outside the grid dF = air4.x = 0),
 		// so its march stops there. The same image; the far steps (far cascade, cloud shadows) were ~0.2 ms where half the view is sky
+		// (2026-11, air8.y > 0: not with the golden-hour mist over the sky, which needs the whole ray)
 		float tStop = D;
-		if (skyPx && p.air6.w > 0.0 && p.air2.y == 0.0 && p.air4.x <= 0.0) {
+		if (skyPx && p.air6.w > 0.0 && p.air2.y == 0.0 && p.air4.x <= 0.0 && p.air8.y <= 0.0) {
 			float3 ex = select(-p.grid.xyz, p.grid.xyz + gridSpan, dir > 0.0) / max(abs(dir), 1e-6); // the camera is inside the grid
 			tStop = min(min(ex.x, min(ex.y, ex.z)) + 1.0, D);
 			if (p.air5.y > p.air5.x) tStop = min(tStop, p.air5.y);
@@ -562,6 +564,7 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 			forestLit += v * dF * seg;
 			forestAll += dF * seg;
 			forestOD += dF * dt;
+			mistOD += dM * dt;
 			trans *= stepT;
 		}
 		float3 hA = hazeAll * sigR, hL = hazeLit * sigR;
@@ -582,6 +585,15 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 		// on the sky the haze's glow is the sky model's own: the shadows take out a share of it (air2.y; dark rays from the trees'
 		// and hills' shadows across the glow around the sun)
 		if (skyPx) shadowed *= p.air2.y;
+		// (2026-11, C7: air8.y = mcopt.shade.vl.skyMist x the golden hour, 0 = none) the golden-hour mist over the sky, as Photon marches
+		// sky pixels (its approach: the air to the volume's end with the sun's shadow at every step): the final pass draws no haze over
+		// the sky, so the mist's whole sunlit part goes here (positive), E06's phase, glow and albedo, with its sky-lit part. Toward a low
+		// sun the mist over the horizon glows and the hills, trees and cloud gaps between cut dark and bright wedges into it, fanning
+		// from the sun (the far cascade's shadows to 128 blocks, the clouds' beyond)
+		if (skyPx && p.air8.y > 0.0) {
+			float kM = alM / (1.0 - 0.5 * alM);
+			shadowed += p.air8.y * (E * (mistLit * (phM * glow * kM)) + f.ambientSky.rgb * (0.9 * shadeAirSky(sl) * kM * mistAll));
+		}
 		// the forest air: Photon's two-lobe Mie phase over four multiple-scattering octaves (see the header)
 		// (air4.y > 0: one forward lobe of that g plus an isotropic share air4.z instead, x 1.875 = the octaves' total)
 		float phF = 0.0, octave = 1.0, aniso = 1.0;
@@ -603,6 +615,8 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 		// "milky" look of strong forest air). Its optical depth, x airDim (~ its extinction relative to the density), goes out as a
 		// third target; vl_temporal_fold filters it and puts T = e^-od in lightT.a, which the final pass multiplies the scene by
 		od = forestOD * abs(p.air8.z);
+		// (C7 with C5) the golden-hour sky mist dims the sky behind it too (Photon's sky x T + scattering), at the share it glows with
+		if (skyPx && p.air8.y > 0.0 && p.air8.z != 0.0) od += p.air8.y * mistOD;
 	} else if (!underwater) {
 		float D = min(dist, p.shape.y);
 		float mist = p.medium.y;

@@ -606,7 +606,12 @@ public final class ShadeVl {
 		// (w, C6: mcopt.shade.vl.spatial, live, 0..1: the temporal pass's spatial filter, its four neighbours' weight; 1 = as before, 0 =
 		// the texel alone, ~1 VL texel less blur every frame; every mode, not only the air mode)
 		float spatial = Math.max(0f, Math.min(1f, VlConfig.live("mcopt.shade.vl.spatial", 1f)));
-		put(b, airLinear, 0f, airDim, spatial);
+		// (y, C7: mcopt.shade.vl.skyMist, live, 0..2: the golden-hour mist over the sky, lit by the sun and cut by the shadows of hills,
+		// trees and cloud gaps: wedges fanning from a low sun across the sky; 0 = none, the sky's dark screen-space rays only. x the
+		// golden hour (all of it below sunY 0.1, none above 0.55: no cost by day) and the player's god rays. Sky pixels then march to
+		// the end instead of stopping at the shade grid's edge, ~+0.1-0.25 ms in the golden hour; with airDim it also dims the sky)
+		float skyMist = air && sunLight ? Math.max(0f, Math.min(2f, VlConfig.live("mcopt.shade.vl.skyMist", 0f))) * smoothstep(0.55f, 0.1f, sunY) * userRays : 0f;
+		put(b, airLinear, skyMist, airDim, spatial);
 		// (air mode: the haze's shadows count wherever the sun is up, even with no forest around)
 		if (userRays <= 0f) return false;
 		if (userWater <= 0f) return false; // (1.1: under water with its shafts at 0 nothing is added: no passes, as above)
