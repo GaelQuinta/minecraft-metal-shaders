@@ -603,7 +603,10 @@ public final class ShadeVl {
 		// scene x T + light; 0 = additive only, FT2.3. ~0.6 = its extinction about its scattered share 0.55 / albedo 0.9. On costs a
 		// R16F target and its history at the VL resolution and the fold's light + T again: mcvl.m)
 		float airDim = air ? Math.max(0f, Math.min(4f, VlConfig.live("mcopt.shade.vl.airDim", 0f))) : 0f;
-		put(b, airLinear, 0f, airDim, 1f);
+		// (w, C6: mcopt.shade.vl.spatial, live, 0..1: the temporal pass's spatial filter, its four neighbours' weight; 1 = as before, 0 =
+		// the texel alone, ~1 VL texel less blur every frame; every mode, not only the air mode)
+		float spatial = Math.max(0f, Math.min(1f, VlConfig.live("mcopt.shade.vl.spatial", 1f)));
+		put(b, airLinear, 0f, airDim, spatial);
 		// (air mode: the haze's shadows count wherever the sun is up, even with no forest around)
 		if (userRays <= 0f) return false;
 		if (userWater <= 0f) return false; // (1.1: under water with its shafts at 0 nothing is added: no passes, as above)

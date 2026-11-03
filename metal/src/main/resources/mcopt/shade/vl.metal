@@ -834,12 +834,15 @@ static inline half4 vlTemporalRaw(VlOut in, constant ShadeFrame &f, constant VlP
 	float wsum = 2.0;
 	float3 mn = float3(c.rgb), mx = mn;
 	// a plus of 5 taps with a tight depth weight (a 3x3 smoothed the beams away; the history does the denoising)
+	// (2026-11, C6: air8.w = mcopt.shade.vl.spatial) the neighbours' share of the filter (1 = as before; 0 = the texel alone: about a
+	// VL texel less blur every frame, the history still denoises); the clamp box below keeps the plain depth weight
 	const int2 taps[4] = {int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1)};
+	float spatial = p.air8.w;
 	for (int k = 0; k < 4; k++) {
 		half4 s = raw.read(uint2(clamp(px + taps[k], int2(0), hi)));
 		float w = exp(-abs(float(s.a) - d) / (0.03 * d + 0.3));
-		sum += float3(s.rgb) * w;
-		wsum += w;
+		sum += float3(s.rgb) * (w * spatial);
+		wsum += w * spatial;
 		if (w > 0.35) {
 			mn = min(mn, float3(s.rgb));
 			mx = max(mx, float3(s.rgb));
