@@ -732,9 +732,11 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 		// frame's live size. This frame's pixels made the dark sky rays lag their clouds and trees by a frame of the turn
 		float2 prevLiveV = p.carve.z > 0.0 ? p.carve.zw * float2(prevSky.get_width(), prevSky.get_height()) : p.size.xy;
 		float2 liveV = p.size.xy;
+		bool maskValid = true;
 		if (p.air7.w > 0.0) {
 			float4 pcP = f.prevViewProj * float4(dir, 0.0), pcS = f.prevViewProj * float4(L, 0.0);
-			if (pcP.w > 1e-4 && pcS.w > 1e-4) {
+			maskValid = pcP.w > 1e-4 && pcS.w > 1e-4;
+			if (maskValid) {
 				fv = (pcP.xy / pcP.w * 0.5 + 0.5) * prevLiveV;
 				toV = (pcS.xy / pcS.w * 0.5 + 0.5) * prevLiveV - fv;
 				liveV = prevLiveV;
@@ -758,12 +760,19 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 		for (int k = 0; k < taps; k++) {
 			float s = (float(k) + xc) / float(taps);
 			float2 q = fv + toV * (s * s);
-			if (all(q >= 0.0) && all(q < liveV)) {
-				float m = smoothTaps ? float(prevSky.sample(maskLin, clamp(q, 0.5, liveV - 0.5) * maskTexel).r)
-				                     : float(prevSky.read(uint2(q)).r);
-				open += m * w;
-				if (k >= kFar) openFar += m * w;
+			// Missing history is unknown, not a blocker. Counting an off-screen tap as zero
+			// painted the previous viewport's rectangle into the sunlight on a camera turn.
+			float m = 1.0;
+			if (maskValid && all(q >= 0.0) && all(q < liveV)) {
+				m = smoothTaps ? float(prevSky.sample(maskLin, clamp(q, 0.5, liveV - 0.5) * maskTexel).r)
+				               : float(prevSky.read(uint2(q)).r);
+				// Fade measured occlusion at the live mask boundary; don't extend an edge
+				// tree/cloud into newly exposed sky or read unused dynamic-resolution texels.
+				float2 edge = min(q, liveV - q);
+				m = mix(1.0, m, smoothstep(0.0, 4.0, min(edge.x, edge.y)));
 			}
+			open += m * w;
+			if (k >= kFar) openFar += m * w;
 			wsum += w;
 			if (k >= kFar) wFar += w;
 			w *= 0.92;
