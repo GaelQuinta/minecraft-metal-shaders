@@ -130,6 +130,8 @@ public final class ShadeWater {
 	 * streaked the top row down the water when looking down at a lake).
 	 */
 	public static final float SSR_TOP = Math.clamp(floatProperty("mcopt.shade.water.ssrTop", 0.15f), 0.001f, 1f);
+	/** (candidate 7) the mirrored image's temporal reprojection's code (water.metal SHADE_WATER_RTR; mcopt.shade.water.rtr, startup). */
+	public static final boolean RTR = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.rtr", "true"));
 	/**
 	 * FT1.3 {@code mcopt.shade.water.style}: "photon" (default; Gael: "reflejos pixeleados", "agua como el mar de Photon"):
 	 * smooth ripples without M2.1's 1/16-block cells and crest pattern, calmer in clear weather (mcopt.shade.water.calm, 0.55
@@ -314,6 +316,9 @@ public final class ShadeWater {
 		// (ShadeFrame.screen = the copy's size then).
 		b.append("#define SHADE_WATER_SUBRECT 1\n");
 		if (mcopt.metal.shade.taa.TaaConfig.ENABLED) b.append("#define SHADE_WATER_TAA 1\n");
+		if (RTR && mcopt.metal.shade.taa.TaaConfig.ENABLED) b.append("#define SHADE_WATER_RTR 1\n");
+		// (candidate 7, dev) mcopt.shade.water.ssrJitterFrame=false: the SSR step jitter fixed per pixel even with TAA (the flicker hunt)
+		if (!Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrJitterFrame", "true"))) b.append("#define SHADE_SSR_JITTER_STILL 1\n");
 		return b.append(ShadeMsl.resource("water.metal")).append('\n').toString();
 	}
 
@@ -445,7 +450,8 @@ public final class ShadeWater {
 		p.putFloat(64, mcopt.metal.shade.Live.f("mcopt.shade.water.swell", 1.3f, 0f, 3f)).putFloat(68, mcopt.metal.shade.Live.f("mcopt.shade.water.swellMask", 0.45f, 0f, 1f))
 			.putFloat(72, mcopt.metal.shade.Live.f("mcopt.shade.water.swellGlow", 0.5f, 0f, 4f))
 			.putFloat(76, mcopt.metal.shade.Live.f("mcopt.shade.water.swellFresnel", 1f, 0f, 1f));
-		p.putFloat(80, openFar).putFloat(84, 0f).putFloat(88, mcopt.metal.shade.Live.f("mcopt.shade.water.calm", CALM, 0.05f, 2f))
+		// (candidate 7) the mirrored images' calm (.mirrorCalm 0.05..1: how far their normal is pulled toward the face's; 0.55 = before)
+		p.putFloat(80, openFar).putFloat(84, mcopt.metal.shade.Live.f("mcopt.shade.water.mirrorCalm", 0.55f, 0.05f, 1f)).putFloat(88, mcopt.metal.shade.Live.f("mcopt.shade.water.calm", CALM, 0.05f, 2f))
 			.putFloat(92, mcopt.metal.shade.Live.f("mcopt.shade.water.ripple", RIPPLE, 0f, 3f));
 		// the swell's share in the mirrored images' direction (.swellRefl: 0.45 = the ripples' share, 1 = all of it; STUDY item 2)
 		// and the glint's glitter (.glitter 0..3, 0 = none; STUDY item 3). 1.2.7 candidate 5 (Gael, 2026-11-03: "los reflejos se
@@ -456,7 +462,10 @@ public final class ShadeWater {
 			// base roughness factor (.glintSharp 0.1..2; 1 = candidate 4's broad ribbon; 0.3: A/B at sunrise and sunset over the sea,
 			// work/notes/2026-11-03 ps-k2, against 0.5 and 0.2)
 			.putFloat(100, mcopt.metal.shade.Live.f("mcopt.shade.water.glitter", 1.5f, 0f, 3f))
-			.putFloat(104, mcopt.metal.shade.Live.f("mcopt.shade.water.glintSharp", 0.3f, 0.1f, 2f)).putFloat(108, 0f);
+			.putFloat(104, mcopt.metal.shade.Live.f("mcopt.shade.water.glintSharp", 0.3f, 0.1f, 2f))
+			// (candidate 7) the mirrored image's temporal reprojection: its weight x the Fresnel (.reflTemporal 0..0.95; 0 = candidate 6;
+			// water.metal SHADE_WATER_RTR, Gael's flicker on the water while moving)
+			.putFloat(108, RTR ? mcopt.metal.shade.Live.f("mcopt.shade.water.reflTemporal", 0.6f, 0f, 0.95f) : 0f);
 		WaterNative.params(state, MemoryUtil.memAddress(p));
 	}
 }
