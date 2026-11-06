@@ -130,6 +130,9 @@ public final class ShadeWater {
 	 * streaked the top row down the water when looking down at a lake).
 	 */
 	public static final float SSR_TOP = Math.clamp(floatProperty("mcopt.shade.water.ssrTop", 0.15f), 0.001f, 1f);
+	/** (candidate 7, water.metal SHADE_SSR_SIDE / _END) past a side edge: how far (NDC; mcopt.shade.water.ssrSide, 1 = M2.1) and the weight kept there (.ssrSideEnd, 0.5). */
+	public static final float SSR_SIDE = Math.clamp(floatProperty("mcopt.shade.water.ssrSide", 1f), 0.001f, 1f);
+	public static final float SSR_SIDE_END = Math.clamp(floatProperty("mcopt.shade.water.ssrSideEnd", 0.5f), 0f, 1f);
 	/** (candidate 7) the mirrored image's temporal reprojection's code (water.metal SHADE_WATER_RTR; mcopt.shade.water.rtr, startup). */
 	public static final boolean RTR = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.rtr", "true"));
 	/**
@@ -295,7 +298,8 @@ public final class ShadeWater {
 		}
 		if (SSR_EDGE) b.append("#define SHADE_SSR_EDGE 1\n");
 		b.append("#define SHADE_SSR_THICK_K ").append(SSR_THICK).append("\n#define SHADE_SSR_BEHIND ").append(SSR_BEHIND ? 1 : 0)
-			.append("\n#define SHADE_SSR_TOP ").append(SSR_TOP).append('\n');
+			.append("\n#define SHADE_SSR_TOP ").append(SSR_TOP).append("\n#define SHADE_SSR_SIDE ").append(SSR_SIDE)
+			.append("\n#define SHADE_SSR_SIDE_END ").append(SSR_SIDE_END).append('\n');
 		// 2026-10-08: the SSR march decides in reversed-Z depth (same decisions, no division per step); false = FT1.3's march
 		if (Boolean.parseBoolean(System.getProperty("mcopt.shade.water.rawz", "true"))) b.append("#define SHADE_SSR_RAWZ 1\n");
 		// (FT2.8, audit idx 57/58) the RAWZ march's bisection in 2 rounds of 3 reads and its fallback kept as one float: same image,
@@ -450,8 +454,10 @@ public final class ShadeWater {
 		p.putFloat(64, mcopt.metal.shade.Live.f("mcopt.shade.water.swell", 1.3f, 0f, 3f)).putFloat(68, mcopt.metal.shade.Live.f("mcopt.shade.water.swellMask", 0.45f, 0f, 1f))
 			.putFloat(72, mcopt.metal.shade.Live.f("mcopt.shade.water.swellGlow", 0.5f, 0f, 4f))
 			.putFloat(76, mcopt.metal.shade.Live.f("mcopt.shade.water.swellFresnel", 1f, 0f, 1f));
-		// (candidate 7) the mirrored images' calm (.mirrorCalm 0.05..1: how far their normal is pulled toward the face's; 0.55 = before)
-		p.putFloat(80, openFar).putFloat(84, mcopt.metal.shade.Live.f("mcopt.shade.water.mirrorCalm", 0.55f, 0.05f, 1f)).putFloat(88, mcopt.metal.shade.Live.f("mcopt.shade.water.calm", CALM, 0.05f, 2f))
+		// (candidate 7) the mirrored images' calm (.mirrorCalm 0.05..1: how far their normal is pulled toward the face's; 0.55 = before;
+		// 0.75 with reflTemporal 0.8: at Gael's pond, frozen waves, pixels flickering again and again walking 21 -> 9 %, running 32 -> 17 %,
+		// jumping 30 -> 16 %; 0.9 measured the same and smooths the reflections more)
+		p.putFloat(80, openFar).putFloat(84, mcopt.metal.shade.Live.f("mcopt.shade.water.mirrorCalm", 0.75f, 0.05f, 1f)).putFloat(88, mcopt.metal.shade.Live.f("mcopt.shade.water.calm", CALM, 0.05f, 2f))
 			.putFloat(92, mcopt.metal.shade.Live.f("mcopt.shade.water.ripple", RIPPLE, 0f, 3f));
 		// the swell's share in the mirrored images' direction (.swellRefl: 0.45 = the ripples' share, 1 = all of it; STUDY item 2)
 		// and the glint's glitter (.glitter 0..3, 0 = none; STUDY item 3). 1.2.7 candidate 5 (Gael, 2026-11-03: "los reflejos se
@@ -465,7 +471,7 @@ public final class ShadeWater {
 			.putFloat(104, mcopt.metal.shade.Live.f("mcopt.shade.water.glintSharp", 0.3f, 0.1f, 2f))
 			// (candidate 7) the mirrored image's temporal reprojection: its weight x the Fresnel (.reflTemporal 0..0.95; 0 = candidate 6;
 			// water.metal SHADE_WATER_RTR, Gael's flicker on the water while moving)
-			.putFloat(108, RTR ? mcopt.metal.shade.Live.f("mcopt.shade.water.reflTemporal", 0.6f, 0f, 0.95f) : 0f);
+			.putFloat(108, RTR ? mcopt.metal.shade.Live.f("mcopt.shade.water.reflTemporal", 0.8f, 0f, 0.95f) : 0f);
 		WaterNative.params(state, MemoryUtil.memAddress(p));
 	}
 }
