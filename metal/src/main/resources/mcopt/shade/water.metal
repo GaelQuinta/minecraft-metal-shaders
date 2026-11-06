@@ -68,7 +68,7 @@
 #define SHADE_SSR_TOP 0.15
 #endif
 
-// Mirrors mcwater.m's WaterParams (128 bytes, written by ShadeWater.frame).
+// Mirrors mcwater.m's WaterParams (144 bytes, written by ShadeWater.frame).
 struct ShadeWaterParams {
 	float4 still;  // atlas uv rectangle (u0, v0, u1, v1) of minecraft:block/water_still (all 0: unknown)
 	float4 flow;   // the same for minecraft:block/water_flow
@@ -87,6 +87,8 @@ struct ShadeWaterParams {
 	float4 rhist;  // (2026-11-06, SHADE_WATER_RHIST) the reflection's own history: x its weight (mcopt.shade.water.reflHistK, 0 = off:
 	               // no read, no write), y 1 when texture(29) holds last frame's (mcwater.m), z this frame's tag (+1 / -1, alternating;
 	               // the texels last frame wrote carry -z), w the clamp box's scale (.reflHistBox; 0 = the code isn't compiled in)
+	float4 mirror; // (2026-11-06, SHADE_WATER_MIRROR_AA) x the ripple-aware mirror normal's strength (mcopt.shade.water.mirrorAAStrength,
+	               // 0 = none), yzw reserved
 };
 
 // (2026-11-06) the reflection history's textures (SHADE_WATER_RHIST; mcwater.m binds them, ping-pong): texture(29) last frame's,
@@ -1270,6 +1272,23 @@ static float shadeWaterCaustics(float3 pf, float dy, constant ShadeFrame &f, con
 // 1 - this): wp.swell2.y (mcopt.shade.water.mirrorCalm), 0.55 before candidate 7 (and where the value is unset)
 static inline float shadeWaterMirrorCalm(constant ShadeWaterParams &wp) { return wp.swell2.y > 0.0 ? wp.swell2.y : 0.55; }
 
+#ifdef SHADE_WATER_MIRROR_AA
+// (2026-11-06; research-taa-flicker.md fix 5, after Kaplanyan et al. 2016 and Tokuyoshi & Kaplanyan 2019/2021 specular antialiasing:
+// technique only, our own code) The shading normal's spread across this 2x2 quad (its differences to the horizontal and vertical
+// neighbours): ripples smaller than a pixel turn n a different way in each pixel and from frame to frame (the camera moves the
+// samples over them), so they flip the mirrored ray and the glint's facet. Its variance (capped at 0.18) x wp.mirror.x calms the
+// mirrored images' normal toward the face's (all the way at the cap) and widens the glint's lobe (alpha^2 + it); ripples a few
+// pixels wide differ little between neighbours and keep their tilt. Every lane must call it (quad shuffles).
+static inline float shadeWaterRippleVar(float3 n, constant ShadeWaterParams &wp) {
+	float3 dx = n - quad_shuffle_xor(n, 1), dy = n - quad_shuffle_xor(n, 2);
+	return min(0.5 * (dot(dx, dx) + dot(dy, dy)), 0.18) * wp.mirror.x;
+}
+static inline float shadeWaterCalmAA(float calm, float kr2) { return min(calm + (1.0 - calm) * kr2 * (1.0 / 0.18), 1.0); }
+#define SHADE_MIRROR_CALM(wp, w) shadeWaterCalmAA(shadeWaterMirrorCalm(wp) - 0.4 * float((w).cave.y), rippleVar)
+#else
+#define SHADE_MIRROR_CALM(wp, w) (shadeWaterMirrorCalm(wp) - 0.4 * float((w).cave.y))
+#endif
+
 #ifdef SHADE_WATER_SWELL
 // (2026-11-02, water round 1; STUDY.md "what we could do: water" item 2) The normal the mirrored images (SSR, the rendered sky)
 // follow: calmer than the shading's for the ripples (n mixed toward the face's by calm: they wobble the images instead of shredding
@@ -1334,6 +1353,9 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 		cosV = sqrt(c * c + w.swell.w * wp.swell.w);
 	}
 #endif
+#ifdef SHADE_WATER_MIRROR_AA
+	float rippleVar = shadeWaterRippleVar(n, wp); // (2026-11-06) the ripples a pixel can't resolve (quad-uniform here)
+#endif
 	float fres = min(shadeWaterFresnel(cosV) * wp.tune.z, 1.0); // (1.2.7, audit B12: the Reflections slider above 100 % made the
 	// mix below extrapolate, the water brighter than the sky it mirrors, a white band toward the horizon)
 #ifdef SHADE_LEAN_ABOVE
@@ -1341,9 +1363,9 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	// don't shred). (FT2.10, w.cave.y) Where no sky lights the water the reflected walls and torches are all its surface shows:
 	// they follow the ripples like the sky's reflection on a lake shows its waves
 #ifdef SHADE_WATER_SWELL
-	float3 rr = reflect(v, shadeWaterMirrorN(n, w.nFace, shadeWaterMirrorCalm(wp) - 0.4 * float(w.cave.y), sw, wp.swell3.x)); // (2026-11-02: the swell at its own share)
+	float3 rr = reflect(v, shadeWaterMirrorN(n, w.nFace, SHADE_MIRROR_CALM(wp, w), sw, wp.swell3.x)); // (2026-11-02: the swell at its own share)
 #else
-	float3 rr = reflect(v, normalize(mix(n, w.nFace, shadeWaterMirrorCalm(wp) - 0.4 * float(w.cave.y))));
+	float3 rr = reflect(v, normalize(mix(n, w.nFace, SHADE_MIRROR_CALM(wp, w))));
 #endif
 	rr = normalize(float3(rr.x, max(rr.y, 0.01), rr.z));
 #endif
@@ -1452,9 +1474,9 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	// reflected images stay readable: SSR and the rendered sky follow a calmer normal than the shading (ripples wobble,
 	// don't shred); FT2.10: more of the ripples where no sky lights the water (w.cave.y, as above)
 #ifdef SHADE_WATER_SWELL
-	float3 rr = reflect(v, shadeWaterMirrorN(n, w.nFace, shadeWaterMirrorCalm(wp) - 0.4 * float(w.cave.y), sw, wp.swell3.x)); // (2026-11-02: the swell at its own share)
+	float3 rr = reflect(v, shadeWaterMirrorN(n, w.nFace, SHADE_MIRROR_CALM(wp, w), sw, wp.swell3.x)); // (2026-11-02: the swell at its own share)
 #else
-	float3 rr = reflect(v, normalize(mix(n, w.nFace, shadeWaterMirrorCalm(wp) - 0.4 * float(w.cave.y))));
+	float3 rr = reflect(v, normalize(mix(n, w.nFace, SHADE_MIRROR_CALM(wp, w))));
 #endif
 	rr = normalize(float3(rr.x, max(rr.y, 0.01), rr.z));
 #endif
@@ -1550,6 +1572,9 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	float alpha = 0.035 * wp.swell3.z + 0.10 * far + 0.06 * wp.state.z;
 #ifdef SHADE_WATER_SWELL
 	alpha = sqrt(alpha * alpha + w.swell.w); // (2026-11-02) the swell a pixel averages over widens the glitter road
+#endif
+#ifdef SHADE_WATER_MIRROR_AA
+	alpha = sqrt(alpha * alpha + rippleVar); // (2026-11-06) and so do the ripples a pixel can't resolve
 #endif
 	float spec = shadeGgxSpec(n, v, f.lightDirWorld.xyz, alpha);
 #if defined(SHADE_WATER_GLITTER) && defined(SHADE_WATER_DETAIL)

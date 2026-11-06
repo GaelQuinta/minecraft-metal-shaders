@@ -145,6 +145,12 @@ public final class ShadeWater {
 	public static final boolean RHIST = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.reflHist", "false"))
 		&& mcopt.metal.shade.ShadeConfig.HDR && mcopt.metal.shade.taa.TaaConfig.ENABLED;
 	/**
+	 * (2026-11-06, research-taa-flicker.md fix 5) {@code mcopt.shade.water.mirrorAA} (false, startup): the ripples a pixel can't resolve
+	 * (the shading normal's spread over the 2x2 quad) calm the mirrored images' normal and widen the glint (water.metal
+	 * SHADE_WATER_MIRROR_AA). Live once compiled in: {@code mcopt.shade.water.mirrorAAStrength} (1; 0 = the image as without it).
+	 */
+	public static final boolean MIRROR_AA = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.mirrorAA", "false"));
+	/**
 	 * FT1.3 {@code mcopt.shade.water.style}: "photon" (default; Gael: "reflejos pixeleados", "agua como el mar de Photon"):
 	 * smooth ripples without M2.1's 1/16-block cells and crest pattern, calmer in clear weather (mcopt.shade.water.calm, 0.55
 	 * of the M2.1 slopes; rain brings them back), patches of calmer and rougher water, flatter at grazing angles (a near-mirror
@@ -276,7 +282,7 @@ public final class ShadeWater {
 
 	private static long state;
 	private static boolean failed;
-	private static final ByteBuffer PARAMS = ByteBuffer.allocateDirect(128).order(ByteOrder.nativeOrder()); // water.metal ShadeWaterParams
+	private static final ByteBuffer PARAMS = ByteBuffer.allocateDirect(144).order(ByteOrder.nativeOrder()); // water.metal ShadeWaterParams
 	private static int captures;
 
 	private ShadeWater() {
@@ -331,6 +337,7 @@ public final class ShadeWater {
 		if (mcopt.metal.shade.taa.TaaConfig.ENABLED) b.append("#define SHADE_WATER_TAA 1\n");
 		if (RTR && mcopt.metal.shade.taa.TaaConfig.ENABLED) b.append("#define SHADE_WATER_RTR 1\n");
 		if (RHIST) b.append("#define SHADE_WATER_RHIST 1\n"); // (2026-11-06) the reflection's own history
+		if (MIRROR_AA) b.append("#define SHADE_WATER_MIRROR_AA 1\n"); // (2026-11-06) the ripple-aware mirror normal
 		// (candidate 7, dev) mcopt.shade.water.ssrJitterFrame=false: the SSR step jitter fixed per pixel even with TAA (the flicker hunt)
 		if (!Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrJitterFrame", "true"))) b.append("#define SHADE_SSR_JITTER_STILL 1\n");
 		return b.append(ShadeMsl.resource("water.metal")).append('\n').toString();
@@ -353,7 +360,7 @@ public final class ShadeWater {
 				}
 			}
 			System.out.println("[mcopt] shade: water on (ssr " + SSR + (SSR_QUAD ? " quad" : "") + ", " + SSR_STEPS + " steps, " + SSR_DIST + " blocks; waves " + WAVES
-				+ ", detail " + DETAIL + ", ssr edges " + SSR_EDGE + ", real-time clock " + CLOCK + ", caustics " + CAUSTICS + ", foam " + FOAM + ", glossy " + GLOSSY + ", prev-frame reflections " + SSR_PREV + ", baked waves " + BAKE + ", glint graze " + GLINT_GRAZE + ", edge reflections " + EDGE_REFL + ", reflection history " + RHIST + ", style " + (SMOOTH ? "photon (calm " + CALM + ", ripple " + RIPPLE + ")" : "m21") + ")");
+				+ ", detail " + DETAIL + ", ssr edges " + SSR_EDGE + ", real-time clock " + CLOCK + ", caustics " + CAUSTICS + ", foam " + FOAM + ", glossy " + GLOSSY + ", prev-frame reflections " + SSR_PREV + ", baked waves " + BAKE + ", glint graze " + GLINT_GRAZE + ", edge reflections " + EDGE_REFL + ", reflection history " + RHIST + ", mirror AA " + MIRROR_AA + ", style " + (SMOOTH ? "photon (calm " + CALM + ", ripple " + RIPPLE + ")" : "m21") + ")");
 		} catch (Throwable e) {
 			failed = true;
 			System.out.println("[mcopt] shade: water setup failed, M1 water from now on: " + e);
@@ -486,6 +493,8 @@ public final class ShadeWater {
 		// box's scale (> 0 tells mcwater.m the code is compiled in: it binds texture(29)/(30) then); y and z (valid, tag) are mcwater.m's
 		p.putFloat(112, RHIST ? mcopt.metal.shade.Live.f("mcopt.shade.water.reflHistK", 0.85f, 0f, 0.97f) : 0f).putFloat(116, 0f).putFloat(120, 0f)
 			.putFloat(124, RHIST ? Math.max(mcopt.metal.shade.Live.f("mcopt.shade.water.reflHistBox", 1f, 0f, 16f), 0.001f) : 0f);
+		// (2026-11-06) the ripple-aware mirror normal's strength (water.metal SHADE_WATER_MIRROR_AA; 0 = none)
+		p.putFloat(128, MIRROR_AA ? mcopt.metal.shade.Live.f("mcopt.shade.water.mirrorAAStrength", 1f, 0f, 4f) : 0f).putFloat(132, 0f).putFloat(136, 0f).putFloat(140, 0f);
 		WaterNative.params(state, MemoryUtil.memAddress(p));
 	}
 }

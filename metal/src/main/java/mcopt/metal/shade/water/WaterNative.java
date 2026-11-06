@@ -52,7 +52,7 @@ final class WaterNative {
 	}
 
 	static long create(long ctx) { try { return (long) NEW.invokeExact(ctx); } catch (Throwable t) { throw rethrow(t); } }
-	/** params: the address of 32 floats (still, flow, state, tune, swell, swell2, swell3, rhist: water.metal ShadeWaterParams). */
+	/** params: the address of 36 floats (still, flow, state, tune, swell, swell2, swell3, rhist, mirror: water.metal ShadeWaterParams). */
 	static void params(long state, long params) { try { PARAMS.invokeExact(state, params); } catch (Throwable t) { throw rethrow(t); } }
 	static void bind(long enc) { try { BIND.invokeExact(enc); } catch (Throwable t) { throw rethrow(t); } }
 	static int capture(long enc, long state) { try { return (int) CAPTURE.invokeExact(enc, state); } catch (Throwable t) { throw rethrow(t); } }

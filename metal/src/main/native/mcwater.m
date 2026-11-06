@@ -17,7 +17,7 @@
 //  2. The bindings, fragment stage only, on every render encoder native shading binds (ShadeBindings.bind):
 //       texture(18)  sceneCopy  texture2d<half>  the copy of colour attachment 0 (a 1x1 dummy until the first capture)
 //       texture(19)  depthCopy  depth2d<float>   the copy of the depth attachment (a 1x1 dummy until the first capture)
-//       buffer(23)   ShadeWaterParams (128 bytes, setFragmentBytes): this frame's water sprite rectangles and state; its
+//       buffer(23)   ShadeWaterParams (144 bytes, setFragmentBytes): this frame's water sprite rectangles and state; its
 //                    state.x is 1 only after this frame's capture, so shaders never trust last frame's copies.
 //       texture(29)  (2026-11-06, water.metal SHADE_WATER_RHIST; only while its code is compiled in: params.rhist.w > 0) the
 //                    reflection's own history last frame wrote (RGBA16F, the world target's size), texture(30) this frame's
@@ -36,6 +36,7 @@ typedef struct {
 	float swell2[4]; // x open-water map's outer-ring mean (< 0: no map), y reserved, z calm, w ripple
 	float swell3[4]; // x the swell's share in the mirrored images' direction, y the glint's glitter, zw reserved
 	float rhist[4];  // (2026-11-06) the reflection history: x weight (0 = off), y last frame's valid (set here), z this frame's tag (here), w box (> 0: compiled in)
+	float mirror[4]; // (2026-11-06) x the ripple-aware mirror normal's strength, yzw reserved
 } WaterParams;
 
 typedef struct {
@@ -103,7 +104,7 @@ void mc_water_free(WaterState *s) {
 	free(s);
 }
 
-// This frame's parameters (32 floats: still, flow, state, tune, swell, swell2, swell3, rhist); state.x (copies valid) is cleared until the
+// This frame's parameters (36 floats: still, flow, state, tune, swell, swell2, swell3, rhist, mirror); state.x (copies valid) is cleared until the
 // capture. Called once per frame, before anything draws: the reflection history's pair swaps roles here (rhist.y: what is now last
 // frame's was written by a capture last frame; rhist.z: the tag this frame's texels get, the opposite of last frame's).
 void mc_water_params(WaterState *s, const float *p) {
