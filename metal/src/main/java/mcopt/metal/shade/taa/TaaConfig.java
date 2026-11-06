@@ -158,12 +158,15 @@ public final class TaaConfig {
 		return Live.f("mcopt.shade.taa.antiFlicker", 0f, 0f, 1f);
 	}
 
+	// (candidate 7 defaults, 2026-11-06, repeatable pond runs cf4: fixed-step clock, frozen scene) floorCentre 1 + boostFrom 3: the
+	// reflections' repeated flicker -4..-6 % walking and jumping, the same sharpness, no cost. antiFlicker and flickerHold stay off
+	// (round tpa: worse running / 8 % blurrier).
 	public static float floorCentre() {
-		return Live.f("mcopt.shade.taa.floorCentre", 0f, 0f, 1f);
+		return Live.f("mcopt.shade.taa.floorCentre", 1f, 0f, 1f);
 	}
 
 	public static float boostFrom() {
-		return Live.f("mcopt.shade.taa.boostFrom", 1f, 1f, 8f);
+		return Live.f("mcopt.shade.taa.boostFrom", 3f, 1f, 8f);
 	}
 
 	public static float flickerHold() {
