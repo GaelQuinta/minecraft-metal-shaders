@@ -68,7 +68,7 @@
 #define SHADE_SSR_TOP 0.15
 #endif
 
-// Mirrors mcwater.m's WaterParams (112 bytes, written by ShadeWater.frame).
+// Mirrors mcwater.m's WaterParams (128 bytes, written by ShadeWater.frame).
 struct ShadeWaterParams {
 	float4 still;  // atlas uv rectangle (u0, v0, u1, v1) of minecraft:block/water_still (all 0: unknown)
 	float4 flow;   // the same for minecraft:block/water_flow
@@ -84,7 +84,21 @@ struct ShadeWaterParams {
 	float4 swell3; // x the swell's share in the mirrored images' direction (.swellRefl, 0.45 = the ripples' share, 1 = all of it),
 	               // y the glint's glitter (.glitter, 0 = none), z the glint's base roughness factor (.glintSharp, 1 = candidate 4's), w (candidate
 	               // 7) the mirrored image's temporal reprojection's weight (.reflTemporal, 0 = none; SHADE_WATER_RTR)
+	float4 rhist;  // (2026-11-06, SHADE_WATER_RHIST) the reflection's own history: x its weight (mcopt.shade.water.reflHistK, 0 = off:
+	               // no read, no write), y 1 when texture(29) holds last frame's (mcwater.m), z this frame's tag (+1 / -1, alternating;
+	               // the texels last frame wrote carry -z), w the clamp box's scale (.reflHistBox; 0 = the code isn't compiled in)
 };
+
+// (2026-11-06) the reflection history's textures (SHADE_WATER_RHIST; mcwater.m binds them, ping-pong): texture(29) last frame's,
+// texture(30) this frame's, RGBA16F at the world target's size: rgb the mirrored image (radiance before exposure, before the
+// Fresnel, after its temporal filter), a this frame's tag x the mirrored point's distance from the eye (60000: the sky)
+#ifdef SHADE_WATER_RHIST
+#define SHADE_RH_PARAMS , texture2d<half> rhPrev, texture2d<half, access::write> rhOut
+#define SHADE_RH_ARGS , rhPrev, rhOut
+#else
+#define SHADE_RH_PARAMS
+#define SHADE_RH_ARGS
+#endif
 
 constexpr sampler shadeWaterLinear(filter::linear, address::clamp_to_edge, coord::normalized);
 
@@ -1275,7 +1289,7 @@ static inline float3 shadeWaterMirrorN(float3 n, float3 nFace, float calm, float
 // in-scattering along the path through the water, caustics on the bottom, shoreline foam. Composites what is behind the
 // water itself (draw with alpha 1). Radiance before exposure, without air fog between the camera and the surface.
 static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant ShadeWaterParams &wp, texture2d<half> lut, sampler lutS,
-                              texture2d<half> scene, depth2d<float> depth, texture2d<half> prev, texture2d<half> waves, texture2d<float> hz) {
+                              texture2d<half> scene, depth2d<float> depth, texture2d<half> prev, texture2d<half> waves, texture2d<float> hz SHADE_RH_PARAMS) {
 	float3 pe = w.p - shadeEye(f.invViewProj); // from the eye: view bobbing moves it (shade_common.metal)
 	float dist = length(pe);
 	float3 v = pe / max(dist, 1e-4);
@@ -1474,6 +1488,51 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	}
 #endif
 #endif
+#ifdef SHADE_WATER_RHIST
+	// (2026-11-06; work/notes/2026-11-06/research-taa-flicker.md fix 2, after Frostbite's SSSR "reflection depth" reprojection and NRD's
+	// virtual motion: techniques only, our own code) The mirrored image's OWN history. Gael still saw the reflections near the camera
+	// shimmer walking, running and jumping: the TAA reprojects a water pixel by its surface, but what it mirrors moves on screen as the
+	// point behind the mirror (the virtual point, along the view ray at the eye's distance + the hit's), so the TAA clips that history
+	// away; and SHADE_WATER_RTR below blends the whole colour by the Fresnel (0.8 F: ~10 % history 20-25 degrees above the surface).
+	// Here the reflection term alone (before the Fresnel) keeps a history at the world target's resolution (mcwater.m, ping-pong):
+	// read where the virtual point was last frame (the sky: its direction at infinity) in last frame's jittered raster, from texels
+	// last frame wrote (their tag) for about the same virtual distance, kept inside this 2x2 quad's range of reflections widened by
+	// wp.rhist.w (no ghost of anything it doesn't show now), blended by wp.rhist.x. Then written back for the next frame (top faces in
+	// front of the opaque scene only).
+	if (wp.rhist.x > 0.0) {
+		float3 rlo = float3(shadeQuadMin(refl.r), shadeQuadMin(refl.g), shadeQuadMin(refl.b)); // (every lane: quad-uniform)
+		float3 rhi = float3(shadeQuadMax(refl.r), shadeQuadMax(refl.g), shadeQuadMax(refl.b));
+		bool hitV = hitWeight > 0.5 && tHit > 0.0;
+		float vNow = hitV ? min(dist + tHit, 50000.0) : 60000.0;
+		bool front = wSurf <= w0 * 1.0005 + 0.01; // this fragment is in front of the opaque scene (else the depth test drops it)
+		if (top && front && wp.rhist.y > 0.5 && w.look != nullptr) {
+			float4 pc = w.look->prevViewProjNoJitter * (hitV ? float4(w.p + v * tHit, 1.0) : float4(v, 0.0));
+			if (pc.w > 1e-4) {
+				// last frame's jittered raster: its pixel centre c + 0.5 showed the unjittered point c + 0.5 - jitter (ShadeFrame.jitter.zw)
+				float2 tp = ((pc.xy / pc.w + f.jitter.zw) * 0.5 + 0.5) * size - 0.5;
+				float2 b0 = floor(tp), fr = tp - b0;
+				float3 acc = 0.0;
+				float wsum = 0.0;
+				for (int k = 0; k < 4; k++) {
+					int2 q = int2(b0) + int2(k & 1, k >> 1);
+					if (any(q < 0) || any(float2(q) > size - 1.0)) continue;
+					half4 h = rhPrev.read(uint2(q));
+					float a = float(h.a) * -wp.rhist.z; // > 0: written last frame
+					float wk = ((k & 1) != 0 ? fr.x : 1.0 - fr.x) * ((k >> 1) != 0 ? fr.y : 1.0 - fr.y);
+					if (a > 0.0 && abs(a - vNow) < 0.2 * vNow + 1.0) {
+						acc += float3(h.rgb) * wk;
+						wsum += wk;
+					}
+				}
+				if (wsum > 0.3) {
+					float3 pad = ((rhi - rlo) * 0.5 + rhi * 0.05) * wp.rhist.w;
+					refl = mix(refl, clamp(acc / wsum, rlo - pad, rhi + pad), wp.rhist.x * saturate(wsum * 2.0 - 0.6));
+				}
+			}
+		}
+		if (top && front) rhOut.write(half4(half3(clamp(refl, 0.0, 60000.0)), half(vNow * wp.rhist.z)), uint2(w.pixel));
+	}
+#endif
 	// the sun's (or moon's) glint: rougher with distance (normals average out: long glitter roads) and in rain; it carries
 	// its own Fresnel, hidden where SSR found something in front of the sky
 #ifdef SHADE_WATER_GLINT_GRAZE
@@ -1637,9 +1696,9 @@ static float3 shadeWaterBelow(ShadeWaterIn w, constant ShadeFrame &f, constant S
 
 // Entry point for the translucent terrain fragment: picks the side the camera is on.
 static float3 shadeWaterSurface(ShadeWaterIn w, constant ShadeFrame &f, constant ShadeWaterParams &wp, texture2d<half> lut, sampler lutS,
-                                texture2d<half> scene, depth2d<float> depth, texture2d<half> prev, texture2d<half> waves, texture2d<float> hz) {
+                                texture2d<half> scene, depth2d<float> depth, texture2d<half> prev, texture2d<half> waves, texture2d<float> hz SHADE_RH_PARAMS) {
 	if (SHADE_CAMERA_UNDERWATER(f) && w.nFace.y < -0.5) return shadeWaterBelow(w, f, wp, lut, lutS, scene, depth, prev, waves, hz);
-	return shadeWaterAbove(w, f, wp, lut, lutS, scene, depth, prev, waves, hz);
+	return shadeWaterAbove(w, f, wp, lut, lutS, scene, depth, prev, waves, hz SHADE_RH_ARGS);
 }
 
 // ---- glossy translucents (bible E15 basics) ------------------------------------------------------------------------------

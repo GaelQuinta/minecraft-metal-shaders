@@ -136,6 +136,15 @@ public final class ShadeWater {
 	/** (candidate 7) the mirrored image's temporal reprojection's code (water.metal SHADE_WATER_RTR; mcopt.shade.water.rtr, startup). */
 	public static final boolean RTR = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.rtr", "true"));
 	/**
+	 * (2026-11-06, work/notes/2026-11-06/rhist.md) {@code mcopt.shade.water.reflHist} (false, startup): the mirrored image keeps a history
+	 * of its own (water.metal SHADE_WATER_RHIST: the reflection term before the Fresnel, reprojected where the point behind the mirror
+	 * was last frame; two RGBA16F textures at the world target's size, mcwater.m). Needs the HDR world and TAAU. Live once compiled in:
+	 * {@code mcopt.shade.water.reflHistK} (0.85, its weight; 0 = off, the image as without it) and {@code .reflHistBox} (1, the
+	 * scale of the clamp box around this 2x2 quad's reflections).
+	 */
+	public static final boolean RHIST = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.reflHist", "false"))
+		&& mcopt.metal.shade.ShadeConfig.HDR && mcopt.metal.shade.taa.TaaConfig.ENABLED;
+	/**
 	 * FT1.3 {@code mcopt.shade.water.style}: "photon" (default; Gael: "reflejos pixeleados", "agua como el mar de Photon"):
 	 * smooth ripples without M2.1's 1/16-block cells and crest pattern, calmer in clear weather (mcopt.shade.water.calm, 0.55
 	 * of the M2.1 slopes; rain brings them back), patches of calmer and rougher water, flatter at grazing angles (a near-mirror
@@ -267,7 +276,7 @@ public final class ShadeWater {
 
 	private static long state;
 	private static boolean failed;
-	private static final ByteBuffer PARAMS = ByteBuffer.allocateDirect(112).order(ByteOrder.nativeOrder()); // water.metal ShadeWaterParams
+	private static final ByteBuffer PARAMS = ByteBuffer.allocateDirect(128).order(ByteOrder.nativeOrder()); // water.metal ShadeWaterParams
 	private static int captures;
 
 	private ShadeWater() {
@@ -321,6 +330,7 @@ public final class ShadeWater {
 		b.append("#define SHADE_WATER_SUBRECT 1\n");
 		if (mcopt.metal.shade.taa.TaaConfig.ENABLED) b.append("#define SHADE_WATER_TAA 1\n");
 		if (RTR && mcopt.metal.shade.taa.TaaConfig.ENABLED) b.append("#define SHADE_WATER_RTR 1\n");
+		if (RHIST) b.append("#define SHADE_WATER_RHIST 1\n"); // (2026-11-06) the reflection's own history
 		// (candidate 7, dev) mcopt.shade.water.ssrJitterFrame=false: the SSR step jitter fixed per pixel even with TAA (the flicker hunt)
 		if (!Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrJitterFrame", "true"))) b.append("#define SHADE_SSR_JITTER_STILL 1\n");
 		return b.append(ShadeMsl.resource("water.metal")).append('\n').toString();
@@ -343,7 +353,7 @@ public final class ShadeWater {
 				}
 			}
 			System.out.println("[mcopt] shade: water on (ssr " + SSR + (SSR_QUAD ? " quad" : "") + ", " + SSR_STEPS + " steps, " + SSR_DIST + " blocks; waves " + WAVES
-				+ ", detail " + DETAIL + ", ssr edges " + SSR_EDGE + ", real-time clock " + CLOCK + ", caustics " + CAUSTICS + ", foam " + FOAM + ", glossy " + GLOSSY + ", prev-frame reflections " + SSR_PREV + ", baked waves " + BAKE + ", glint graze " + GLINT_GRAZE + ", edge reflections " + EDGE_REFL + ", style " + (SMOOTH ? "photon (calm " + CALM + ", ripple " + RIPPLE + ")" : "m21") + ")");
+				+ ", detail " + DETAIL + ", ssr edges " + SSR_EDGE + ", real-time clock " + CLOCK + ", caustics " + CAUSTICS + ", foam " + FOAM + ", glossy " + GLOSSY + ", prev-frame reflections " + SSR_PREV + ", baked waves " + BAKE + ", glint graze " + GLINT_GRAZE + ", edge reflections " + EDGE_REFL + ", reflection history " + RHIST + ", style " + (SMOOTH ? "photon (calm " + CALM + ", ripple " + RIPPLE + ")" : "m21") + ")");
 		} catch (Throwable e) {
 			failed = true;
 			System.out.println("[mcopt] shade: water setup failed, M1 water from now on: " + e);
@@ -472,6 +482,10 @@ public final class ShadeWater {
 			// (candidate 7) the mirrored image's temporal reprojection: its weight x the Fresnel (.reflTemporal 0..0.95; 0 = candidate 6;
 			// water.metal SHADE_WATER_RTR, Gael's flicker on the water while moving)
 			.putFloat(108, RTR ? mcopt.metal.shade.Live.f("mcopt.shade.water.reflTemporal", 0.8f, 0f, 0.95f) : 0f);
+		// (2026-11-06) the reflection's own history (water.metal SHADE_WATER_RHIST): x its weight (0 = no read, no write), w the clamp
+		// box's scale (> 0 tells mcwater.m the code is compiled in: it binds texture(29)/(30) then); y and z (valid, tag) are mcwater.m's
+		p.putFloat(112, RHIST ? mcopt.metal.shade.Live.f("mcopt.shade.water.reflHistK", 0.85f, 0f, 0.97f) : 0f).putFloat(116, 0f).putFloat(120, 0f)
+			.putFloat(124, RHIST ? Math.max(mcopt.metal.shade.Live.f("mcopt.shade.water.reflHistBox", 1f, 0f, 16f), 0.001f) : 0f);
 		WaterNative.params(state, MemoryUtil.memAddress(p));
 	}
 }
