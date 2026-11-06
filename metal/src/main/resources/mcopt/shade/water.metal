@@ -55,10 +55,10 @@
 // (1.2.7 candidate 7) how far past a side screen edge (NDC) the march goes on against the edge column, and the weight it keeps at the
 // end (M2.1: 1.0 and 0.5). Gael (candidate 6): turning, "los reflejos de los extremos de la cámara se recortan raro, como que se
 // chupan hacia los lados": the edge column stretched outward over half the screen's mirrored band
-#define SHADE_SSR_SIDE 1.0
+#define SHADE_SSR_SIDE 0.25
 #endif
 #ifndef SHADE_SSR_SIDE_END
-#define SHADE_SSR_SIDE_END 0.5
+#define SHADE_SSR_SIDE_END 0.0
 #endif
 #ifndef SHADE_SSR_TOP
 // (1.2.7, B3b) how far past the top screen edge (NDC) the march goes on against the top row, trusted less and less to none there.
@@ -485,7 +485,7 @@ static float4 shadeSsrMarch(float3 s0, float3 ds, bool screenEnd, int chunk, int
 			// edge the hit still fades. 1.2.7 (B3a): with `behind` the crossing just past the thickness comes back at full weight
 			// (below), so fading a grazing hit toward the bright sky first only drew a light ring around mirrored silhouettes.
 			float off = abs(sh.x) - 1.0, offT = sh.y - 1.0;
-			float fade = smoothstep(0.0, 0.07, uv.y) * (1.0 - (1.0 - SHADE_SSR_SIDE_END) * smoothstep(0.0, SHADE_SSR_SIDE, off)) * (1.0 - smoothstep(0.0, SHADE_SSR_TOP, offT));
+			float fade = smoothstep(0.0, 0.07, uv.y) * mix(1.0, SHADE_SSR_SIDE_END, saturate(off / SHADE_SSR_SIDE) * saturate(off / SHADE_SSR_SIDE)) * (1.0 - smoothstep(0.0, SHADE_SSR_TOP, offT));
 			fade *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.5) * 4.0), saturate(max(off, offT) * 20.0));
 			if (!behind) fade *= 1.0 - smoothstep(0.6, 1.0, (wr - wh) / thick); // grazing passes fade, not pop
 			uv.x = clamp(uv.x, 0.5 / size.x, 1.0 - 0.5 / size.x);
@@ -511,14 +511,14 @@ static float4 shadeSsrMarch(float3 s0, float3 ds, bool screenEnd, int chunk, int
 	float wh = zh > 0.0 ? B / max(zh + A, 1e-7) : SHADE_WATER_SKY_W;
 	float wr = B / max(sh.z + A, 1e-7);
 	float off = abs(sh.x) - 1.0, offT = sh.y - 1.0;
-	float bf = smoothstep(0.0, 0.07, uv.y) * (1.0 - (1.0 - SHADE_SSR_SIDE_END) * smoothstep(0.0, SHADE_SSR_SIDE, off)) * (1.0 - smoothstep(0.0, SHADE_SSR_TOP, offT));
+	float bf = smoothstep(0.0, 0.07, uv.y) * mix(1.0, SHADE_SSR_SIDE_END, saturate(off / SHADE_SSR_SIDE) * saturate(off / SHADE_SSR_SIDE)) * (1.0 - smoothstep(0.0, SHADE_SSR_TOP, offT));
 	bf *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.5) * 4.0), saturate(max(off, offT) * 20.0));
 	if (!screenEnd) bf *= 1.0 - smoothstep(0.85, 1.0, wr / max(B / max(s0.z + ds.z + A, 1e-7), 1e-3));
 	return float4(clamp(uv.x, 0.5 / size.x, 1.0 - 0.5 / size.x), min(uv.y, 1.0 - 0.5 / size.y), bf, hiBack + 10.0);
 #else
 		if (behind && back.w < 0.0 && wh < SHADE_WATER_SKY_W && wh > B / max(s0.z + A, 1e-7)) {
 			float off = abs(sh.x) - 1.0;
-			float bf = smoothstep(0.0, 0.07, min(uv.y, 1.0 - uv.y)) * (1.0 - (1.0 - SHADE_SSR_SIDE_END) * smoothstep(0.0, SHADE_SSR_SIDE, off));
+			float bf = smoothstep(0.0, 0.07, min(uv.y, 1.0 - uv.y)) * mix(1.0, SHADE_SSR_SIDE_END, saturate(off / SHADE_SSR_SIDE) * saturate(off / SHADE_SSR_SIDE));
 			bf *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.5) * 4.0), saturate(off * 20.0));
 			if (!screenEnd) bf *= 1.0 - smoothstep(0.85, 1.0, wr / max(B / max(s0.z + ds.z + A, 1e-7), 1e-3));
 			back = float4(clamp(uv.x, 0.5 / size.x, 1.0 - 0.5 / size.x), uv.y, bf, hi + 10.0);
@@ -568,7 +568,7 @@ static float4 shadeSsrMarch(float3 s0, float3 ds, bool screenEnd, int chunk, int
 			// segment's end, NDC +-2); the far-end fade goes by distance (M2 faded by screen length: with 512-block rays a shore
 			// 100-200 blocks away lost half its reflection)
 			float off = abs(sh.x) - 1.0, offT = sh.y - 1.0;
-			float fade = smoothstep(0.0, 0.07, uv.y) * (1.0 - (1.0 - SHADE_SSR_SIDE_END) * smoothstep(0.0, SHADE_SSR_SIDE, off)) * (1.0 - smoothstep(0.0, SHADE_SSR_TOP, offT));
+			float fade = smoothstep(0.0, 0.07, uv.y) * mix(1.0, SHADE_SSR_SIDE_END, saturate(off / SHADE_SSR_SIDE) * saturate(off / SHADE_SSR_SIDE)) * (1.0 - smoothstep(0.0, SHADE_SSR_TOP, offT));
 			// past a side the steps are long and the thickness test lets almost any crossing through: an edge column much
 			// NEARER than the ray (a tree trunk, a shore block at the screen edge) is not what the ray would hit off screen,
 			// and would smear sideways into the reflection (and flicker as things enter the edge): faded out
@@ -625,16 +625,35 @@ static float3 shadeWaterHitColor(float2 uv, float3 o, float exposure, float prev
 		// (FT2.8, audit idx 35) last frame's image is the TAA history: steady, unjittered (as the puddles read it)
 		float4 pc = (L != nullptr ? L->prevViewProjNoJitter : f.prevViewProj) * float4(pw, 1.0);
 		float2 uvp = pc.xy / pc.w * 0.5 + 0.5;
+		// (candidate 7, Gael: turning, the reflections at the screen's sides "se chupan hacia los lados"; research-ssr-edges.md) an
+		// SSR hit on the edge column past a side stands in for what is off screen: every row of that strip repeated one pixel,
+		// horizontal streaks dragged along while turning. Its colour is read as a vertical blur instead (3 fixed taps, 2 % of the
+		// height: no dither, nothing new to flicker), as Complementary's blurs its edge reads (technique only).
+		bool edgeCol = uv.x <= 0.75 / size.x || uv.x >= 1.0 - 0.75 / size.x;
+		float2 bo = float2(0.0, edgeCol ? 0.02 : 0.0);
+#ifdef SHADE_WATER_EDGE_REFL
+		// (candidate 7) last frame's image faded into this frame's copy over the last 2 % of its frame (Unreal, HDRP and Godot fade by
+		// the hit's previous-frame position), not switched: the switch was a seam sweeping across the reflection while turning
+		float e = pc.w > 0.0 ? smoothstep(0.0, 0.02, min(min(uvp.x, 1.0 - uvp.x), min(uvp.y, 1.0 - uvp.y))) : 0.0;
+		float3 cp = e > 0.0 ? float3(prev.sample(shadeWaterLinear, uvp).rgb * 0.5h + (prev.sample(shadeWaterLinear, uvp - bo).rgb
+			+ prev.sample(shadeWaterLinear, uvp + bo).rgb) * 0.25h) / prevExposure : float3(0.0);
+		if (e < 1.0) {
+			// FT1.2: where last frame did not see the point (the side the camera turns toward; SSR's edge-column hits past a side)
+			// this frame's opaque copy, hazed like the hits read from last frame (both are taken before the final pass's haze).
+			// Unhazed, the far shore and the render distance's fog band mirrored darker and clearer there: a hard slanted seam
+			// on the water that swept along while turning (recording rf1-base)
+			float2 us = uv * size / tex, bs = bo * size.y / tex.y;
+			float3 cs = shadeWaterSceneRadiance(scene.sample(shadeWaterLinear, us).rgb * 0.5h
+				+ (scene.sample(shadeWaterLinear, us - bs).rgb + scene.sample(shadeWaterLinear, us + bs).rgb) * 0.25h, exposure);
+			cp = mix(cs, cp, e);
+		}
+		return z > 0.0 || e < 1.0 ? shadeWaterHazed(cp, pw, o, f, L) : cp; // (FT2.8, idx 34: the sky on screen gets no haze)
+#else
 		if (pc.w > 0.0 && all(uvp > 0.0) && all(uvp < 1.0)) {
-			float3 cp = float3(prev.sample(shadeWaterLinear, uvp).rgb) / prevExposure;
+			float3 cp = float3(prev.sample(shadeWaterLinear, uvp).rgb * 0.5h + (prev.sample(shadeWaterLinear, uvp - bo).rgb
+				+ prev.sample(shadeWaterLinear, uvp + bo).rgb) * 0.25h) / prevExposure;
 			return z > 0.0 ? shadeWaterHazed(cp, pw, o, f, L) : cp; // (FT2.8, idx 34: the sky on screen gets no haze)
 		}
-#ifdef SHADE_WATER_EDGE_REFL
-		// FT1.2: where last frame did not see the point (the side the camera turns toward; SSR's edge-column hits past a side)
-		// this frame's opaque copy, hazed like the hits read from last frame (both are taken before the final pass's haze).
-		// Unhazed, the far shore and the render distance's fog band mirrored darker and clearer there: a hard slanted seam
-		// on the water that swept along while turning (recording rf1-base)
-		return shadeWaterHazed(shadeWaterSceneRadiance(scene.sample(shadeWaterLinear, uv * size / tex).rgb, exposure), pw, o, f, L);
 #endif
 	}
 	return shadeWaterSceneRadiance(scene.sample(shadeWaterLinear, uv * size / tex).rgb, exposure);

@@ -130,9 +130,9 @@ public final class ShadeWater {
 	 * streaked the top row down the water when looking down at a lake).
 	 */
 	public static final float SSR_TOP = Math.clamp(floatProperty("mcopt.shade.water.ssrTop", 0.15f), 0.001f, 1f);
-	/** (candidate 7, water.metal SHADE_SSR_SIDE / _END) past a side edge: how far (NDC; mcopt.shade.water.ssrSide, 1 = M2.1) and the weight kept there (.ssrSideEnd, 0.5). */
-	public static final float SSR_SIDE = Math.clamp(floatProperty("mcopt.shade.water.ssrSide", 1f), 0.001f, 1f);
-	public static final float SSR_SIDE_END = Math.clamp(floatProperty("mcopt.shade.water.ssrSideEnd", 0.5f), 0f, 1f);
+	/** (candidate 7, water.metal SHADE_SSR_SIDE / _END) past a side edge: how far (NDC; mcopt.shade.water.ssrSide, 0.25; M2.1 1) and the weight kept there (.ssrSideEnd, 0; M2.1 0.5), a quadratic fade between. */
+	public static final float SSR_SIDE = Math.clamp(floatProperty("mcopt.shade.water.ssrSide", 0.25f), 0.001f, 1f);
+	public static final float SSR_SIDE_END = Math.clamp(floatProperty("mcopt.shade.water.ssrSideEnd", 0f), 0f, 1f);
 	/** (candidate 7) the mirrored image's temporal reprojection's code (water.metal SHADE_WATER_RTR; mcopt.shade.water.rtr, startup). */
 	public static final boolean RTR = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.rtr", "true"));
 	/**
