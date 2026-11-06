@@ -174,6 +174,13 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	half blockLight = in.shadeLight.x, skyLight = in.shadeLight.y;
 	half fade = SO_RICH ? half(in.chunkVisibility) : half(1.0); // the chunk's fade-in (1: faded in)
 	float4 vertexColor = SO_HALF ? float4(in.vertexColorH) : in.vertexColor;
+	// (1.2.7 candidate 7) a waving leaf's or vine's sway amplitude, carried above 1 in the colour's alpha by own_vs: back to 1 here
+	// (the cutout test and the albedo see the real colour), and out through this pass's alpha as 2 + it for the TAA (taa.metal)
+	float swayA = 0.0;
+	if (vertexColor.a > 1.0005) {
+		swayA = (vertexColor.a - 1.0) * 0.5;
+		vertexColor.a = 1.0;
+	}
 	float3 dpx = dfdx(p), dpy = dfdy(p);
 	float3 nf = cross(dpx, dpy); // before any discard: the whole 2x2 quad takes part
 #ifdef SHADE_WATER
@@ -570,5 +577,5 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		float3 tint1 = sf.flags.z == 0 ? float3(1.0, 0.3, 0.3) : d < sf.cascadeSplits.x ? float3(0.4, 1.0, 0.4) : d < sf.cascadeSplits.y ? float3(0.4, 0.6, 1.0) : float3(1.0);
 		rgb = shadeVanillaOut(tint1 * (0.25 + 0.75 * float(shadow)), sl);
 	}
-	return float4(rgb, alpha);
+	return float4(rgb, swayA > 0.0 ? 2.0 + swayA : alpha);
 }

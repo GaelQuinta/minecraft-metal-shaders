@@ -34,7 +34,7 @@ import org.lwjgl.system.MemoryUtil;
  * <ul>
  * <li>When the block atlas is uploaded (ShadePbr.atlasUploaded): a class per foliage sprite, by name, into a small map over the
  * atlas (a texel per {@code cell} atlas pixels, the class in red) that the vertex stage reads at a quad's centre.</li>
- * <li>Every frame ({@link #frame}): ShadeSway's 224 bytes (mcown.m mco_sway_frame): the wobble phases (accumulated here in double,
+ * <li>Every frame ({@link #frame}): ShadeSway's 240 bytes (mcown.m mco_sway_frame): the wobble phases (accumulated here in double,
  * so they never jump), the wind's direction (the rain's, ShadeWeather) and strength, the amplitudes from the settings, and up
  * to eight pushers, nearest first.</li>
  * </ul>
@@ -44,7 +44,7 @@ import org.lwjgl.system.MemoryUtil;
 public final class ShadeFoliage {
 	/** The classes (terrain.metal ownSway). */
 	static final int LEAVES = 1, PLANT = 2, DOUBLE_LOWER = 3, DOUBLE_UPPER = 4, VINE = 5, CROP = 6;
-	private static final int BYTES = 224, MAX_PUSHERS = 8;
+	private static final int BYTES = 240, MAX_PUSHERS = 8; // (candidate 7: + leafPhase at 224)
 	/** Amplitudes at 100 % (blocks; the shader scales them by the weather's strength and the sky light). */
 	private static final float LEAVES_AMP = 0.075f, VINE_AMP = 0.035f, PLANT_AMP = 0.2f, CROP_AMP = 0.12f;
 
@@ -54,7 +54,17 @@ public final class ShadeFoliage {
 	/** A class map was uploaded (mcown.m holds it). */
 	private static boolean haveMap;
 	private static int mapW, mapH;
-	private static double phase0, phase1, phase2, phase3, gustPhase;
+	private static double phase0, phase1, phase2, phase3, gustPhase, leaf0, leaf1, leaf2, leaf3;
+	/** (candidate 7) the leaves' wobble phases the terrain drew this frame and last frame, for the TAA (ShadeTaa: taa.metal taaLeafSway). */
+	private static final float[] leafNow = new float[4], leafPrev = new float[4];
+
+	public static float[] leafNow() {
+		return leafNow;
+	}
+
+	public static float[] leafPrev() {
+		return leafPrev;
+	}
 	private static long lastNanos;
 	private static final double TAU = Math.PI * 2;
 
@@ -132,16 +142,30 @@ public final class ShadeFoliage {
 		phase2 = (phase2 + dt * 4.3 * speed) % TAU;
 		phase3 = (phase3 + dt * 6.1 * speed) % TAU;
 		gustPhase = (gustPhase + dt * 0.8 * speed) % TAU; // (the plants' gust fronts: 24-block waves, ~3 blocks/s)
+		// (candidate 7) the leaves' and vines' own phases at mcopt.shade.foliage.leafSpeed (live) of the plants' rates: a leaf block that
+		// moved close to a pixel a frame near the camera kept TAA from settling on it, a shimmering canopy (orange specks at sunset)
+		double ls = speed * Live.f("mcopt.shade.foliage.leafSpeed", 0.5f, 0f, 2f); // (0.5: robles a contraluz, % de pixeles que titilan 9 -> 4.4)
+		leafPrev[0] = leafNow[0]; leafPrev[1] = leafNow[1]; leafPrev[2] = leafNow[2]; leafPrev[3] = leafNow[3];
+		leaf0 = (leaf0 + dt * 1.7 * ls) % TAU;
+		leaf1 = (leaf1 + dt * 2.9 * ls) % TAU;
+		leaf2 = (leaf2 + dt * 4.3 * ls) % TAU;
+		leaf3 = (leaf3 + dt * 6.1 * ls) % TAU;
 		float angle = mcopt.metal.shade.weather.ShadeWeather.ON ? mcopt.metal.shade.weather.ShadeWeather.windAngle() : 0.6f;
 
 		try (MemoryStack stack = MemoryStack.stackPush()) {
-			ByteBuffer b = stack.calloc(BYTES).order(ByteOrder.nativeOrder());
+			ByteBuffer b = stack.calloc(BYTES + 4).order(ByteOrder.nativeOrder());
 			b.putFloat(0, (float) phase0).putFloat(4, (float) phase1).putFloat(8, (float) phase2).putFloat(12, (float) phase3);
 			b.putFloat(16, (float) Math.cos(angle)).putFloat(20, strength).putFloat(24, (float) Math.sin(angle)).putFloat(28, (float) gustPhase);
 			b.putFloat(32, LEAVES_AMP * leaves).putFloat(36, PLANT_AMP * plants).putFloat(40, VINE_AMP * leaves).putFloat(44, CROP_AMP * plants);
 			int n = push && haveMap && level != null ? pushers(level, camX, camY, camZ, partial, b) : 0;
 			boolean any = haveMap && (leaves > 0 || plants > 0 || n > 0);
 			b.putFloat(48, any ? mapW : 0).putFloat(52, any ? mapH : 0).putFloat(56, n).putFloat(60, push ? 1f : 0f);
+			b.putFloat(224, (float) leaf0).putFloat(228, (float) leaf1).putFloat(232, (float) leaf2).putFloat(236, (float) leaf3);
+			leafNow[0] = (float) leaf0; leafNow[1] = (float) leaf1; leafNow[2] = (float) leaf2; leafNow[3] = (float) leaf3;
+			// (candidate 7) after the frame: the leaves' and vines' share of the sway in the shadow pass (mcopt.shade.foliage.shadowSway,
+			// live, 0..1; 1 = candidates 3-6). A canopy swaying in its own shadow map re-dapples itself every frame: sunlit specks
+			// jumping across the leaves, orange at sunset (Gael 2026-11-04). The leaves still sway; their shadows hold still.
+			b.putFloat(BYTES, Live.f("mcopt.shade.foliage.shadowSway", 1f, 0f, 1f)); // (measured: no change in the canopy's flicker; 1 = as before)
 			ShadeNative.swayFrame(MemoryUtil.memAddress(b));
 		}
 	}

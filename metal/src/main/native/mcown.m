@@ -284,8 +284,12 @@ void mco_shade(Own *w, int on) {
 // the class map over the block atlas (retained here; a 1x1 zero map stands in until there is one, so the binding always exists).
 // own_vs reads them under F_SWAY (every opaque kind's vertex stage while shading is on; only the cutout kinds get the moving
 // frame, ownSwayMoves), own_shadow_vs on its flags bit 2.
-#define OWN_SWAY_BYTES 224
+#define OWN_SWAY_BYTES 240 // (candidate 7: + leafPhase)
 static uint8_t ownSwayFrame[OWN_SWAY_BYTES];
+// (1.2.7 candidate 7) the shadow pass's copy: leaves and vines at ShadeFoliage's shadow share (the float after the frame's
+// OWN_SWAY_BYTES, ShadeSway itself unchanged). A canopy that sways in its own shadow map re-dapples itself every frame: sunlit specks
+// jumping across the leaves (Gael: "un pequeño flickering rojo en las hojas" at sunset); the plants' shadows on the ground keep moving
+static uint8_t ownSwayShadow[OWN_SWAY_BYTES];
 static id<MTLTexture> ownSwayTex, ownSwayZero;
 static int ownSwayOn;
 
@@ -293,6 +297,12 @@ void mco_sway_frame(const void *bytes) {
 	memcpy(ownSwayFrame, bytes, OWN_SWAY_BYTES);
 	const float *f = (const float *) ownSwayFrame;
 	ownSwayOn = ownSwayTex && f[12] >= 1.0f && (f[8] > 0 || f[9] > 0 || f[10] > 0 || f[11] > 0 || (f[14] > 0 && f[15] > 0));  // (info.x: a map; amp; pushers)
+	float share;
+	memcpy(&share, (const uint8_t *) bytes + OWN_SWAY_BYTES, sizeof share);
+	memcpy(ownSwayShadow, ownSwayFrame, OWN_SWAY_BYTES);
+	float *g = (float *) ownSwayShadow;
+	g[8] *= share;   // amp.x leaves
+	g[10] *= share;  // amp.z vines
 }
 
 void mco_sway_classes(id<MTLTexture> t) {
@@ -316,7 +326,7 @@ int mco_sway_bind(id<MTLRenderCommandEncoder> r, int b, int t, int moves) {
 	}
 	static const uint8_t off[OWN_SWAY_BYTES];
 	int on = ownSwayOn && moves;
-	[r setVertexBytes:on ? ownSwayFrame : off length:OWN_SWAY_BYTES atIndex:(NSUInteger) b];
+	[r setVertexBytes:on ? (moves == 2 ? ownSwayShadow : ownSwayFrame) : off length:OWN_SWAY_BYTES atIndex:(NSUInteger) b]; // (2: the shadow pass's)
 	[r setVertexTexture:on ? ownSwayTex : ownSwayZero atIndex:(NSUInteger) t];
 	return on;
 }

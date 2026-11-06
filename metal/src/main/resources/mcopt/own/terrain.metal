@@ -1763,6 +1763,7 @@ struct ShadeSway {
 	float4 info;    // x, y the class map's size in texels, z pushers in use (0..8), w push strength (0..1)
 	float4 push[8]; // pushers: camera-relative feet centre xyz, w radius (blocks)
 	float4 pushH[2];// their heights (blocks), four a vector
+	float4 leafPhase; // (1.2.7 candidate 7) the leaves' and vines' own wobble phases (ShadeFoliage: mcopt.shade.foliage.leafSpeed)
 };
 
 static Vtx ownFetch(uint vi, device const void *arenaRaw) {
@@ -1789,7 +1790,9 @@ static Vtx ownFetch(uint vi, device const void *arenaRaw) {
 
 // The camera-relative displacement of arena vertex vi of the section at origin (cam: the section origin minus the camera,
 // so v.pos + cam is the vertex's camera-relative position).
-static float3 ownSway(uint vi, int3 origin, float3 cam, device const void *arenaRaw, constant ShadeSway &sw, texture2d<float> cls) {
+// swA (candidate 7): the leaves' / vines' amplitude this vertex used (amp / 1.5, the gate included), 0 for everything else
+static float3 ownSway(uint vi, int3 origin, float3 cam, device const void *arenaRaw, constant ShadeSway &sw, texture2d<float> cls, thread float &swA) {
+	swA = 0.0;
 	if (sw.info.x < 1.0) return float3(0);
 	Vtx v = ownFetch(vi, arenaRaw);
 	float3 p = float3(v.pos);
@@ -1810,10 +1813,13 @@ static float3 ownSway(uint vi, int3 origin, float3 cam, device const void *arena
 		// leaves and vines: a small three-axis wobble, faster terms in finer waves
 		float amp = (k == 1 ? sw.amp.x : sw.amp.z) * gate;
 		if (amp <= 0.0) return float3(0);
-		d.x = sin(sw.phase.x + dot(a, K * float3(3, 2, 5))) + 0.5 * sin(sw.phase.y + dot(a, K * float3(-7, 4, 3)));
-		d.y = 0.5 * sin(sw.phase.z + dot(a, K * float3(5, -3, 2)));
-		d.z = sin(sw.phase.y + dot(a, K * float3(-2, 5, 4))) + 0.5 * sin(sw.phase.w + dot(a, K * float3(6, 3, -5)));
-		return d * (amp / 1.5);
+		// (candidate 7) on their own, slower phases: a leaf block moving close to a pixel a frame near the camera kept TAA from
+		// settling on it (the canopy shimmered, orange specks at sunset: Gael 2026-11-04); the reach stays, the vibration goes
+		d.x = sin(sw.leafPhase.x + dot(a, K * float3(3, 2, 5))) + 0.5 * sin(sw.leafPhase.y + dot(a, K * float3(-7, 4, 3)));
+		d.y = 0.5 * sin(sw.leafPhase.z + dot(a, K * float3(5, -3, 2)));
+		d.z = sin(sw.leafPhase.y + dot(a, K * float3(-2, 5, 4))) + 0.5 * sin(sw.leafPhase.w + dot(a, K * float3(6, 3, -5)));
+		swA = amp / 1.5;
+		return d * swA;
 	}
 	// rooted plants: weight by height (the opposite corner is the quad's other end), 0..1 over a double plant's two halves
 	float dy = p.y - float(o.pos.y);
@@ -1989,7 +1995,8 @@ vertex VOut own_vs(uint vid [[vertex_id]], uint iid [[instance_id]], constant Dr
 #endif
 	float3 rel;
 	// (mcopt-shade 1.2.7) waving foliage: the cutout kinds' displacement, camera-relative
-	float3 disp = F_SWAY ? ownSway(vi, origin, float3(origin - int3(g.CameraBlockPos)) + float3(g.CameraOffset), arenaRaw, sway, swayCls) : float3(0);
+	float swA = 0.0;
+	float3 disp = F_SWAY ? ownSway(vi, origin, float3(origin - int3(g.CameraBlockPos)) + float3(g.CameraOffset), arenaRaw, sway, swayCls, swA) : float3(0);
 	if (F_ORACLE) {
 		VOut ov = ownVertex(vi, origin, uploadMs, df, arenaRaw, proj, g, t, lightmap, lightSampler, rel, disp);
 		ov.oracleUnit = unitRec;
@@ -1997,6 +2004,13 @@ vertex VOut own_vs(uint vid [[vertex_id]], uint iid [[instance_id]], constant Dr
 		return ov;
 	}
 	VOut ov = ownVertex(vi, origin, uploadMs, df, arenaRaw, proj, g, t, lightmap, lightSampler, rel, disp);
+	// (mcopt-shade 1.2.7 candidate 7) a waving leaf's amplitude rides above 1 in the colour's alpha: shade_own_fs takes it back out
+	// and hands it to the TAA, which then follows the leaf from last frame (swaying canopies shimmered: the resolve only knew the camera)
+	if (F_SWAY && swA > 0.0) {
+		float4 c = getColor(ov);
+		c.a = 1.0 + 2.0 * swA;
+		putColor(ov, c);
+	}
 	if (F_FV) {
 		// (F_FV: the fog value itself per vertex, in the spherical distance's place; with F_FOGVERT_ALL in rich pipelines also the
 		// render-distance term's max, as the fragment stage would take it)
@@ -3718,7 +3732,8 @@ static OwnShadowOut ownShadowVertex(uint vid, uint iid, constant OwnShadowFrame 
 	float3 cam = float3(origin - f.camBlock.xyz) + f.camOffset.xyz;
 	float3 p = float3(v.pos) + cam;
 	// (1.2.7) bit 2: the near cascade's alpha-tested cutout, its foliage waving as own_vs waves it
-	if ((f.flags & 4) != 0) p += ownSway(vi, origin, cam, arenaRaw, sway, swayCls);
+	float swA;
+	if ((f.flags & 4) != 0) p += ownSway(vi, origin, cam, arenaRaw, sway, swayCls, swA);
 	o.pos = c.viewProj * float4(p, 1.0);
 	o.pos.z -= c.depthBias * o.pos.w;
 	o.uv = float2(v.uv0);

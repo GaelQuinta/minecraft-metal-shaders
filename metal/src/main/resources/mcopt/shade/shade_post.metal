@@ -179,7 +179,7 @@ static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, fl
 	// the four distances of the bilinear footprint in one fetch (gather order: (0,1) (1,1) (1,0) (0,0)); when all of them
 	// are at this pixel's depth (most of the screen) one hardware-filtered sample does it
 	half4 dd = vlD.gather(shadeLinearClamp, uv, int2(0), component::w);
-	if (mode > 1.5) {
+	if (mode > 1.5 && mode < 3.5) {
 		half4 s = vlT.sample(shadeLinearClamp, uv);
 		if (mode < 2.5) return s;
 		half4 bw4 = half4((1.0h - fr.x) * fr.y, fr.x * fr.y, fr.x * (1.0h - fr.y), (1.0h - fr.x) * (1.0h - fr.y)); // gather order
@@ -207,6 +207,38 @@ static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, fl
 				bestD = sd;
 			}
 		}
+	}
+	// (1.2.7 candidate 7, mcopt.shade.vl.upMode 4) A pixel the four don't see (a canopy gap, a leaf's rim: the VL texels are 3x the
+	// pixels) used to pick its value by thresholds: the four's weights over 0.02, else the first of four probes at its depth, else the
+	// air ratio. Swaying leaves move those depths every frame, so gap pixels jumped between the far air's light and the leaves' (sunlit
+	// orange specks flickering in the canopy at sunset, Gael 2026-11-04; and this pass runs after the TAA, nothing smooths it). Here
+	// every candidate counts by the same depth weight: the four and eight probes up to 3 texels out, one weighted mean, and the air
+	// ratio only fades in where none of them is near this pixel's depth.
+	if (mode > 3.5) {
+		const int2 ring[8] = {int2(-1, 0), int2(2, 1), int2(0, 2), int2(1, -1), int2(-2, -1), int2(3, 0), int2(1, 3), int2(-1, 2)};
+		for (int k = 0; k < 8; k++) {
+			uint2 q = uint2(clamp(base + ring[k], int2(0), hi));
+			half4 s = vlT.read(q);
+			float diff = abs(float(vlD.read(q).a) - hd);
+			half x = half(min(diff / tolerance, 32.0));
+			half w = 0.35h / (1.0h + x * x * (1.0h + x));
+			sum += s * w;
+			wsum += w;
+		}
+		half4 mean = wsum > 1e-4h ? sum / wsum : bestC;
+		half4 ratio = 0.0h;
+		half bsum = 0.0h;
+		float mD = maxD;
+		for (int j = 0; j <= 1; j++) {
+			for (int i = 0; i <= 1; i++) {
+				half4 s = vlT.read(uint2(clamp(base + int2(i, j), int2(0), hi)));
+				half sd = j == 0 ? (i == 0 ? dd.w : dd.z) : (i == 0 ? dd.x : dd.y);
+				half bw = (i == 0 ? 1.0h - fr.x : fr.x) * (j == 0 ? 1.0h - fr.y : fr.y) + 1e-3h;
+				ratio += half4(shadeVlScaled(s.rgb, half((min(hd, mD) + 0.5) / (min(float(sd), mD) + 0.5)), airNeg), s.a) * bw;
+				bsum += bw;
+			}
+		}
+		return mix(ratio / bsum, mean, smoothstep(0.0h, 0.08h, wsum));
 	}
 	if (wsum > 0.02) return sum / half(wsum);
 	// Issue #19: the low-resolution footprint may see only foreground leaves while this full-resolution pixel sees sky.

@@ -56,7 +56,7 @@ public final class ShadeTaa {
 	private static final double TELEPORT = 8;
 	/** Frames further apart than this (a menu, a loading screen) start a fresh history. */
 	private static final long GAP_NANOS = 500_000_000L;
-	private static final int PARAMS = 304;
+	private static final int PARAMS = 352; // (1.2.7 candidate 7: + leafNow, leafPrev, leafCam)
 
 	private static @Nullable ShadeTaa instance;
 	private static boolean failed;
@@ -433,6 +433,14 @@ public final class ShadeTaa {
 			put4(p + 224, sharpen, TaaConfig.motionAlpha(), 0, 0);
 			this.combinedD.set(this.reprojection).mul(this.invD.set(this.invViewProj));
 			this.combined.set(this.combinedD).getToAddress(p + 240);
+			// (candidate 7) waving leaves: their wobble phases now and last frame, the camera modulo 1024 (taa.metal taaLeafSway)
+			float[] ln = mcopt.metal.shade.ShadeFoliage.leafNow(), lp = mcopt.metal.shade.ShadeFoliage.leafPrev();
+			// (only with an RGBA16F world, quality and ultra: rg11b10f, the default below them, has no alpha for the leaves' flag)
+			boolean leaf = !cut && mcopt.metal.shade.ShadeConfig.HDR_FORMAT == 115 && mcopt.metal.shade.Live.f("mcopt.shade.taa.leafMotion", 1f, 0f, 1f) > 0.5f
+				&& this.position != null;
+			put4(p + 304, ln[0], ln[1], ln[2], ln[3]);
+			put4(p + 320, lp[0], lp[1], lp[2], lp[3]);
+			put4(p + 336, leaf ? mod1024(this.position.x) : 0f, leaf ? mod1024(this.position.y) : 0f, leaf ? mod1024(this.position.z) : 0f, leaf ? 1f : 0f);
 			TaaNative.resolve(this.enc, this.taa, color, depth, reactive, dst, p, PARAMS);
 		}
 		this.prevViewProj.set(this.viewProj);
@@ -440,6 +448,10 @@ public final class ShadeTaa {
 		this.level = level;
 		this.lastResolve = now;
 		this.reset = false;
+	}
+
+	private static float mod1024(double v) {
+		return (float) (v - 1024.0 * Math.floor(v / 1024.0));
 	}
 
 	/** Safety net at FogRenderer.endFrame: a frame that never reached resolve (no hand pass) leaves nothing swapped. */
