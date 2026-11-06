@@ -159,11 +159,21 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #ifdef SHADE_WATER
 	, texture2d<half> sceneCopy [[texture(18)]], depth2d<float> depthCopy [[texture(19)]], constant ShadeWaterParams &wp [[buffer(23)]]
 	, texture2d<half> waterWaves [[texture(20)]], texture2d<float> waterCoarse [[texture(21)]], texture2d<half> waterDetail [[texture(22)]]
+#ifdef SHADE_WATER_RHIST
+	// (2026-11-06) the reflection's own history (water.metal SHADE_RH_PARAMS; mcwater.m): last frame's, and this frame's to write
+	, texture2d<half> rhPrev [[texture(29)]], texture2d<half, access::write> rhOut [[texture(30)]]
+#endif
 #endif
 #ifdef MCOPT_HDR
 	, constant ShadeResources &sr [[buffer(19)]]
 #endif
 	) {
+#if defined(SHADE_WATER) && defined(SHADE_WATER_RHIST)
+	// (2026-11-06) the reflection history's write is a side effect: the GPU must then run this function even for fragments the depth
+	// test will drop (the water of a lake behind a hill). Those behind the opaque scene (this frame's depth copy) leave at once,
+	// whole quads only (the water's SSR works across the quad); their output is dropped by the depth test anyway.
+	if (wp.state.x > 0.5 && shadeQuadMax(in.fragCoord.z - depthCopy.read(uint2(in.fragCoord.xy))) < 0.0) return float4(0.0);
+#endif
 	float2 uv = in.texCoord0;
 	float2 pixelSize = 1.0 / float2(t.TextureSize);
 	float2 du = dfdx(uv);
@@ -419,7 +429,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		wi.fog = SHADE_CAMERA_UNDERWATER(sf) ? shadeWaterDisplayRadiance(half3(sf.fogColor.rgb), ex) : float3(0.0);
 		texture2d<half> prevScene = sceneCopy;
 #endif
-		radiance = shadeWaterSurface(wi, sf, wp, skyLut, skyLutSmplr, sceneCopy, depthCopy, prevScene, waterWaves, waterCoarse);
+		radiance = shadeWaterSurface(wi, sf, wp, skyLut, skyLutSmplr, sceneCopy, depthCopy, prevScene, waterWaves, waterCoarse SHADE_RH_ARGS);
 #if defined(SHADE_WAVE_BAKE) && !defined(SHADE_LEAN_NOFALLS)
 		// (FT2.11) and its white water over the result, lit like the shore's foam (wi.lit is live to the water's end anyway)
 		if (shadeWaterIsFall(float(n.y), sl.bloom.w, wp)) radiance = mix(radiance, wi.lit * 0.55, shadeWaterFallFoam(p, float3(n), waterFootprint, sl.bloom.w, sf));

@@ -17,8 +17,11 @@
 //  2. The bindings, fragment stage only, on every render encoder native shading binds (ShadeBindings.bind):
 //       texture(18)  sceneCopy  texture2d<half>  the copy of colour attachment 0 (a 1x1 dummy until the first capture)
 //       texture(19)  depthCopy  depth2d<float>   the copy of the depth attachment (a 1x1 dummy until the first capture)
-//       buffer(23)   ShadeWaterParams (112 bytes, setFragmentBytes): this frame's water sprite rectangles and state; its
+//       buffer(23)   ShadeWaterParams (144 bytes, setFragmentBytes): this frame's water sprite rectangles and state; its
 //                    state.x is 1 only after this frame's capture, so shaders never trust last frame's copies.
+//       texture(29)  (2026-11-06, water.metal SHADE_WATER_RHIST; only while its code is compiled in: params.rhist.w > 0) the
+//                    reflection's own history last frame wrote (RGBA16F, the world target's size), texture(30) this frame's
+//                    (written by the water's fragments: ShaderWrite). The two swap roles once per frame (mc_water_params).
 //     Slots: the bible reserves texture(17-19) for pass-local inputs (17 is M1's sky LUT); buffer 23 is free in every
 //     pipeline that binds shade globals (far terrain's own pipelines use 22-28 but rebind shade after drawing).
 // Manual retain/release (the dylib builds with -fno-objc-arc), like the other files.
@@ -32,6 +35,8 @@ typedef struct {
 	float swell[4];  // (2026-11-02, water round 1) the swell: strength, masking k, crest glow, Fresnel share
 	float swell2[4]; // x open-water map's outer-ring mean (< 0: no map), y reserved, z calm, w ripple
 	float swell3[4]; // x the swell's share in the mirrored images' direction, y the glint's glitter, zw reserved
+	float rhist[4];  // (2026-11-06) the reflection history: x weight (0 = off), y last frame's valid (set here), z this frame's tag (here), w box (> 0: compiled in)
+	float mirror[4]; // (2026-11-06) x the ripple-aware mirror normal's strength, yzw reserved
 } WaterParams;
 
 typedef struct {
@@ -44,6 +49,11 @@ typedef struct {
 	id<MTLRenderPipelineState> hzPso;       // water.metal shade_water_hz_fs (set by ShadeWater; no coarse depth without it)
 	WaterParams params;
 	int captures;
+	// (2026-11-06, SHADE_WATER_RHIST) the reflection history's ping-pong pair (made at the first capture with params.rhist.x > 0,
+	// remade when the world target's size changes), which one this frame writes, and whether a capture (= water drawing with it)
+	// happened this frame / last frame. dummyRh: a 1x1 writable stand-in for texture(30) before the pair exists.
+	id<MTLTexture> rh[2], dummyRh;
+	int rhCur, rhCaptured;
 } WaterState;
 
 // The one state mc_water_bind binds from (set by mc_water_new).
@@ -66,6 +76,11 @@ WaterState *mc_water_new(Ctx *ctx) {
 		float zero = 0.0f; // reads as sky: SSR finds nothing
 		[s->dummyHz replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&zero bytesPerRow:4];
 		s->dummyHz.label = @"mcopt shade water: no coarse depth";
+		td.pixelFormat = MTLPixelFormatRGBA16Float;
+		td.storageMode = MTLStorageModePrivate;
+		td.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+		s->dummyRh = [ctx->device newTextureWithDescriptor:td];
+		s->dummyRh.label = @"mcopt shade water: no reflection history";
 		water = s;
 		return s;
 	}
@@ -83,13 +98,37 @@ void mc_water_free(WaterState *s) {
 	[s->hz release];
 	[s->dummyHz release];
 	[s->hzPso release];
+	[s->rh[0] release];
+	[s->rh[1] release];
+	[s->dummyRh release];
 	free(s);
 }
 
-// This frame's parameters (28 floats: still, flow, state, tune, swell, swell2, swell3); state.x (copies valid) is cleared until the capture.
+// This frame's parameters (36 floats: still, flow, state, tune, swell, swell2, swell3, rhist, mirror); state.x (copies valid) is cleared until the
+// capture. Called once per frame, before anything draws: the reflection history's pair swaps roles here (rhist.y: what is now last
+// frame's was written by a capture last frame; rhist.z: the tag this frame's texels get, the opposite of last frame's).
 void mc_water_params(WaterState *s, const float *p) {
 	memcpy(&s->params, p, sizeof(WaterParams));
 	s->params.state[0] = 0.0f;
+	s->rhCur ^= 1;
+	s->params.rhist[1] = s->rhCaptured && s->rh[0] && s->rh[1] ? 1.0f : 0.0f;
+	s->params.rhist[2] = s->rhCur ? 1.0f : -1.0f;
+	s->rhCaptured = 0;
+}
+
+// (2026-11-06) the reflection history's pair at the world target's size (ShaderRead | ShaderWrite, private; not compressible, which
+// the fragment writes rule out anyway); 1 when it was (re)made: nothing in it is last frame's then.
+static int rhistTargets(Ctx *ctx, WaterState *s, NSUInteger w, NSUInteger h) {
+	if (s->rh[0] && s->rh[1] && s->rh[0].width == w && s->rh[0].height == h) return 0;
+	MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float width:w height:h mipmapped:NO];
+	td.storageMode = MTLStorageModePrivate;
+	td.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget; // (RenderTarget: the clear when new)
+	for (int i = 0; i < 2; i++) {
+		[s->rh[i] release];
+		s->rh[i] = [ctx->device newTextureWithDescriptor:td];
+		s->rh[i].label = i ? @"mcopt shade water: reflection history B" : @"mcopt shade water: reflection history A";
+	}
+	return 1;
 }
 
 static id<MTLTexture> copyTarget(Ctx *ctx, id<MTLTexture> old, id<MTLTexture> like, NSString *label) {
@@ -115,6 +154,11 @@ void mc_water_bind(Enc *enc) {
 	[r setFragmentTexture:s->params.state[3] > 0.5f ? (s->detailBaked && s->detail ? s->detail : s->waves) : s->dummyColor atIndex:22];
 	[r setFragmentTexture:valid && s->hz && s->hzPso ? s->hz : s->dummyHz atIndex:21];
 	[r setFragmentBytes:&s->params length:sizeof(WaterParams) atIndex:23];
+	if (s->params.rhist[3] > 0.0f) { // (2026-11-06) the reflection history's code is compiled in (SHADE_WATER_RHIST)
+		int have = s->rh[0] && s->rh[1];
+		[r setFragmentTexture:have ? s->rh[s->rhCur ^ 1] : s->dummyColor atIndex:29];
+		[r setFragmentTexture:have ? s->rh[s->rhCur] : s->dummyRh atIndex:30];
+	}
 }
 
 // The scene copy at the switch to translucent terrain: ends the open render encoder (stored), copies colour attachment 0
@@ -171,6 +215,26 @@ int mc_water_capture(Enc *enc, WaterState *s) {
 				toTexture:s->depth destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
 		}
 		[b endEncoding];
+		// (2026-11-06) the reflection history: its pair at the attachment's size (the water writes at its fragment's pixel), cleared
+		// when new (tag 0: no texel of it passes for last frame's)
+		if (s->params.rhist[0] > 0.0f && s->params.rhist[3] > 0.0f) {
+			if (rhistTargets(enc->ctx, s, color.width, color.height)) {
+				s->params.rhist[1] = 0.0f;
+				for (int i = 0; i < 2; i++) {
+					if (!s->rh[i]) continue;
+					MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+					rp.colorAttachments[0].texture = s->rh[i];
+					rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+					rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+					rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+					id<MTLRenderCommandEncoder> c = [cb renderCommandEncoderWithDescriptor:rp];
+					c.label = @"mcopt shade water: reflection history clear";
+					[c endEncoding];
+				}
+			}
+			if (!s->rh[0] || !s->rh[1]) s->params.rhist[1] = 0.0f;
+			s->rhCaptured = s->rh[0] && s->rh[1];
+		}
 		mc_reopen_why = "after water copy";
 		mc_render_reopen(enc);
 	}
