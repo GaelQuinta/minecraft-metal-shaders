@@ -641,12 +641,9 @@ static float3 shadeWaterHitColor(float2 uv, float3 o, float exposure, float prev
 		// (FT2.8, audit idx 35) last frame's image is the TAA history: steady, unjittered (as the puddles read it)
 		float4 pc = (L != nullptr ? L->prevViewProjNoJitter : f.prevViewProj) * float4(pw, 1.0);
 		float2 uvp = pc.xy / pc.w * 0.5 + 0.5;
-		// (candidate 7, Gael: turning, the reflections at the screen's sides "se chupan hacia los lados"; research-ssr-edges.md) an
-		// SSR hit on the edge column past a side stands in for what is off screen: every row of that strip repeated one pixel,
-		// horizontal streaks dragged along while turning. Its colour is read as a vertical blur instead (3 fixed taps, 2 % of the
-		// height: no dither, nothing new to flicker), as Complementary's blurs its edge reads (technique only).
-		bool edgeCol = uv.x <= 0.75 / size.x || uv.x >= 1.0 - 0.75 / size.x;
-		float2 bo = float2(0.0, edgeCol ? 0.02 : 0.0);
+		// (candidate 7) no vertical blur of the edge column's colour (tried for the side streaks while turning, research-ssr-edges.md):
+		// its taps 2 % above and below landed on other surfaces (the shore's sunlit grass) and drew bright green patches on the water at
+		// the sides looking down 35 degrees (bisect gbe / gbn, 2026-11-06)
 #ifdef SHADE_WATER_EDGE_REFL
 		// (candidate 7) last frame's image faded into this frame's copy over 2 % of the height just OUTSIDE its frame (its edge read
 		// clamped; Unreal, HDRP and Godot fade by the hit's previous-frame position), not switched at the border: the switch was a seam
@@ -654,23 +651,19 @@ static float3 shadeWaterHitColor(float2 uv, float3 o, float exposure, float prev
 		// so an edge-column hit read there showed the pond's sunlit bottom through it (bright green patches at the sides looking
 		// down 20-35 degrees, ld7d / gb7d 2026-11-06), where last frame's image shows the water.
 		float e = pc.w > 0.0 ? saturate(1.0 + min(min(uvp.x, 1.0 - uvp.x), min(uvp.y, 1.0 - uvp.y)) / 0.02) : 0.0;
-		float3 cp = e > 0.0 ? float3(prev.sample(shadeWaterLinear, uvp).rgb * 0.5h + (prev.sample(shadeWaterLinear, uvp - bo).rgb
-			+ prev.sample(shadeWaterLinear, uvp + bo).rgb) * 0.25h) / prevExposure : float3(0.0);
+		float3 cp = e > 0.0 ? float3(prev.sample(shadeWaterLinear, uvp).rgb) / prevExposure : float3(0.0);
 		if (e < 1.0) {
 			// FT1.2: where last frame did not see the point (the side the camera turns toward; SSR's edge-column hits past a side)
 			// this frame's opaque copy, hazed like the hits read from last frame (both are taken before the final pass's haze).
 			// Unhazed, the far shore and the render distance's fog band mirrored darker and clearer there: a hard slanted seam
 			// on the water that swept along while turning (recording rf1-base)
-			float2 us = uv * size / tex, bs = bo * size.y / tex.y;
-			float3 cs = shadeWaterSceneRadiance(scene.sample(shadeWaterLinear, us).rgb * 0.5h
-				+ (scene.sample(shadeWaterLinear, us - bs).rgb + scene.sample(shadeWaterLinear, us + bs).rgb) * 0.25h, exposure);
+			float3 cs = shadeWaterSceneRadiance(scene.sample(shadeWaterLinear, uv * size / tex).rgb, exposure);
 			cp = mix(cs, cp, e);
 		}
 		return z > 0.0 ? shadeWaterHazed(cp, pw, o, f, L) : cp; // (FT2.8, idx 34: the sky on screen gets no haze)
 #else
 		if (pc.w > 0.0 && all(uvp > 0.0) && all(uvp < 1.0)) {
-			float3 cp = float3(prev.sample(shadeWaterLinear, uvp).rgb * 0.5h + (prev.sample(shadeWaterLinear, uvp - bo).rgb
-				+ prev.sample(shadeWaterLinear, uvp + bo).rgb) * 0.25h) / prevExposure;
+			float3 cp = float3(prev.sample(shadeWaterLinear, uvp).rgb) / prevExposure;
 			return z > 0.0 ? shadeWaterHazed(cp, pw, o, f, L) : cp; // (FT2.8, idx 34: the sky on screen gets no haze)
 		}
 #endif
