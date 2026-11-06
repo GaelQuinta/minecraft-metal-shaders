@@ -42,7 +42,23 @@ struct TaaParams {
 	float4 misc;      // 208  x history rescale (exposure now / then; M2 reads ShadeGpu.exposure at buffer(1) instead), y unused (HDR input: function constant TAA_HDR), z reactive strength, w debug view (taau_debug_fs)
 	float4 sharpen;   // 224  x strength (0 off), y current-frame weight floor in motion (full at 0.5 px/frame), zw unused
 	float4x4 reproj;  // 240  (FT2.8, audit idx 64) prevVP x invCur: this frame's unjittered clip -> last frame's, times h.w
+	// (1.2.7 candidate 7) swaying leaves: the leaves' wobble phases this frame and last (ShadeFoliage, own/terrain.metal ownSway),
+	// and xyz the camera's absolute position modulo 1024 (the wobble's wrap), w 1 = follow them (mcopt.shade.taa.leafMotion)
+	float4 leafNow;   // 304
+	float4 leafPrev;  // 320
+	float4 leafCam;   // 336
 };
+
+// (1.2.7 candidate 7) The leaves' and vines' wobble at absolute (mod 1024) position a for phases ph, times amplitude A: own/terrain.metal
+// ownSway's leaves branch, KEEP IN SYNC. The terrain's cutout pass writes 2 + A into the scene's alpha where a waving leaf is drawn.
+static inline float3 taaLeafSway(float3 a, float4 ph, float A) {
+	const float K = 6.2831853 / 32.0;
+	float3 d;
+	d.x = sin(ph.x + dot(a, K * float3(3, 2, 5))) + 0.5 * sin(ph.y + dot(a, K * float3(-7, 4, 3)));
+	d.y = 0.5 * sin(ph.z + dot(a, K * float3(5, -3, 2)));
+	d.z = sin(ph.y + dot(a, K * float3(-2, 5, 4))) + 0.5 * sin(ph.w + dot(a, K * float3(6, 3, -5)));
+	return d * A;
+}
 
 // M3 per-object motion (bible E18 step 4, original, cheap): the entities that moved since last frame (ShadeMotion, at most
 // TAA_MOVERS), as camera-relative world boxes at this frame's render position plus their render-position change this frame.
@@ -196,6 +212,20 @@ static inline TaaOut taauResolve(float2 q, constant TaaParams &p, constant float
 	if (taaMoversOn && movers.count.x > 0u && zmax > 0.0) { // prevVP (world - moved, 1) = the above - prevVP (moved, 0)
 		moved = taaMoverDelta((p.invCur * v4).xyz * iw, movers);
 		prev -= p.prevVP * float4(moved, 0.0);
+	}
+	// (1.2.7 candidate 7) a waving leaf (the nearest of the 2x2, as the depth: alpha 2 + its amplitude) stood elsewhere last frame:
+	// reprojected from its own sway as well as the camera's. Without it a canopy moving close to a pixel a frame near the camera
+	// never settled: shimmering leaves, orange specks at sunset (Gael 2026-11-04). Its swaying shadows and light stay rectified.
+	if (p.leafCam.w > 0.5 && zmax > 0.0) {
+		half4 a4 = cur.gather(point, pin / float2(cur.get_width(), cur.get_height()), int2(0), component::w);
+		half la = z4.x == zmax ? a4.x : z4.y == zmax ? a4.y : z4.z == zmax ? a4.z : a4.w;
+		if (la > 1.5h) {
+			float A = float(la) - 2.0;
+			float3 w = (p.invCur * v4).xyz * iw;
+			float3 a = w + p.leafCam.xyz;
+			float3 leafMoved = taaLeafSway(a, p.leafNow, A) - taaLeafSway(a, p.leafPrev, A);
+			prev -= p.prevVP * float4(leafMoved, 0.0);
+		}
 	}
 	float2 uvPrev = prev.xy / prev.w * 0.5 + 0.5;
 

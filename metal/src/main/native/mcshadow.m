@@ -257,7 +257,7 @@ int mco_sway_bind(id<MTLRenderCommandEncoder> r, int b, int t, int moves);  // (
 // The own-terrain lists of d into the open cascade encoder r (the cutout's atlas bound at fragment texture 0 by the caller).
 static void ownDraw(Shadow *s, id<MTLRenderCommandEncoder> r, const OwnShadowDraw *d, id<MTLTexture> atlas) {
 	if (!d || !s->ownSolid || !d->arena || !d->args) return;
-	int sway = mco_sway_bind(r, 6, 1, 1);  // (1.2.7: own_shadow_vs' foliage arguments, always bound)
+	int sway = mco_sway_bind(r, 6, 1, 2);  // (1.2.7: own_shadow_vs' foliage arguments, always bound; 2: the shadow's copy, candidate 7)
 	[r setVertexBuffer:d->arena offset:0 atIndex:0];
 	[r setVertexBuffer:d->sections offset:0 atIndex:1];
 	[r setVertexBuffer:d->recs offset:0 atIndex:2];
