@@ -133,8 +133,6 @@ public final class ShadeWater {
 	/** (candidate 7, water.metal SHADE_SSR_SIDE / _END) past a side edge: how far (NDC; mcopt.shade.water.ssrSide, 0.25; M2.1 1) and the weight kept there (.ssrSideEnd, 0; M2.1 0.5), a quadratic fade between. */
 	public static final float SSR_SIDE = Math.clamp(floatProperty("mcopt.shade.water.ssrSide", 0.25f), 0.001f, 1f);
 	public static final float SSR_SIDE_END = Math.clamp(floatProperty("mcopt.shade.water.ssrSideEnd", 0f), 0f, 1f);
-	/** (candidate 7, water.metal SHADE_SSR_STRIP) a ray leaving through a side past that reach mirrors a blur of the edge column instead of the sky, at this weight (mcopt.shade.water.ssrStrip, startup; 0 = the sky). */
-	public static final float SSR_STRIP = Math.clamp(floatProperty("mcopt.shade.water.ssrStrip", 0f), 0f, 1f);
 	/** (candidate 7) the mirrored image's temporal reprojection's code (water.metal SHADE_WATER_RTR; mcopt.shade.water.rtr, startup). */
 	public static final boolean RTR = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.rtr", "true"));
 	/**
@@ -317,7 +315,6 @@ public final class ShadeWater {
 		b.append("#define SHADE_SSR_THICK_K ").append(SSR_THICK).append("\n#define SHADE_SSR_BEHIND ").append(SSR_BEHIND ? 1 : 0)
 			.append("\n#define SHADE_SSR_TOP ").append(SSR_TOP).append("\n#define SHADE_SSR_SIDE ").append(SSR_SIDE)
 			.append("\n#define SHADE_SSR_SIDE_END ").append(SSR_SIDE_END).append('\n');
-		if (SSR_STRIP > 0f) b.append("#define SHADE_SSR_STRIP ").append(SSR_STRIP).append('\n');
 		// 2026-10-08: the SSR march decides in reversed-Z depth (same decisions, no division per step); false = FT1.3's march
 		if (Boolean.parseBoolean(System.getProperty("mcopt.shade.water.rawz", "true"))) b.append("#define SHADE_SSR_RAWZ 1\n");
 		// (FT2.8, audit idx 57/58) the RAWZ march's bisection in 2 rounds of 3 reads and its fallback kept as one float: same image,

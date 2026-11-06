@@ -648,9 +648,12 @@ static float3 shadeWaterHitColor(float2 uv, float3 o, float exposure, float prev
 		bool edgeCol = uv.x <= 0.75 / size.x || uv.x >= 1.0 - 0.75 / size.x;
 		float2 bo = float2(0.0, edgeCol ? 0.02 : 0.0);
 #ifdef SHADE_WATER_EDGE_REFL
-		// (candidate 7) last frame's image faded into this frame's copy over the last 2 % of its frame (Unreal, HDRP and Godot fade by
-		// the hit's previous-frame position), not switched: the switch was a seam sweeping across the reflection while turning
-		float e = pc.w > 0.0 ? smoothstep(0.0, 0.02, min(min(uvp.x, 1.0 - uvp.x), min(uvp.y, 1.0 - uvp.y))) : 0.0;
+		// (candidate 7) last frame's image faded into this frame's copy over 2 % of the height just OUTSIDE its frame (its edge read
+		// clamped; Unreal, HDRP and Godot fade by the hit's previous-frame position), not switched at the border: the switch was a seam
+		// sweeping across the reflection while turning. Not inside the frame: this frame's copy is the opaque scene BEFORE the water,
+		// so an edge-column hit read there showed the pond's sunlit bottom through it (bright green patches at the sides looking
+		// down 20-35 degrees, ld7d / gb7d 2026-11-06), where last frame's image shows the water.
+		float e = pc.w > 0.0 ? saturate(1.0 + min(min(uvp.x, 1.0 - uvp.x), min(uvp.y, 1.0 - uvp.y)) / 0.02) : 0.0;
 		float3 cp = e > 0.0 ? float3(prev.sample(shadeWaterLinear, uvp).rgb * 0.5h + (prev.sample(shadeWaterLinear, uvp - bo).rgb
 			+ prev.sample(shadeWaterLinear, uvp + bo).rgb) * 0.25h) / prevExposure : float3(0.0);
 		if (e < 1.0) {
@@ -663,7 +666,7 @@ static float3 shadeWaterHitColor(float2 uv, float3 o, float exposure, float prev
 				+ (scene.sample(shadeWaterLinear, us - bs).rgb + scene.sample(shadeWaterLinear, us + bs).rgb) * 0.25h, exposure);
 			cp = mix(cs, cp, e);
 		}
-		return z > 0.0 || e < 1.0 ? shadeWaterHazed(cp, pw, o, f, L) : cp; // (FT2.8, idx 34: the sky on screen gets no haze)
+		return z > 0.0 ? shadeWaterHazed(cp, pw, o, f, L) : cp; // (FT2.8, idx 34: the sky on screen gets no haze)
 #else
 		if (pc.w > 0.0 && all(uvp > 0.0) && all(uvp < 1.0)) {
 			float3 cp = float3(prev.sample(shadeWaterLinear, uvp).rgb * 0.5h + (prev.sample(shadeWaterLinear, uvp - bo).rgb
@@ -782,30 +785,6 @@ static inline float shadeSsrHitT(float2 uv, float3 p0, constant ShadeFrame &f, d
 	return length(hp.xyz / hp.w - p0);
 }
 
-#if defined(SHADE_SSR_STRIP) && defined(SHADE_SSR_QUAD) && defined(SHADE_SSR_EDGE)
-// (candidate 7, Gael 2026-11-06: turning, the reflections at the screen's sides "se chupan hacia los lados"; research-ssr-edges.md
-// option 2) a ray that leaves through a side beyond the edge column's short reach (SHADE_SSR_SIDE) mirrors the open sky, a white
-// strip along the side. Instead it mirrors a vertical blur of the edge column around the row where it left: one row per lane of
-// the quad, 3 % of the height apart (12 rows with the edge column's own blur), each hazed at its own distance like a hit. Where
-// the shore continues off screen it continues as a soft band of its own colours; where the edge is sky it stays sky (coverage);
-// an edge column much nearer than the ray (a trunk) is not what it would mirror. Quad-uniform (s0, ds are), no dither.
-static inline float4 shadeSsrStrip(float3 s0, float3 ds, float3 p0, int chunk, float exposure, float prevExposure, constant ShadeFrame &f,
-                                   constant ShadeLook *L, texture2d<half> scene, depth2d<float> depth, texture2d<half> prev) {
-	float3 se = s0 + ds;
-	if (abs(abs(se.x) - (1.0 + SHADE_SSR_SIDE)) > 1e-3) return 0.0; // the segment ended at the top, its far end, or not past a side
-	float2 size = shadeWaterRenderSize(f, float2(depth.get_width(), depth.get_height()));
-	float y = clamp(se.y * 0.5 + 0.5 + (float(chunk) - 1.5) * 0.03, 0.5 / size.y, 1.0 - 0.5 / size.y);
-	float2 uv = float2(se.x > 0.0 ? 1.0 - 0.5 / size.x : 0.5 / size.x, y);
-	float z = depth.read(uint2(clamp(uv * size, float2(0.0), size - 1.0)));
-	float A = f.proj[2][2], B = f.proj[3][2];
-	float wr = B / max(se.z + A, 1e-7);
-	float cov = z > 0.0 ? saturate((B / max(z + A, 1e-7) / max(wr, 1e-3) - 0.5) * 4.0) : 0.0;
-	float3 c = cov > 0.0 ? shadeWaterHitColor(uv, p0, exposure, prevExposure, f, L, scene, depth, prev) * cov : float3(0.0);
-	float n = shadeQuadSum(cov);
-	return n > 1e-3 ? float4(shadeQuadSum(c) / n, n * 0.25 * SHADE_SSR_STRIP) : float4(0.0);
-}
-#endif
-
 // tHit (candidate 7, the reflection's temporal reprojection): the hit's distance along r from p0, -1 without a hit
 static float4 shadeSsrT(float3 p0, float3 r, float2 pixel, float maxDist, float exposure, float prevExposure, constant ShadeFrame &f,
                        constant ShadeLook *L, texture2d<half> scene, depth2d<float> depth, texture2d<half> prev, texture2d<float> hz,
@@ -830,12 +809,7 @@ static float4 shadeSsrT(float3 p0, float3 r, float2 pixel, float maxDist, float 
 	// (FT2.6: a crossing behind something, w >= 10, counts only where no lane of the quad found a real hit)
 	float key = hit.w >= 10.0 ? float(chunk) + 4.0 : hit.w >= 0.0 ? float(chunk) : 8.0;
 	float best = shadeQuadMin(key);
-#if defined(SHADE_SSR_STRIP) && defined(SHADE_SSR_EDGE)
-	float4 strip = shadeSsrStrip(s0, ds, p0, chunk, exposure, prevExposure, f, L, scene, depth, prev);
-	if (best > 7.5) return strip;
-#else
 	if (best > 7.5) return 0.0;
-#endif
 	float3 mine = key == best ? hit.xyz : float3(0.0); // exactly one lane holds the nearest hit
 	float3 h = shadeQuadSum(mine);
 #ifdef SHADE_WATER_EDGE_REFL
@@ -869,14 +843,7 @@ static float4 shadeSsrT(float3 p0, float3 r, float2 pixel, float maxDist, float 
 	}
 #endif
 	tHit = shadeSsrHitT(h.xy, p0, f, depth);
-#if defined(SHADE_SSR_STRIP) && defined(SHADE_SSR_EDGE)
-	// a hit faded out toward the end of the side reach fades into the strip, not the sky
-	float3 hc = shadeWaterHitColor(h.xy, p0, exposure, prevExposure, f, L, scene, depth, prev);
-	float ha = h.z + strip.a * (1.0 - h.z);
-	return ha > 1e-4 ? float4((hc * h.z + strip.rgb * (strip.a * (1.0 - h.z))) / ha, ha) : float4(hc, h.z);
-#else
 	return float4(shadeWaterHitColor(h.xy, p0, exposure, prevExposure, f, L, scene, depth, prev), h.z);
-#endif
 #else
 	if (!shadeSsrSegment(p0, r, maxDist, f, s0, ds, screenEnd)) return 0.0;
 	float4 hit = shadeSsrMarch(s0, ds, screenEnd, 0, 1, shadeNoise(pixel, SHADE_WATER_NOISE_FRAME(f)), f, depth, hz);
