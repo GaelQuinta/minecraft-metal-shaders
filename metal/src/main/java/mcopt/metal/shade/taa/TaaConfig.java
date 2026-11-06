@@ -148,6 +148,32 @@ public final class TaaConfig {
 		return stable() ? 0.18f : 0.25f;
 	}
 
+	/**
+	 * (1.2.7 candidate 7, Gael 2026-11-06: shimmering water reflections and sunlit leaves) taa.metal's anti-flicker knobs, live:
+	 * antiFlicker = lean on the history where it sits at the box's edge (Karis 2014), 0..1; floorCentre = the motion floor only where
+	 * the history is resampled off its pixels' centres (Photon), 0..1; boostFrom = where the clip boost starts, in box units (1 = as
+	 * before); flickerHold = keep an unclipped history well inside a wide box (Photon), 0..1, and its sensitivity.
+	 */
+	public static float antiFlicker() {
+		return Live.f("mcopt.shade.taa.antiFlicker", 0f, 0f, 1f);
+	}
+
+	public static float floorCentre() {
+		return Live.f("mcopt.shade.taa.floorCentre", 0f, 0f, 1f);
+	}
+
+	public static float boostFrom() {
+		return Live.f("mcopt.shade.taa.boostFrom", 1f, 1f, 8f);
+	}
+
+	public static float flickerHold() {
+		return Live.f("mcopt.shade.taa.flickerHold", 0f, 0f, 1f);
+	}
+
+	public static float flickerHoldSensitivity() {
+		return Live.f("mcopt.shade.taa.flickerHoldSens", 5f, 0.5f, 50f);
+	}
+
 	/** Variance clip box size in standard deviations (Responsive 1.0, Stable 1.25), +0.5 while the camera is still. */
 	public static float clipGamma(boolean still) {
 		return (stable() ? 1.25f : 1.0f) + (still ? 0.5f : 0f);

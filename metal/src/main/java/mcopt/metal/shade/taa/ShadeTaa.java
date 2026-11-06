@@ -425,12 +425,12 @@ public final class ShadeTaa {
 			this.reprojection.getToAddress(p + 64);
 			Matrix4f m = this.viewProj; // row 3: clip w (linear view depth)
 			put4(p + 128, m.m03(), m.m13(), m.m23(), m.m33());
-			put4(p + 144, this.width, this.height, 0, 0);
+			put4(p + 144, this.width, this.height, TaaConfig.flickerHold(), TaaConfig.flickerHoldSensitivity());
 			put4(p + 160, this.outWidth, this.outHeight, 1f / this.outWidth, 1f / this.outHeight);
 			put4(p + 176, this.jittered ? this.jitterX : 0, this.jittered ? this.jitterY : 0, (float) this.width / this.outWidth, (float) this.height / this.outHeight);
 			put4(p + 192, TaaConfig.alphaMin(), TaaConfig.clipGamma(still), 32, cut ? 1 : 0);
-			put4(p + 208, this.historyRescale, 0f, reactive != 0 ? 0.85f : 0f, TaaConfig.DEBUG); // no mask: the shader skips its read
-			put4(p + 224, sharpen, TaaConfig.motionAlpha(), 0, 0);
+			put4(p + 208, this.historyRescale, TaaConfig.boostFrom(), reactive != 0 ? 0.85f : 0f, TaaConfig.DEBUG); // no mask: the shader skips its read
+			put4(p + 224, sharpen, TaaConfig.motionAlpha(), TaaConfig.antiFlicker(), TaaConfig.floorCentre());
 			this.combinedD.set(this.reprojection).mul(this.invD.set(this.invViewProj));
 			this.combined.set(this.combinedD).getToAddress(p + 240);
 			// (candidate 7) waving leaves: their wobble phases now and last frame, the camera modulo 1024 (taa.metal taaLeafSway)
