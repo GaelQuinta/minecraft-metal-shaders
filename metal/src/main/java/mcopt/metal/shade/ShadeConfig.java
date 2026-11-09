@@ -22,7 +22,7 @@ import java.util.Locale;
  * Profile). Everything is off unless mcopt.shade=true; each M2 feature then has its own switch:
  * <ul>
  * <li>{@code mcopt.shade.hdr} (true): the world renders into an HDR target (mcopt.shade.hdrFormat: auto = rg11b10f for
- * performance/balanced and rgba16f for quality/ultra, or either explicitly) and is tone-mapped ("Shade Filmic") into the game's main target before the hand and the GUI. false:
+ * performance and rgba16f from balanced up (1.2.7: balanced too, for the swaying leaves' motion), or either explicitly) and is tone-mapped ("Shade Filmic") into the game's main target before the hand and the GUI. false:
  * M1's in-shader tone curve into RGBA8 (bloom and auto-exposure need HDR). Off by itself with mcopt.lod (far terrain draws
  * with its own RGBA8 pipelines).</li>
  * <li>{@code mcopt.shade.bloom} (true): natural bloom + fog glow.</li>
@@ -46,8 +46,9 @@ public final class ShadeConfig {
 	public static final boolean HDR = Shade.ENABLED && flag("mcopt.shade.hdr", true) && !LOD;
 	/**
 	 * MTLPixelFormat of the HDR world target: RG11B10Float (92, half the bandwidth: -0.2..0.45 ms at native Retina, no visible
-	 * banding in A/B screenshots) or RGBA16Float (115). mcopt.shade.hdrFormat: auto (default: rg11b10f for the performance and
-	 * balanced presets, rgba16f for quality and ultra), rg11b10f or rgba16f.
+	 * banding in A/B screenshots) or RGBA16Float (115). mcopt.shade.hdrFormat: auto (default: rg11b10f for the performance preset,
+	 * rgba16f from balanced up), rg11b10f or rgba16f. (1.2.7 candidate 7, Gael's choice 2026-11-09: balanced moved to rgba16f: its alpha
+	 * carries the swaying leaves' flag to the TAA (ShadeTaa leafMotion), backlit canopies flicker 40-47 % less, -4.5 % fps.)
 	 */
 	public static final int HDR_FORMAT = hdrFormat();
 	public static final boolean BLOOM = HDR && flag("mcopt.shade.bloom", true);
@@ -74,7 +75,7 @@ public final class ShadeConfig {
 		String v = System.getProperty("mcopt.shade.hdrFormat", "auto").trim().toLowerCase(Locale.ROOT);
 		if (v.equals("rg11b10f")) return 92;
 		if (v.equals("rgba16f")) return 115;
-		return Shade.TIER >= 2 ? 115 : 92;
+		return Shade.TIER >= 1 ? 115 : 92;
 	}
 
 	static boolean flag(String key, boolean fallback) {
