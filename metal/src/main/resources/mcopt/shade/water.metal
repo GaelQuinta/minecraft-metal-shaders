@@ -736,9 +736,9 @@ static inline float shadeSsrhY(float2 px, float z, float2 size, constant ShadeFr
 // leaf over the lake mirrored as a tall dark bar) SHADE_SSRH_THICK gives whatever a ray passes behind the depth of a block: right
 // for trunks, crowns and houses, wrong for a particle or a dropped item, which then "catches" every ray that passes up to 2 blocks
 // behind its few pixels: a streak along those rays (the coarse march rarely landed a step on one, and its jitter averaged it
-// away). Whether the thing at pixel px (linear depth wh) is SMALL: nothing of about its depth half a block further along the ray's
-// screen direction dir, nor 0.4 blocks to either side (a particle is up to 0.32 wide) (a roof's edge or a post is thin one way only: not small). pxB: the pixels
-// a block spans at depth 1. A small thing gets no thickness (a ray hits it only where it really crosses it) and never stands in
+// away). Whether the thing at pixel px (linear depth wh) is SMALL: nothing of about its depth 0.45 or 0.8 blocks away on screen in
+// 8 directions around it (a particle is up to 0.32 wide; a roof's edge or a post is thin one way only: not small). dir: the
+// ray's screen direction; pxB: the pixels a block spans at depth 1. A small thing gets no thickness (a ray hits it only where it really crosses it) and never stands in
 // for what a ray passed behind (SHADE_SSR_BEHIND). Asked only at crossings farther behind than a real one can be, within
 // SHADE_SSRH_THIN_W blocks of the camera (a particle is under 2 pixels beyond). The quad's march (the default) asks after its
 // walk, in shadeSsrhPast: in the walk's loop the test cost every water pixel 0.15 ms inline and more as a call (price-p38,
@@ -749,19 +749,23 @@ static inline bool shadeSsrhSmall(depth2d<float> depth, float2 px, float2 dir, f
 	if (e < 6.0) return false; // (a block under 6 pixels there: too far to tell)
 	float tol = 0.4 + 0.04 * wh;
 	float2 n = float2(-dir.y, dir.x);
-	float z0 = depth.read(uint2(clamp(px + dir * (0.5 * e), float2(0.0), top)));
-	float z1 = depth.read(uint2(clamp(px + n * (0.4 * e), float2(0.0), top)));
-	float z2 = depth.read(uint2(clamp(px - n * (0.4 * e), float2(0.0), top)));
-	bool m0 = z0 > 0.0 && abs(B / max(z0 + A, 1e-7) - wh) < tol;
-	bool m1 = z1 > 0.0 && abs(B / max(z1 + A, 1e-7) - wh) < tol;
-	bool m2 = z2 > 0.0 && abs(B / max(z2 + A, 1e-7) - wh) < tol;
-	return !(m0 || m1 || m2);
+	// 8 directions (along the ray, across it, the diagonals) at 0.45 and 0.8 blocks: all of them empty. (3 probes, 2026-11-10 x41:
+	// on grass and leaves, which are full of holes, they said "small" in one frame and not in the next while walking: the pond's
+	// walking flicker 9.2 -> 10.0, against 9.1 without the test.)
+	for (int i = 0; i < 8; i++) {
+		float2 dq = (i & 1) != 0 ? (dir + ((i & 2) != 0 ? n : -n)) * 0.7071 : ((i & 2) != 0 ? n : dir);
+		if ((i & 4) != 0) dq = -dq;
+		float za = depth.read(uint2(clamp(px + dq * (0.45 * e), float2(0.0), top)));
+		float zb = depth.read(uint2(clamp(px + dq * (0.8 * e), float2(0.0), top)));
+		if ((za > 0.0 && abs(B / max(za + A, 1e-7) - wh) < tol) || (zb > 0.0 && abs(B / max(zb + A, 1e-7) - wh) < tol)) return false;
+	}
+	return true;
 }
 // How far behind the depth copy (blocks) a ray can be at the first sample behind it when it really crossed that surface since the
 // last sample: its own depth step (stepW) and, on one surface (the last sample's depth wp close to wh), what the surface came nearer
 static inline float shadeSsrhThin(float wh, float wp, float stepW) {
 	float slope = abs(wp - wh);
-	return 0.05 + 0.01 * wh + stepW * 1.5 + (slope < 0.3 + 0.03 * wh ? slope : 0.0);
+	return 0.1 + 0.015 * wh + stepW * 1.5 + (slope < 0.3 + 0.03 * wh ? slope : 0.0);
 }
 
 // The hit of the screen segment s0 + ds t, t in 0..1 (shadeSsrSegment): (uv over the rendered rect, fade, t), w < 0 for none.
