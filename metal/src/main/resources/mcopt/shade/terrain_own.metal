@@ -406,7 +406,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #if defined(SHADE_WAVE_BAKE) && !defined(SHADE_LEAN_NOFALLS)
 		// (FT2.11) falling water's sides (only in the variant drawn while moving water is near: WaterFlowScan): the ripples tilt
 		// the face normal the surface is shaded with (shadeWaterFallNormal)
-		if (shadeWaterIsFall(float(n.y), sl.bloom.w, wp)) wi.nFace = shadeWaterFallNormal(wi, sf, waterWaves);
+		if (shadeWaterIsFall(float(n.y), sl.bloom.w, wp, vertexColor.a)) wi.nFace = shadeWaterFallNormal(wi, sf, waterWaves);
 #endif
 		wi.lit = shadeLit2(half3(1.0h), up, skyLight, blockLight, shadow, false, false, sf, sl);
 #ifdef SHADE_DYNLIGHT
@@ -444,7 +444,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		radiance = shadeWaterSurface(wi, sf, wp, skyLut, skyLutSmplr, sceneCopy, depthCopy, prevScene, waterWaves, waterCoarse SHADE_RH_ARGS);
 #if defined(SHADE_WAVE_BAKE) && !defined(SHADE_LEAN_NOFALLS)
 		// (FT2.11) and its white water over the result, lit like the shore's foam (wi.lit is live to the water's end anyway)
-		if (shadeWaterIsFall(float(n.y), sl.bloom.w, wp)) radiance = mix(radiance, wi.lit * 0.55, shadeWaterFallFoam(p, float3(n), waterFootprint, sl.bloom.w, sf));
+		if (shadeWaterIsFall(float(n.y), sl.bloom.w, wp, vertexColor.a)) radiance = mix(radiance, wi.lit * 0.55, shadeWaterFallFoam(p, float3(n), waterFootprint, sl.bloom.w, sf));
 #endif
 #ifdef SHADE_DYNLIGHT
 		radiance += dlSpec;
