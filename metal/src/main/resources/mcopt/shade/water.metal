@@ -659,14 +659,16 @@ static inline uint shadeQuadOr(uint v) { v |= quad_shuffle_xor(v, 1); return v |
 // of W x H, the 16-pixel blocks at (0, 0), ceil(W / 16) by bh = ceil(H / 16) texels, and the 128-pixel blocks at (0, bh). Each
 // block's value is taken over the block AND half a block around it, so the one texel a point falls in bounds everything within
 // half a block of that point: one read per interval (two 2x2 gathers of plain blocks cost 0.6 ms more over a lake, price-2
-// 2026-11-09). Made in two passes: shade_water_pyr_fs, the plain 8-pixel blocks from the depth copy (RG16F, its own texture);
-// shade_water_pyr2_fs, both block sizes from those. Halves are rounded to the safe side (nearest up, farthest down: by 2^-10
+// 2026-11-09). Made in three small passes: shade_water_pyr_fs, the plain 8-pixel blocks from the depth copy (RG16F, its own
+// texture); shade_water_pyr2_fs, the 16-pixel blocks from those, then the 128-pixel blocks from the 16-pixel ones (so a little
+// more than half a block around: +-72 pixels). Halves are rounded to the safe side (nearest up, farthest down: by 2^-10
 // and one subnormal step), a block of sky alone stays exactly 0.
 // (A third channel, the highest world y per block, to skip blocks wholly below the reflecting water, was tried: on the dumped
 // pond and sea frames it saved 5-8 % of the opened intervals for one more read per interval, sim.py 2026-11-09.)
 struct ShadeSsrPyrBuild {
-	int4 a; // x the block's size in 8-pixel blocks (2 or 16), yz the region's origin in the target, w how far around it (1 or 8)
-	int4 b; // xy the source's valid size: the depth's rendered rect (pixels), or the 8-pixel blocks that cover it
+	int4 a; // x the block's size in the source's blocks (2: 16 pixels from the 8-pixel blocks; 8: 128 from the 16-pixel ones), yz the
+	        // region's origin in the target, w how many of them around it too (1; 4)
+	int4 b; // xy the source's valid size: the depth's rendered rect (pixels), or the blocks that cover it
 };
 fragment float4 shade_water_pyr_fs(float4 pos [[position]], depth2d<float> d [[texture(0)]], constant ShadeSsrPyrBuild &u [[buffer(0)]]) {
 	constexpr sampler g(coord::normalized, filter::nearest, address::clamp_to_edge);

@@ -398,6 +398,11 @@ public final class ShadeWater {
 	private static int capturesAtBake = -1;
 
 	/** The module's own passes (wave bake, coarse depth): prelude + post (shade_fs_vs) + this prelude. */
+	/** How many scene copies (= frames that drew translucent terrain) so far. */
+	static int captures() {
+		return captures;
+	}
+
 	static long passLibrary() {
 		return library();
 	}
