@@ -298,7 +298,11 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	bool endLit = sf.flags.x == SHADE_DIM_END, netherLit = sf.flags.x == SHADE_DIM_NETHER;
 #endif
 	half shadowSky = endLit ? half(1.0) : skyLight;
+#ifdef SHADE_PRICE_NOWSHADOW
+	half shadow = (skyLight <= 0.3h && !endLit) || netherLit || waterFull ? half(1.0)
+#else
 	half shadow = (skyLight <= 0.3h && !endLit) || netherLit ? half(1.0)
+#endif
 		// M3.4 (mcopt.shade.waterShadowSoft, ShadeLook.waterShadow.x, read every frame): up-facing water gets a soft-edged shadow
 		: waterFull ? (n.y > 0.5h && sl.waterShadow.x > 0.0 ? shadeShadowSoft(shadowMap, shadowCompare, sf, p, n, sl.waterShadow.x, in.fragCoord.xy, sl.waterShadow.z)
 		                                                    : shadeShadow(shadowMap, shadowCompare, sf, p, n, false))
@@ -377,7 +381,9 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		wi.detail = float4(0.0);
 #ifdef SHADE_WATER_DETAIL
 		// M2.1 fine ripples (baked waves): top faces, and the surface seen from below with the camera under water
+#ifndef SHADE_PRICE_NODETAIL
 		if (!SHADE_WDEV_IS(sf, SHADE_WDEV_NO_DETAIL) && (n.y > 0.5h || (n.y < -0.5h && SHADE_CAMERA_UNDERWATER(sf))) && wp.state.w > 0.5) wi.detail = shadeWaterDetailIn(wi, sf, waterDetail);
+#endif
 #endif
 #ifdef SHADE_WATER_SWELL
 		// (2026-11-02, water round 1) the swell (water.metal shadeWaterSwell; mcopt.shade.water.swell, 0 = none): still water's top
@@ -392,7 +398,9 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 			swellOpen = 1.0;
 #endif
 			float amp = wp.swell.x * (1.0 + 0.8 * wp.state.z) * (1.0 + 0.6 * sf.weather.y) * swellOpen;
+#ifndef SHADE_PRICE_NOSWELL
 			if (amp > 0.0) wi.swell = shadeWaterSwell(shadeWaterXZ(p.xz, sf), shadeWaterTime(sf), wi.dxz, amp);
+#endif
 		}
 #endif
 #if defined(SHADE_WAVE_BAKE) && !defined(SHADE_LEAN_NOFALLS)
@@ -577,7 +585,11 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	}
 	float fogValue = SHADE_FOG_VALUE;
 #undef SHADE_FOG_VALUE
+#ifdef SHADE_PRICE_NOWFOG
+	if (!dims && !waterFull) {
+#else
 	if (!dims && !(waterFull && SHADE_WDEV_IS(sf, SHADE_WDEV_NO_FOG))) { // Nether/End: the final pass fogs
+#endif
 #ifdef MCOPT_HDR
 		radiance = shadeFogAir2(radiance, p, fogValue, 1.0 - float(fade), skyLut, skyLutSmplr, sf, sl, &sr);
 #else

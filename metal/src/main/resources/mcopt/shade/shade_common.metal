@@ -671,7 +671,7 @@ static half shadeShadowSoft(depth2d_array<float> map, sampler cmp, constant Shad
 	// the near cascade's detail is what the softening removes anyway). Points it doesn't cover keep shadeShadow.
 	float m1;
 	float far = shadeShadowCascadeDisc(map, cmp, 1u, f.shadowViewProj[1], p, dir * f.cascadeSplits.w, r, turn, m1, contact, L);
-	if (m1 >= 1.0) return shadeShadow(map, cmp, f, p, n, false);
+	if (m1 >= 1.0) return shadeShadow(map, cmp, f, p, n, false); // (as a call, not inlined: +0.2 ms over a lake, price-14 2026-11-10)
 	return half(mix(far, 1.0, smoothstep(0.85, 1.0, m1)));
 }
 

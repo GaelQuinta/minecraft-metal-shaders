@@ -60,6 +60,18 @@ static inline float3 taaLeafSway(float3 a, float4 ph, float A) {
 	return d * A;
 }
 
+// How far the leaf at this pixel's surface (clip v4, 1 / w iw) moved since last frame. (1.2.7 candidate 8) Called, not inlined
+// (TAA_LEAF_INLINE: inlined, for pricing): inlined, the GPU's compiler ran its ten sines for every output pixel, leaf or not
+// (as it did the water's cold blocks, water.metal SHADE_COLD).
+#ifdef TAA_LEAF_INLINE
+static inline float3 taaLeafMoved(float4x4 invCur, float4 v4, float iw, float3 cam, float4 now, float4 before, float A) {
+#else
+static __attribute__((noinline)) float3 taaLeafMoved(float4x4 invCur, float4 v4, float iw, float3 cam, float4 now, float4 before, float A) {
+#endif
+	float3 a = (invCur * v4).xyz * iw + cam;
+	return taaLeafSway(a, now, A) - taaLeafSway(a, before, A);
+}
+
 // M3 per-object motion (bible E18 step 4, original, cheap): the entities that moved since last frame (ShadeMotion, at most
 // TAA_MOVERS), as camera-relative world boxes at this frame's render position plus their render-position change this frame.
 // A pixel whose reconstructed surface lies in a box is reprojected from (world - delta) instead of world: no render target,
@@ -219,13 +231,7 @@ static inline TaaOut taauResolve(float2 q, constant TaaParams &p, constant float
 	if (p.leafCam.w > 0.5 && zmax > 0.0) {
 		half4 a4 = cur.gather(point, pin / float2(cur.get_width(), cur.get_height()), int2(0), component::w);
 		half la = z4.x == zmax ? a4.x : z4.y == zmax ? a4.y : z4.z == zmax ? a4.z : a4.w;
-		if (la > 1.5h) {
-			float A = float(la) - 2.0;
-			float3 w = (p.invCur * v4).xyz * iw;
-			float3 a = w + p.leafCam.xyz;
-			float3 leafMoved = taaLeafSway(a, p.leafNow, A) - taaLeafSway(a, p.leafPrev, A);
-			prev -= p.prevVP * float4(leafMoved, 0.0);
-		}
+		if (la > 1.5h) prev -= p.prevVP * float4(taaLeafMoved(p.invCur, v4, iw, p.leafCam.xyz, p.leafNow, p.leafPrev, float(la) - 2.0), 0.0);
 	}
 	float2 uvPrev = prev.xy / prev.w * 0.5 + 0.5;
 

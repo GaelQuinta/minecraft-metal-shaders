@@ -48,6 +48,11 @@
 #undef SHADE_SSR_HIER
 #undef SHADE_WATER_PANO
 #endif
+// (1.2.7 candidate 8) SHADE_COLD: a function called, not inlined. Priced in one session over a lake (notes/2026-11-09 price-11 /
+// price-12): it paid for the mirrored hit's colour (about -0.3 ms) and is what keeps the panorama's march out of every water pixel;
+// for the hits' haze, the caustics, the shore foam and the rendered sky it cost 0.1 ms each (they stay inline), and for the exact
+// march itself 0.1 ms.
+#define SHADE_COLD __attribute__((noinline))
 #ifndef SHADE_SSR_THICK_K
 #define SHADE_SSR_THICK_K 1.0 // (FT2.6, ShadeWater: mcopt.shade.water.ssrThick) the march's thickness in steps' depth extents
 #endif
@@ -934,14 +939,7 @@ static float4 shadeSsrTraceQuad(float3 s0, float3 ds, bool screenEnd, float yFlo
 // flipped four pixels together: 0.47 % of the still pond's pixels kept flickering against 0.13 % traced per pixel, 2026-11-09),
 // and no pixel has to re-aim a shared hit. ownOk: this pixel has a ray. Returns its hit as shadeSsrTrace does (w 11: a crossing
 // behind something standing in).
-#ifdef SHADE_PRICE_INLINE
-#define SHADE_SSRH_CALL
-#else
-// (not inlined: the water shader is bound by registers, and inlined this march's loops ran with everything the surface keeps for
-// later held across them; called, its own values have the registers. Pricing, 2026-11-09: see the notes)
-#define SHADE_SSRH_CALL __attribute__((noinline))
-#endif
-static SHADE_SSRH_CALL float4 shadeSsrTraceQuadOwn(float3 s0, float3 ds, float3 so, float3 dso, bool ownOk, bool screenEnd, float yFloor, int c, constant ShadeFrame &f,
+static float4 shadeSsrTraceQuadOwn(float3 s0, float3 ds, float3 so, float3 dso, bool ownOk, bool screenEnd, float yFloor, int c, constant ShadeFrame &f,
                                    depth2d<float> depth, texture2d<float> pyr) {
 	float2 tex = float2(depth.get_width(), depth.get_height());
 	float2 size = shadeWaterRenderSize(f, tex);
@@ -997,56 +995,61 @@ static SHADE_SSRH_CALL float4 shadeSsrTraceQuadOwn(float3 s0, float3 ds, float3 
 			if (!done) {
 #endif
 				float t1 = ta + float(j) * inv1;
+				// 12 samples from its start to its end; bit k: the ray is behind the depth copy at sample k (never behind the sky:
+				// a ray may outrun the far plane)
 				float zs[12];
 				for (int k = 0; k < 12; k++) zs[k] = depth.read(uint2(clamp(ao + dox * (t1 + float(k) * inv2), float2(0.0), top)));
-				for (int k = 0; k < 12; k++) {
+				uint bh = 0u;
+				for (int k = 0; k < 12; k++) bh |= uint(zs[k] > 0.0 && so.z + dso.z * (t1 + float(k) * inv2) <= zs[k]) << uint(k);
+				// the samples where it went from in front to behind (before sample 0: where the walk stood): mostly none or one
+				uint cross = bh & ~((bh << 1u) | (front ? 0u : 1u)) & 0xfffu;
+#ifdef SHADE_PRICE_NOCROSS
+				cross = 0u;
+#endif
+				while (cross != 0u) {
+					int k = int(ctz(cross));
+					cross &= cross - 1u;
 					float t = t1 + float(k) * inv2;
 					float zr = so.z + dso.z * t;
-					bool fr = !(zs[k] > 0.0 && zr <= zs[k]); // (never behind the sky: a ray may outrun the far plane)
-#ifdef SHADE_PRICE_NOCROSS
-					if (false) {
-#else
-					if (front && !fr && shadeSsrhY(ao + dox * t, zs[k], size, f) >= yFloor) {
-#endif
-						float wh = B / max(zs[k] + A, 1e-7), wr = B / max(zr + A, 1e-7);
-						float thick = SHADE_SSRH_THICK + 0.03 * wh + abs(wr - B / max(zr - dso.z * inv2 + A, 1e-7)) * SHADE_SSR_THICK_K;
-						if (wr - wh < thick) {
-							float tH = t;
-							if (k > 0 && zs[k - 1] > 0.0 && abs(B / max(zs[k - 1] + A, 1e-7) - wh) < thick) { // one surface: the secant
-								float dA = zr - dso.z * inv2 - zs[k - 1], dB = zs[k] - zr;
-								tH = t - inv2 * saturate(dB / max(dA + dB, 1e-12));
-							}
-							float3 sh = so + dso * tH;
-							float2 uv = sh.xy * 0.5 + 0.5;
-							float off = abs(sh.x) - 1.0, offT = sh.y - 1.0;
-							float fade = smoothstep(0.0, 0.07, uv.y) * mix(1.0, SHADE_SSR_SIDE_END, saturate(off / SHADE_SSR_SIDE) * saturate(off / SHADE_SSR_SIDE)) * (1.0 - smoothstep(0.0, SHADE_SSR_TOP, offT));
-							fade *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.5) * 4.0), saturate(max(off, offT) * 20.0));
-							if (!behind) fade *= 1.0 - smoothstep(0.6, 1.0, (wr - wh) / thick);
-							if (!screenEnd) fade *= 1.0 - smoothstep(0.85, 1.0, wr / max(B / max(so.z + dso.z + A, 1e-7), 1e-3));
-							res = float3(clamp(uv.x, 0.5 / size.x, 1.0 - 0.5 / size.x), min(uv.y, 1.0 - 0.5 / size.y), fade);
-							done = true;
-							break;
+					if (shadeSsrhY(ao + dox * t, zs[k], size, f) < yFloor) continue;
+					float wh = B / max(zs[k] + A, 1e-7), wr = B / max(zr + A, 1e-7);
+					float thick = SHADE_SSRH_THICK + 0.03 * wh + abs(wr - B / max(zr - dso.z * inv2 + A, 1e-7)) * SHADE_SSR_THICK_K;
+					if (wr - wh < thick) {
+						float tH = t;
+						float zp = zs[max(k - 1, 0)];
+						if (k > 0 && zp > 0.0 && abs(B / max(zp + A, 1e-7) - wh) < thick) { // one surface: the secant
+							float dA = zr - dso.z * inv2 - zp, dB = zs[k] - zr;
+							tH = t - inv2 * saturate(dB / max(dA + dB, 1e-12));
 						}
-						if (behind && tBack < 0.0 && wh > wStart) tBack = t;
+						float3 sh = so + dso * tH;
+						float off = abs(sh.x) - 1.0, offT = sh.y - 1.0;
+						float fade = smoothstep(0.0, 0.07, sh.y * 0.5 + 0.5) * mix(1.0, SHADE_SSR_SIDE_END, saturate(off / SHADE_SSR_SIDE) * saturate(off / SHADE_SSR_SIDE)) * (1.0 - smoothstep(0.0, SHADE_SSR_TOP, offT));
+						fade *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.5) * 4.0), saturate(max(off, offT) * 20.0));
+						if (!behind) fade *= 1.0 - smoothstep(0.6, 1.0, (wr - wh) / thick);
+						if (!screenEnd) fade *= 1.0 - smoothstep(0.85, 1.0, wr / max(B / max(so.z + dso.z + A, 1e-7), 1e-3));
+						res = float3(tH, fade, 0.0);
+						done = true;
+						break;
 					}
-					front = fr;
+					if (behind && tBack < 0.0 && wh > wStart) tBack = t;
 				}
+				front = ((bh >> 11u) & 1u) == 0u;
 			}
 			all = shadeQuadOr(uint(!done)) == 0u;
 		}
 	}
-	if (done && ownOk) return float4(res, 1.0);
+	// x the hit's place on the pixel's segment (so + dso x), y its weight; w 1 a hit, 11 a crossing behind something standing in
+	if (done && ownOk) return float4(res.xy, 0.0, 1.0);
 	if (tBack < 0.0) return float4(0.0, 0.0, 0.0, -1.0);
 	float3 sh = so + dso * tBack;
-	float2 uv = sh.xy * 0.5 + 0.5;
 	float zh = depth.read(uint2(clamp(ao + dox * tBack, float2(0.0), top)));
 	float wh = zh > 0.0 ? B / max(zh + A, 1e-7) : SHADE_WATER_SKY_W;
 	float wr = B / max(sh.z + A, 1e-7);
 	float off = abs(sh.x) - 1.0, offT = sh.y - 1.0;
-	float bf = smoothstep(0.0, 0.07, uv.y) * mix(1.0, SHADE_SSR_SIDE_END, saturate(off / SHADE_SSR_SIDE) * saturate(off / SHADE_SSR_SIDE)) * (1.0 - smoothstep(0.0, SHADE_SSR_TOP, offT));
+	float bf = smoothstep(0.0, 0.07, sh.y * 0.5 + 0.5) * mix(1.0, SHADE_SSR_SIDE_END, saturate(off / SHADE_SSR_SIDE) * saturate(off / SHADE_SSR_SIDE)) * (1.0 - smoothstep(0.0, SHADE_SSR_TOP, offT));
 	bf *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.5) * 4.0), saturate(max(off, offT) * 20.0));
 	if (!screenEnd) bf *= 1.0 - smoothstep(0.85, 1.0, wr / max(B / max(so.z + dso.z + A, 1e-7), 1e-3));
-	return float4(clamp(uv.x, 0.5 / size.x, 1.0 - 0.5 / size.x), min(uv.y, 1.0 - 0.5 / size.y), bf, 11.0);
+	return float4(tBack, bf, 0.0, 11.0);
 }
 #endif
 #endif
@@ -1083,14 +1086,20 @@ static inline float3 shadeWaterPrevTaps(texture2d<half> prev, float2 uvp, float2
 	return float3(c) * 0.25;
 }
 
-static float3 shadeWaterHitColor(float2 uv, float3 o, float exposure, float prevExposure, constant ShadeFrame &f, constant ShadeLook *L, texture2d<half> scene,
-                                 depth2d<float> depth, texture2d<half> prev, float2 fx = float2(0.0), float2 fy = float2(0.0), bool wide = false) {
+// known: the hit's camera-relative point is given (pwKnown: the exact march's hit on its ray), not read back from the depth copy
+static inline float3 shadeWaterHitColorCore(float2 uv, float3 o, float exposure, float prevExposure, constant ShadeFrame &f, constant ShadeLook *L, texture2d<half> scene,
+                                 depth2d<float> depth, texture2d<half> prev, float2 fx = float2(0.0), float2 fy = float2(0.0), bool wide = false,
+                                 bool known = false, float3 pwKnown = float3(0.0)) {
 	float2 tex = float2(depth.get_width(), depth.get_height());
 	float2 size = shadeWaterRenderSize(f, tex);
 	if (prevExposure > 0.0) {
-		float z = depth.read(uint2(clamp(uv * size, float2(0.0), size - 1.0)));
-		float4 wp = f.invViewProj * float4(uv * 2.0 - 1.0, z, 1.0);
-		float3 pw = wp.xyz / wp.w;
+		float z = 1.0;
+		float3 pw = pwKnown;
+		if (!known) {
+			z = depth.read(uint2(clamp(uv * size, float2(0.0), size - 1.0)));
+			float4 wp = f.invViewProj * float4(uv * 2.0 - 1.0, z, 1.0);
+			pw = wp.xyz / wp.w;
+		}
 		// (FT2.8, audit idx 35) last frame's image is the TAA history: steady, unjittered (as the puddles read it)
 		float4 pc = (L != nullptr ? L->prevViewProjNoJitter : f.prevViewProj) * float4(pw, 1.0);
 		float2 uvp = pc.xy / pc.w * 0.5 + 0.5;
@@ -1123,12 +1132,58 @@ static float3 shadeWaterHitColor(float2 uv, float3 o, float exposure, float prev
 	}
 	return shadeWaterSceneRadiance(scene.sample(shadeWaterLinear, uv * size / tex).rgb, exposure);
 }
+// (candidate 7's march and the glossy translucents) the same as a call: only pixels with a hit pay for it
+static SHADE_COLD float3 shadeWaterHitColor(float2 uv, float3 o, float exposure, float prevExposure, constant ShadeFrame &f, constant ShadeLook *L, texture2d<half> scene,
+                                 depth2d<float> depth, texture2d<half> prev) {
+	return shadeWaterHitColorCore(uv, o, exposure, prevExposure, f, L, scene, depth, prev);
+}
 
 // The sky in the reflected direction r: the atmosphere LUT, or (prevExposure > 0) the rendered sky where r points on
 // screen and nothing was drawn there (depth copy = sky): with M2 that is the sky pass, the sun disc and aureole, stars and
 // Milky Way, clouds, rain and Distant Horizons' LODs (which the depth copy doesn't hold), so open water mirrors the
 // clouds at sunset and the far mountains. Faded into the LUT toward the screen edges. rs: the direction for the rendered
 // sky (callers pass the calmer SSR direction: mirrored clouds stay readable instead of shredding into blotches).
+// The rendered sky of shadeWaterSkyRefl where its direction is on screen (uv, weight wgt > 0): sky mixed toward what last frame's
+// image shows there.
+static inline float3 shadeWaterSkySeen(float3 sky, float2 uv, float wgt, float3 rs, float3 o, float prevExposure, bool volumetricClouds, constant ShadeFrame &f,
+                                 constant ShadeLook *L, texture2d<half> lut, sampler lutS, depth2d<float> depth, texture2d<half> prev) {
+	if (wgt > 0.0) {
+		// what is on screen in that direction counts where it is the sky, a cloud, or terrain at the edge of the
+		// render distance (all of which mirror like the sky); anything nearer isn't what the water sees in that
+		// direction (a tree on a hill would ghost into the reflection where SSR missed the hill): the LUT there
+		float2 size = shadeWaterRenderSize(f, float2(depth.get_width(), depth.get_height()));
+		float z = depth.read(uint2(clamp(uv * size, float2(0.0), size - 1.0)));
+		float3 pw = float3(0.0);
+		if (z > 0.0) {
+			float4 h = f.invViewProj * float4(uv * 2.0 - 1.0, z, 1.0);
+			pw = h.xyz / h.w;
+			bool cloud = !volumetricClouds && pw.y + f.cameraBlock.y + f.cameraFract.y > 150.0; // vanilla's cloud layer (nothing else stands that high)
+			if (!cloud) wgt *= smoothstep(160.0, 320.0, shadeLinearW(z, f));
+		}
+		if (wgt > 0.0) {
+			float4 pc = (L != nullptr ? L->prevViewProjNoJitter : f.prevViewProj) * float4(rs, 0.0); // (FT2.8, idx 35)
+			float2 uvp = pc.xy / max(pc.w, 1e-4) * 0.5 + 0.5;
+			float3 s = float3(prev.sample(shadeWaterLinear, saturate(uvp)).rgb) / prevExposure;
+			if (z > 0.0) {
+				s = shadeWaterHazed(s, pw, o, f, L);
+			} else if (rs.y > 0.02 && !volumetricClouds) {
+				// nothing in the opaque depth copy, but clouds (drawn after it) may be in last frame's image: where it
+				// differs from the plain sky in that direction, haze it as far as the cloud layer (on screen the final
+				// pass hazes clouds from the main depth; unhazed they mirror as dark slabs)
+				float3 plain = shadeSkyLookup(rs, lut, lutS, f);
+				float ls = shadeLuma(plain);
+				float cloudy = saturate(abs(shadeLuma(s) - ls) / max(ls, 1e-5) * 4.0);
+				if (cloudy > 0.0) {
+					float tc = min((192.5 - f.cameraBlock.y - f.cameraFract.y) / rs.y, 640.0);
+					if (tc > 2.0) s = mix(s, shadeWaterHazed(s, rs * tc, float3(0.0), f, L), cloudy);
+				}
+			}
+			sky = mix(sky, s, wgt);
+		}
+	}
+	return sky;
+}
+
 static float3 shadeWaterSkyRefl(float3 r, float3 rs, float3 o, float prevExposure, constant ShadeFrame &f, constant ShadeLook *L, constant ShadeResources *R,
                                 texture2d<half> lut, sampler lutS, depth2d<float> depth, texture2d<half> prev) {
 	float3 sky = shadeSkyLookup(r, lut, lutS, f);
@@ -1167,40 +1222,7 @@ static float3 shadeWaterSkyRefl(float3 r, float3 rs, float3 o, float prevExposur
 			float2 edge = saturate(min(uv, 1.0 - uv) * 12.0);
 			float wgt = edge.x * edge.y;
 #endif
-			if (wgt > 0.0) {
-				// what is on screen in that direction counts where it is the sky, a cloud, or terrain at the edge of the
-				// render distance (all of which mirror like the sky); anything nearer isn't what the water sees in that
-				// direction (a tree on a hill would ghost into the reflection where SSR missed the hill): the LUT there
-				float2 size = shadeWaterRenderSize(f, float2(depth.get_width(), depth.get_height()));
-				float z = depth.read(uint2(clamp(uv * size, float2(0.0), size - 1.0)));
-				float3 pw = float3(0.0);
-				if (z > 0.0) {
-					float4 h = f.invViewProj * float4(uv * 2.0 - 1.0, z, 1.0);
-					pw = h.xyz / h.w;
-					bool cloud = !volumetricClouds && pw.y + f.cameraBlock.y + f.cameraFract.y > 150.0; // vanilla's cloud layer (nothing else stands that high)
-					if (!cloud) wgt *= smoothstep(160.0, 320.0, shadeLinearW(z, f));
-				}
-				if (wgt > 0.0) {
-					float4 pc = (L != nullptr ? L->prevViewProjNoJitter : f.prevViewProj) * float4(rs, 0.0); // (FT2.8, idx 35)
-					float2 uvp = pc.xy / max(pc.w, 1e-4) * 0.5 + 0.5;
-					float3 s = float3(prev.sample(shadeWaterLinear, saturate(uvp)).rgb) / prevExposure;
-					if (z > 0.0) {
-						s = shadeWaterHazed(s, pw, o, f, L);
-					} else if (rs.y > 0.02 && !volumetricClouds) {
-						// nothing in the opaque depth copy, but clouds (drawn after it) may be in last frame's image: where it
-						// differs from the plain sky in that direction, haze it as far as the cloud layer (on screen the final
-						// pass hazes clouds from the main depth; unhazed they mirror as dark slabs)
-						float3 plain = shadeSkyLookup(rs, lut, lutS, f);
-						float ls = shadeLuma(plain);
-						float cloudy = saturate(abs(shadeLuma(s) - ls) / max(ls, 1e-5) * 4.0);
-						if (cloudy > 0.0) {
-							float tc = min((192.5 - f.cameraBlock.y - f.cameraFract.y) / rs.y, 640.0);
-							if (tc > 2.0) s = mix(s, shadeWaterHazed(s, rs * tc, float3(0.0), f, L), cloudy);
-						}
-					}
-					sky = mix(sky, s, wgt);
-				}
-			}
+			if (wgt > 0.0) sky = shadeWaterSkySeen(sky, uv, wgt, rs, o, prevExposure, volumetricClouds, f, L, lut, lutS, depth, prev);
 		}
 	}
 	return sky;
@@ -1278,14 +1300,14 @@ fragment half4 shade_water_pano_fs(float4 pos [[position]], texture2d<half> was 
 // What the mirrored ray p0 + r t (camera-relative, r unit and rising) meets in the panorama beyond t0 blocks (where it left the
 // screen: up to there the screen march has the say): rgb its radiance before exposure (hazed over the leg from the surface, as the
 // on-screen hits are), a 1, or 0 where it meets nothing the panorama holds (the sky, or directions never seen: the caller's sky
-// stays). 8 steps, each 1.7 times the last, then two halvings of the step that went behind something; behind it by more than the
+// stays). 6 steps, each twice the last, then two halvings of the step that went behind something; behind it by more than the
 // depth a thing may have (2 blocks + 10 % of the distance) the ray passed it and goes on. prevExposure: the exposure last frame's
 // image was drawn with (the panorama's colours are in its units).
-static __attribute__((noinline)) float4 shadeWaterPano(float3 p0, float3 r, float t0, float prevExposure, constant ShadeFrame &f, constant ShadeLook *L, texture2d<half> pano) {
+static inline float4 shadeWaterPano(float3 p0, float3 r, float t0, float prevExposure, constant ShadeFrame &f, constant ShadeLook *L, texture2d<half> pano) {
 	constexpr sampler wrapU(filter::linear, s_address::repeat, t_address::clamp_to_edge);
 	float3 o = p0 - shadeEye(f.invViewProj);
 	float tp = t0 * 0.6, t = t0;
-	for (int i = 0; i < 8; i++) {
+	for (int i = 0; i < 6; i++) {
 		float3 q = o + r * t;
 		float dq = length(q);
 		float a = float(pano.sample(wrapU, shadePanoUv(q / dq), level(0.0)).a);
@@ -1307,7 +1329,7 @@ static __attribute__((noinline)) float4 shadeWaterPano(float3 p0, float3 r, floa
 			}
 		}
 		tp = t;
-		t *= 1.7;
+		t *= 2.0;
 		if (tp > 600.0) break;
 	}
 	return float4(0.0);
@@ -1318,7 +1340,7 @@ static __attribute__((noinline)) float4 shadeWaterPano(float3 p0, float3 r, floa
 // of them do, and testing those cost 0.3 ms, price-1 2026-11-09), and it is at the sides that Gael saw the reflections cut off.
 static inline float2 shadeWaterPanoWanted(float3 p0, float3 r, constant ShadeFrame &f) {
 	float4 dc = f.viewProj * float4(r, 0.0);
-	float outside = dc.w <= 1e-4 ? 1.0 : smoothstep(0.88, 1.0, abs(dc.x) / dc.w);
+	float outside = dc.w <= 1e-4 ? 1.0 : smoothstep(1.0, 1.1, abs(dc.x) / dc.w);
 	if (outside <= 0.0) return float2(0.0);
 	// where x / w = +-1 or y / w = 1 along c0 + dc t: the first one ahead
 	float4 c0 = f.viewProj * float4(p0, 1.0);
@@ -1326,6 +1348,32 @@ static inline float2 shadeWaterPanoWanted(float3 p0, float3 r, constant ShadeFra
 	float3 te = float3(c0.w - c0.x, -c0.w - c0.x, c0.w - c0.y) / select(den, float3(1e-6), abs(den) < 1e-6);
 	te = select(te, float3(1e6), te <= 0.0);
 	return float2(outside, clamp(min(te.x, min(te.y, te.z)), 1.0, 400.0));
+}
+#endif
+
+#ifdef SHADE_SSR_HIER
+// What the exact march's result shows, in ONE call (SHADE_COLD; two call sites, the hit's colour and the panorama's march, cost
+// 0.24 ms more over a lake than one, price-13 / price-15): the hit's colour at uv (isHit; weight hitW, fading where the hit is
+// past a screen side or near the ray's end) and, where the ray leaves the screen through a side (panoW > 0, from t0 blocks on),
+// what the panorama holds there under it. rgb the mirrored radiance, a its weight over the sky's reflection.
+static SHADE_COLD float4 shadeSsrResolve(bool isHit, float hitW, float2 uv, float3 o, float3 r, float exposure, float prevExposure, constant ShadeFrame &f,
+                                         constant ShadeLook *L, constant ShadeResources *R, texture2d<half> scene, depth2d<float> depth, texture2d<half> prev,
+                                         float2 fx, float2 fy, bool wide, bool known, float3 pwKnown, float panoW, float t0) {
+	float3 c = 0.0;
+	float wgt = 0.0;
+	if (isHit) {
+		c = shadeWaterHitColorCore(uv, o, exposure, prevExposure, f, L, scene, depth, prev, fx, fy, wide, known, pwKnown);
+		wgt = hitW;
+	}
+#ifdef SHADE_WATER_PANO
+	if (panoW > 0.0 && wgt < 0.999 && R != nullptr) {
+		float4 pn = shadeWaterPano(o, r, t0, prevExposure, f, L, R->reflPano);
+		float pw = pn.a * panoW * (1.0 - wgt);
+		c = (c * wgt + pn.rgb * pw) / max(wgt + pw, 1e-6);
+		wgt += pw;
+	}
+#endif
+	return float4(c, wgt);
 }
 #endif
 
@@ -1358,7 +1406,7 @@ static inline float shadeSsrHitT(float2 uv, float3 p0, constant ShadeFrame &f, d
 // footprint (candidate 8, the exact march): the scale of the footprint the hit's colour is read over (wp.mirror.y; 0 = one tap)
 static float4 shadeSsrT(float3 p0, float3 r, float2 pixel, float maxDist, float exposure, float prevExposure, constant ShadeFrame &f,
                        constant ShadeLook *L, texture2d<half> scene, depth2d<float> depth, texture2d<half> prev, texture2d<float> hz,
-                       thread float &tHit, float footprint = 1.0) {
+                       thread float &tHit, float footprint = 1.0, float panoShare = 0.0, constant ShadeResources *R = nullptr) {
 	tHit = -1.0;
 	float2 tex = float2(depth.get_width(), depth.get_height());
 	float2 size = shadeWaterRenderSize(f, tex);
@@ -1390,6 +1438,13 @@ static float4 shadeSsrT(float3 p0, float3 r, float2 pixel, float maxDist, float 
 #ifndef SHADE_PRICE_NOMARCH // (pricing, -Dmcopt.shade.leanDev=SHADE_PRICE_...: in-session A/B of the exact march's parts)
 	if (seg) hit = shadeSsrTraceQuadOwn(s0, ds, so, dso, ownOk, endOwn, yFloor, int(q.x & 1u) + 2 * int(q.y & 1u), f, depth, hz);
 #endif
+	// the hit is a point of this pixel's ray: its screen place, its world point and its distance without reading the depth copy back
+	bool onRay = hit.w >= 0.0 && hit.w < 5.0;
+	float3 hitNdc = so + dso * hit.x;
+	float4 hitW = f.invViewProj * float4(hitNdc, 1.0);
+	float3 hitP = hitW.xyz / hitW.w;
+	if (hit.w >= 0.0) hit = float4(clamp(hitNdc.x * 0.5 + 0.5, 0.5 / sz.x, 1.0 - 0.5 / sz.x), min(hitNdc.y * 0.5 + 0.5, 1.0 - 0.5 / sz.y), hit.y, hit.w);
+#define SHADE_SSRH_ONRAY 1
 	if (false) {
 #else
 #ifndef SHADE_PRICE_NOMARCH
@@ -1423,38 +1478,59 @@ static float4 shadeSsrT(float3 p0, float3 r, float2 pixel, float maxDist, float 
 #ifdef SHADE_PRICE_NOHITSHADE
 	hit.w = hit.w * 1e-9 - 1.0; // (the march ran; nothing after it does)
 #endif
+#ifdef SHADE_SSRH_ONRAY
+	float mineT = hit.w < 0.0 ? -1.0 : onRay ? length(hitP - p0Own) : shadeSsrHitT(hit.xy, p0, f, depth);
+#else
 	float mineT = hit.w >= 0.0 ? shadeSsrHitT(hit.xy, p0, f, depth) : -1.0;
+#endif
 	float3 own = float3(hit.xy, mineT);
 	float3 nx = quad_shuffle_xor(own, 1), ny = quad_shuffle_xor(own, 2);
 #if defined(SHADE_SSRH_DEBUG) && !defined(SHADE_SSR_QUAD)
 	if (f.flags.w == 10) { tHit = -2.0; return float4(dbg * float3(1.0 / 8.0, 1.0 / 8.0, 1.0), 1.0); }
 #endif
-	if (hit.w < 0.0) return 0.0;
-#ifndef SHADE_PRICE_NOTHIT
-	tHit = mineT;
-#endif
-	// a neighbour's hit counts where it found the same thing (about the same distance along its ray): across a mirrored silhouette
-	// the step between the hits is the gap between two things, not a squeezed image
-	float2 fx = 0.0, fy = 0.0;
-	float tol = 0.15 * max(mineT, 0.0) + 0.5;
-	if (nx.z >= 0.0 && abs(nx.z - mineT) < tol) fx = nx.xy - hit.xy;
-	if (ny.z >= 0.0 && abs(ny.z - mineT) < tol) fy = ny.xy - hit.xy;
-	fx *= footprint;
-	fy *= footprint;
-	float2 px = max(abs(fx), abs(fy)) * sz;
-	float span = max(px.x, px.y);
-	if (span > 12.0) { // (a runaway footprint: capped, not dropped)
-		fx *= 12.0 / span;
-		fy *= 12.0 / span;
-	}
-#ifdef SHADE_PRICE_NOCOLOR
-	return float4(float3(hit.xy, 0.2) / max(exposure, 1e-6), hit.z);
-#elif defined(SHADE_PRICE_NOHAZE)
-	return float4(shadeWaterHitColor(hit.xy, p0, exposure, prevExposure, f, nullptr, scene, depth, prev, fx, fy, span > 1.5), hit.z);
-#elif defined(SHADE_PRICE_NOTAPS)
-	return float4(shadeWaterHitColor(hit.xy, p0, exposure, prevExposure, f, L, scene, depth, prev), hit.z);
+	// where the ray leaves the screen through a side with nothing found (or a hit fading out there): the panorama's share
+	float2 want = 0.0;
+#if defined(SHADE_WATER_PANO) && !defined(SHADE_PRICE_NOPANO)
+	if (panoShare > 0.0 && (hit.w < 0.0 || hit.z < 0.999) && R != nullptr && L != nullptr && prevExposure > 0.0) {
+#ifdef SHADE_SSR_QUAD
+		want = shadeWaterPanoWanted(p0Own, rOwn, f);
 #else
-	return float4(shadeWaterHitColor(hit.xy, p0, exposure, prevExposure, f, L, scene, depth, prev, fx, fy, span > 1.5), hit.z);
+		want = shadeWaterPanoWanted(p0, r, f);
+#endif
+		want.x *= min(panoShare, 1.0);
+	}
+#endif
+	if (hit.w < 0.0 && want.x <= 0.0) return 0.0;
+	float2 fx = 0.0, fy = 0.0;
+	float span = 0.0;
+	if (hit.w >= 0.0) {
+#ifndef SHADE_PRICE_NOTHIT
+		tHit = mineT;
+#endif
+		// a neighbour's hit counts where it found the same thing (about the same distance along its ray): across a mirrored
+		// silhouette the step between the hits is the gap between two things, not a squeezed image
+		float tol = 0.15 * max(mineT, 0.0) + 0.5;
+		if (nx.z >= 0.0 && abs(nx.z - mineT) < tol) fx = nx.xy - hit.xy;
+		if (ny.z >= 0.0 && abs(ny.z - mineT) < tol) fy = ny.xy - hit.xy;
+		fx *= footprint;
+		fy *= footprint;
+		float2 px = max(abs(fx), abs(fy)) * sz;
+		span = max(px.x, px.y);
+		if (span > 12.0) { // (a runaway footprint: capped, not dropped)
+			fx *= 12.0 / span;
+			fy *= 12.0 / span;
+		}
+	}
+#ifdef SHADE_PRICE_NOTAPS
+	span = 0.0;
+#endif
+#ifdef SHADE_SSRH_ONRAY
+	return shadeSsrResolve(hit.w >= 0.0, hit.z, hit.xy, p0Own, rOwn, exposure, prevExposure, f, L, R, scene, depth, prev, fx, fy, span > 1.5, onRay, hitP, want.x, want.y);
+#undef SHADE_SSRH_ONRAY
+#elif defined(SHADE_SSR_QUAD)
+	return shadeSsrResolve(hit.w >= 0.0, hit.z, hit.xy, p0Own, rOwn, exposure, prevExposure, f, L, R, scene, depth, prev, fx, fy, span > 1.5, false, float3(0.0), want.x, want.y);
+#else
+	return shadeSsrResolve(hit.w >= 0.0, hit.z, hit.xy, p0, r, exposure, prevExposure, f, L, R, scene, depth, prev, fx, fy, span > 1.5, false, float3(0.0), want.x, want.y);
 #endif
 #elif defined(SHADE_SSR_QUAD)
 #ifdef SHADE_SSR_LANE
@@ -1936,6 +2012,22 @@ static float shadeWaterCaustics(float3 pf, float dy, constant ShadeFrame &f, con
 	return min(1.0 / max(abs(det), 0.18), 4.0);
 }
 
+// The shore foam's patches (shadeWaterAbove): the edge's foam cut into drifting patches, only over a floor that faces up, fading
+// with distance.
+static inline float shadeWaterFoam(float foam, float height, float2 pxz, float2 uvR, float2 size, float dist, constant ShadeFrame &f, depth2d<float> depth) {
+	float2 x = shadeWaterXZ(pxz, f);
+	float t = shadeWaterTime(f);
+	float nz = 0.65 * shadeWaterValueNoise(x * 1.7 + float2(t * 0.11, t * 0.07)) + 0.35 * shadeWaterValueNoise(x * 4.3 - float2(t * 0.17, -t * 0.13));
+	foam *= smoothstep(0.42, 0.72, nz) * saturate(height * 12.0 + 0.3);
+	// the floor's facing from the depth copy (two neighbours): walls and steep drops get none
+	uint2 q = uint2(min(uvR * size, size - 2.0));
+	float3 f0 = shadeWaterViewPoint(depth, q, size, f), fx = shadeWaterViewPoint(depth, q + uint2(1, 0), size, f),
+	       fz = shadeWaterViewPoint(depth, q + uint2(0, 1), size, f);
+	float3 fn = cross(fx - f0, fz - f0);
+	float upness = abs(fn.y) / max(length(fn), 1e-6);
+	return foam * smoothstep(0.55, 0.85, upness) * (1.0 - smoothstep(16.0, 28.0, dist));
+}
+
 // (candidate 7) how far the mirrored images' normal is pulled toward the face's (the ripples' share in the reflection direction:
 // 1 - this): wp.swell2.y (mcopt.shade.water.mirrorCalm), 0.55 before candidate 7 (and where the value is unset)
 static inline float shadeWaterMirrorCalm(constant ShadeWaterParams &wp) { return wp.swell2.y > 0.0 ? wp.swell2.y : 0.55; }
@@ -2047,7 +2139,7 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	float ssrW = 0.0;
 	float fq = shadeQuadMax(shadeWaterFresnel(cosV));
 	if (fq > 0.022 && wp.tune.y > 0.0 && !SHADE_WDEV_IS(f, SHADE_WDEV_NO_SSR)) { // (1.1) tune.y 0: the player turned screen reflections off
-		ssrHit = shadeSsrT(w.p + n * 0.02, rr, w.pixel, wp.tune.y, w.exposure, w.prevExposure, f, w.look, scene, depth, prev, hz, tHit, wp.mirror.y);
+		ssrHit = shadeSsrT(w.p + n * 0.02, rr, w.pixel, wp.tune.y, w.exposure, w.prevExposure, f, w.look, scene, depth, prev, hz, tHit, wp.mirror.y, top ? wp.mirror.z : 0.0, w.res);
 		ssrW = ssrHit.a * smoothstep(0.022, 0.03, fq);
 	}
 #endif
@@ -2087,8 +2179,12 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 		if (clarity > 0.0) sigmaA /= clarity;
 	}
 	float3 sigmaT = sigmaA + SHADE_WATER_SIGMA_S;
+#ifdef SHADE_PRICE_NOBOTTOM
+	float3 bottom = float3(0.02, 0.05, 0.08);
+#else
 	float3 bottom = shadeWaterSceneRadiance(scene.sample(shadeWaterLinear, uvR * size / tex).rgb, w.exposure);
-#ifdef SHADE_CAUSTICS
+#endif
+#if defined(SHADE_CAUSTICS) && !defined(SHADE_PRICE_NOCAUSTICS)
 	if (top && wp.tune.w > 0.0 && dy > 0.05 && dy < 18.0) {
 		float sunL = f.lightDirWorld.w > 0.5 ? smoothstep(0.1, 0.8, float(w.shadow)) * saturate(f.lightDirWorld.y * 4.0) * smoothstep(0.55, 0.9, float(w.sky)) : 0.0;
 		// (FT2.10, w.cave.x) torchlight is bent by the ripples too: where it lights the bottom (block light; caves, a strip of water in
@@ -2151,7 +2247,11 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	// the LUT sky follows a calmer direction too: the rippled one smeared the low sun's aureole over the near water as a
 	// milky veil (the glint below is what carries the sun's sparkle)
 	float3 rl = normalize(mix(rs, rr, 0.6));
+#ifdef SHADE_PRICE_NOSKY
+	float3 refl = shadeSkyLookup(rl, lut, lutS, f) * open;
+#else
 	float3 refl = shadeWaterSkyRefl(rl, rr, w.p, w.prevExposure, f, w.look, w.res, lut, lutS, depth, prev) * open;
+#endif
 	// (FT2.10, w.cave.z) where no sky lights the water, what it mirrors beyond SSR (off screen, behind the camera) was black: the
 	// waves had nothing to show by, and a strip of water in a cave read as flat dark glass next to a lake's rippled sky (Gael
 	// 2026-10-10: "debería de verse así con la textura realista siempre, aunque solo sea una fila"). Its surroundings instead: the
@@ -2166,25 +2266,7 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 #ifdef SHADE_SSR
 #ifdef SHADE_LEAN_ABOVE
 	hitWeight = ssrW;
-#ifdef SHADE_WATER_PANO
-	// (candidate 8) a mirrored ray that leaves the screen (its vanishing point is outside it) and found nothing on it: what the
-	// panorama remembers there, under whatever the screen march did find (its hits past a side fade out toward the edge column's end)
-	float panoW = 0.0;
-#ifndef SHADE_PRICE_NOPANO
-	if (top && hitWeight < 0.999 && wp.mirror.z > 0.0 && w.res != nullptr && w.look != nullptr && w.prevExposure > 0.0 && fq > 0.022) {
-		float2 want = shadeWaterPanoWanted(w.p, rr, f);
-		if (want.x > 0.0) {
-			float4 pn = shadeWaterPano(w.p + n * 0.02, rr, want.y, w.prevExposure, f, w.look, w.res->reflPano);
-			panoW = pn.a * want.x * min(wp.mirror.z, 1.0);
-			refl = mix(refl, pn.rgb, panoW);
-		}
-	}
-#endif
-	refl = mix(refl, ssrHit.rgb, hitWeight);
-	hitWeight = max(hitWeight, panoW); // (the glint is hidden there too)
-#else
-	refl = mix(refl, ssrHit.rgb, hitWeight);
-#endif
+	refl = mix(refl, ssrHit.rgb, hitWeight); // (candidate 8: the panorama's share past the screen's sides is in it, shadeSsrResolve)
 #else
 	// looking steeply down (within ~45 degrees of straight down) the surface reflects 2% and what it would mirror is mostly
 	// behind the camera: no march there, faded in up to ~50 degrees (quad-uniform: SSR's lanes work together)
@@ -2262,8 +2344,12 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 #ifdef SHADE_WATER_MIRROR_AA
 	alpha = sqrt(alpha * alpha + rippleVar); // (2026-11-06) and so do the ripples a pixel can't resolve
 #endif
+#ifdef SHADE_PRICE_NOGLINT
+	float spec = 0.0;
+#else
 	float spec = shadeGgxSpec(n, v, f.lightDirWorld.xyz, alpha);
-#if defined(SHADE_WATER_GLITTER) && defined(SHADE_WATER_DETAIL)
+#endif
+#if defined(SHADE_WATER_GLITTER) && defined(SHADE_WATER_DETAIL) && !defined(SHADE_PRICE_NOGLINT)
 	// (2026-11-02; STUDY.md "what we could do: water" item 3, after Complementary's sparkle term: technique only, our own code;
 	// mcopt.shade.water.glitter, 0 = none) glitter: the glint times a facet contrast ((n_r.l) / (n.l))^4 from a rougher normal n_r:
 	// facets tilted toward the sun light up, those tilted away go dark, so near the camera the road breaks into sparkles. n_r is n
@@ -2296,15 +2382,13 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 
 	float3 color = mix(body, refl, fres) + glint * (wp.tune.z * (w.look != nullptr ? w.look->user2.x : 1.0)); // (1.1) user2.x: the glint
 	if (f.flags.w == 5) return float3(hitWeight, fres, 0.0) / max(w.exposure, 1e-3);                               // debug: SSR hits, Fresnel
-#if defined(SHADE_WATER_PANO) && defined(SHADE_LEAN_ABOVE)
-	if (f.flags.w == 11) return float3(panoW, ssrW, 0.1) / max(w.exposure, 1e-3);                                   // debug: the panorama's share, the screen march's
-#endif
+
 #if defined(SHADE_SSRH_DEBUG) && defined(SHADE_LEAN_ABOVE)
 	if (f.flags.w == 10) return (tHit == -2.0 ? ssrHit.rgb : float3(0.0, 0.0, 0.2)) / max(w.exposure, 1e-3);         // debug: the exact march's work
 #endif
 	if (f.flags.w == 6) return float3(saturate(lView / 16.0), saturate(dy / 8.0), hasFloor ? 0.0 : 1.0) / max(w.exposure, 1e-3); // debug: path, depth
 
-#ifdef SHADE_WATER_RTR
+#if defined(SHADE_WATER_RTR) && !defined(SHADE_PRICE_NORTR)
 	// (candidate 7, Gael 2026-11-04: "un parpadeo o una titilación en el mar… en los reflejos… cuando te estás moviendo, cuando salta,
 	// cuando corre") The mirrored image's own temporal reprojection. The TAA reprojects a water pixel by its surface, but what it
 	// mirrors moves on screen as a point behind the mirror, the surface's distance plus the reflected ray's farther: walking,
@@ -2336,7 +2420,7 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	}
 #endif
 
-#ifdef SHADE_FOAM
+#if defined(SHADE_FOAM) && !defined(SHADE_PRICE_NOFOAM)
 	if (top && hasFloor && dist < 28.0) {
 		// where the bottom comes up to the surface: sparse, broken patches that drift with the water (a scrolling two-octave
 		// value noise and the wave crests), only over a floor that faces up (a submerged wall is no beach), fading out with
@@ -2345,17 +2429,7 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 		float edge = 0.10 + 0.16 * saturate(height * 9.0);
 		float foam = (1.0 - smoothstep(0.0, edge, shore)) * smoothstep(0.0, 0.03, shore + 0.02);
 		if (foam > 0.01) {
-			float2 x = shadeWaterXZ(w.p.xz, f);
-			float t = shadeWaterTime(f);
-			float nz = 0.65 * shadeWaterValueNoise(x * 1.7 + float2(t * 0.11, t * 0.07)) + 0.35 * shadeWaterValueNoise(x * 4.3 - float2(t * 0.17, -t * 0.13));
-			foam *= smoothstep(0.42, 0.72, nz) * saturate(height * 12.0 + 0.3);
-			// the floor's facing from the depth copy (two neighbours): walls and steep drops get none
-			uint2 q = uint2(min(uvR * size, size - 2.0));
-			float3 f0 = shadeWaterViewPoint(depth, q, size, f), fx = shadeWaterViewPoint(depth, q + uint2(1, 0), size, f),
-			       fz = shadeWaterViewPoint(depth, q + uint2(0, 1), size, f);
-			float3 fn = cross(fx - f0, fz - f0);
-			float upness = abs(fn.y) / max(length(fn), 1e-6);
-			foam *= smoothstep(0.55, 0.85, upness) * (1.0 - smoothstep(16.0, 28.0, dist));
+			foam = shadeWaterFoam(foam, height, w.p.xz, uvR, size, dist, f, depth);
 			color = mix(color, w.lit * 0.5, foam * (w.look != nullptr ? 0.3 * w.look->user1.z : 0.3)); // (1.1) user1.z: foam
 		}
 	}
