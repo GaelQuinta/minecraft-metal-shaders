@@ -84,7 +84,8 @@ public final class ShadeWater {
 	 * 1.2.7 candidate 8 {@code mcopt.shade.water.pano} (true; Gael: the reflections at the screen's sides are cut off while turning or
 	 * moving): a panorama of what the view has shown, by direction (ShadeWaterPano, water.metal SHADE_WATER_PANO), which mirrored
 	 * rays that leave the screen are marched through. HDR with TAA only (it is made from the TAA's history and depth). Live:
-	 * {@code mcopt.shade.water.reflPano} (1; 0 = the sky there, as before).
+	 * {@code mcopt.shade.water.reflPano} (1; 0 = the sky there, as before). The settings screen's switch is {@code mcopt.shade.water.reflSides}
+	 * (ShadeWaterPano.on, live).
 	 */
 	public static final boolean PANO = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.pano", "true"));
 	public static final float SSR_DIST = Math.clamp(floatProperty("mcopt.shade.ssrDist", 512f), 8f, 1024f);

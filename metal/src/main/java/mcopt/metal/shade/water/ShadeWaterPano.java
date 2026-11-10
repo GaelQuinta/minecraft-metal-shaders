@@ -38,7 +38,16 @@ public final class ShadeWaterPano {
 
 	/** The panorama holds something the water may read (ShadeWaterParams.mirror.z is 0 until then). */
 	static boolean ready() {
-		return frames > 2 && !failed;
+		return frames > 2 && !failed && on();
+	}
+
+	/**
+	 * (Gael, 2026-11-10: "un toggle en las opciones para apagar el relleno de los lados") The settings screen's switch, live
+	 * ({@code mcopt.shade.water.reflSides}, true): off = no panorama pass and a share of 0 for the water (its march is skipped), so
+	 * reflections end at the screen's sides as in candidate 7; back on, the panorama starts over from nothing.
+	 */
+	static boolean on() {
+		return mcopt.metal.shade.Live.b("mcopt.shade.water.reflSides", true);
 	}
 
 	/**
@@ -50,6 +59,10 @@ public final class ShadeWaterPano {
 	public static void update(long enc, ShadeFrame f) {
 		if (!ShadeWater.ON || !ShadeWater.PANO || !mcopt.metal.shade.taa.TaaConfig.ENABLED || failed || enc == 0) return;
 		try {
+			if (!on()) {
+				frames = 0;
+				return;
+			}
 			int captures = ShadeWater.captures();
 			sinceWater = captures != lastCaptures ? 0 : Math.min(sinceWater + 1, 1 << 20);
 			lastCaptures = captures;

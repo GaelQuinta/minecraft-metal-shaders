@@ -319,6 +319,11 @@ public final class ShadeOptions {
 				"Water mirrors hills, trees and clouds on screen. Off = sky only (more FPS around lakes).", true),
 			num("mcopt.shade.ssrDist", "Alcance reflejo", "Mirror reach", "Hasta dónde busca qué reflejar.", "How far it looks for things to mirror.", 32, 1024,
 				() -> 512, 1, ""),
+			// (1.2.7 candidate 8) the reflections' panorama (ShadeWaterPano.on, live): what mirrors past the screen's sides
+			toggle("mcopt.shade.water.reflSides", "Reflejo a los lados", "Side reflections",
+				"Cuando lo reflejado queda fuera de la pantalla por un lado, el reflejo sigue con lo que viste hace poco. No = ahí se refleja solo el cielo (un poco más de FPS con mucha agua).",
+				"When what is mirrored is off screen past a side, the reflection continues with what you saw a moment ago. Off = only the sky there (a little more FPS with a lot of water).",
+				true),
 			pct(U + "glint", "Destello del sol", "Sun glint", "El brillo del sol sobre las olas.", "The sun's sparkle on the waves.", 0, 300, 100),
 			pct(U + "caustics", "Cáusticas", "Caustics", "Las líneas de luz en el fondo.", "The light patterns on the bottom.", 0, 200, 100),
 			pct(U + "foam", "Espuma", "Foam", "La espuma en las orillas.", "The foam along the shore.", 0, 300, 100),
