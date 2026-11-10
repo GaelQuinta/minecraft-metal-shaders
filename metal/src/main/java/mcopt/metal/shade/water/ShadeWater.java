@@ -74,12 +74,18 @@ public final class ShadeWater {
 	 * 1.2.7 candidate 8 {@code mcopt.shade.water.ssrExact} (true; Gael: the mirrored trees and houses flicker): every pixel traces its
 	 * own mirrored ray to the pixel, without jitter, through a small pyramid of the depth copy (water.metal SHADE_SSR_HIER) instead
 	 * of the 16-32 jittered steps shared by a 2x2 quad, which found or stepped over whatever stood between two steps by the frame.
-	 * {@code .ssrExactThick} (2): what a crossing may be behind a surface and still hit it, blocks; {@code .ssrExactBudget} (8): the
+	 * {@code .ssrExactThick} (2): what a crossing may be behind a surface and still hit it, blocks; {@code .ssrExactBudget} (32; 8 in candidate 8, which left a strip of sky beside anything near the camera): the
 	 * 16-pixel intervals a ray may open. false = candidate 7's march (ssrQuad, ssrSteps, ssrLane, ssrJitterFrame apply to it only).
 	 */
 	public static final boolean SSR_EXACT = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrExact", "true"));
 	private static final float SSR_EXACT_THICK = Math.clamp(floatProperty("mcopt.shade.water.ssrExactThick", 2f), 0.1f, 64f);
-	private static final int SSR_EXACT_BUDGET = Math.clamp(Integer.getInteger("mcopt.shade.water.ssrExactBudget", 8), 1, 64);
+	private static final int SSR_EXACT_BUDGET = Math.clamp(Integer.getInteger("mcopt.shade.water.ssrExactBudget", 32), 1, 160);
+	/**
+	 * 1.2.7 candidate 9 (Gael: particles mirrored as streaks from under water) {@code mcopt.shade.water.ssrThin} (true): a thing under
+	 * about half a block on screen gets no thickness in the exact march and never stands in for what a ray passed behind
+	 * (water.metal shadeSsrhSmall).
+	 */
+	private static final boolean SSR_THIN = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrThin", "true"));
 	/**
 	 * 1.2.7 candidate 8 {@code mcopt.shade.water.pano} (true; Gael: the reflections at the screen's sides are cut off while turning or
 	 * moving): a panorama of what the view has shown, by direction (ShadeWaterPano, water.metal SHADE_WATER_PANO), which mirrored
@@ -320,6 +326,8 @@ public final class ShadeWater {
 		if (SSR) b.append("#define SHADE_SSR 1\n");
 		if (SSR_QUAD) b.append("#define SHADE_SSR_QUAD 1\n");
 		if (SSR_EXACT) b.append("#define SHADE_SSR_HIER 1\n#define SHADE_SSRH_THICK ").append(SSR_EXACT_THICK).append("\n#define SHADE_SSRH_BUDGET ").append(SSR_EXACT_BUDGET).append('\n');
+		// (candidate 9, Gael 2026-11-10) small things get no thickness (particles mirrored as streaks)
+		if (SSR_EXACT && SSR_THIN) b.append("#define SHADE_SSRH_THIN 1\n");
 		// (candidate 8) the quad searches together, each pixel finds its own hit (false: one shared hit, re-aimed per pixel)
 		if (SSR_EXACT && Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrOwn", "true"))) b.append("#define SHADE_SSRH_OWN 1\n");
 		if (SSR_EXACT && Boolean.getBoolean("mcopt.shade.water.ssrExactDebug")) b.append("#define SHADE_SSRH_DEBUG 1\n"); // (-Dmcopt.shade.debug=10 shows the per-pixel march's work, without ssrQuad)

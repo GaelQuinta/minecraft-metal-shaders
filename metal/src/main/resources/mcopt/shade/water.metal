@@ -48,6 +48,20 @@
 #undef SHADE_SSR_HIER
 #undef SHADE_WATER_PANO
 #endif
+// (pricing, 2026-11-10: -Dmcopt.shade.leanDev=SHADE_PRICE_C8: candidate 8's march in the dev variant, without the small-thing test
+// and with its budget of 8; SHADE_PRICE_NOTHIN / SHADE_PRICE_B8: one of the two)
+#ifdef SHADE_PRICE_C8
+#undef SHADE_SSRH_THIN
+#undef SHADE_SSRH_BUDGET
+#define SHADE_SSRH_BUDGET 8
+#endif
+#ifdef SHADE_PRICE_NOTHIN
+#undef SHADE_SSRH_THIN
+#endif
+#ifdef SHADE_PRICE_B8
+#undef SHADE_SSRH_BUDGET
+#define SHADE_SSRH_BUDGET 8
+#endif
 // (1.2.7 candidate 8) SHADE_COLD: a function called, not inlined. Priced in one session over a lake (notes/2026-11-09 price-11 /
 // price-12): it paid for the mirrored hit's colour (about -0.3 ms) and is what keeps the panorama's march out of every water pixel;
 // for the hits' haze, the caustics, the shore foam and the rendered sky it cost 0.1 ms each (they stay inline), and for the exact
@@ -650,8 +664,14 @@ static inline uint shadeQuadOr(uint v) { v |= quad_shuffle_xor(v, 1); return v |
 // nothing the first such crossing stands in (SHADE_SSR_BEHIND).
 #define SHADE_SSRH_THICK 2.0
 #endif
+// The 16-pixel intervals a ray may open (12 reads of the depth copy each) before it gives up and its pixel mirrors the sky. 8 in
+// candidate 8. Gael, 2026-11-10: "detrás del árbol ... aparece como un reflejo solo blanco". Beside anything near the camera (a
+// trunk a few blocks away) every interval has to be opened (the blocks around it hold both the trunk and the far shore), so 8 went
+// on the first 128 pixels and whatever was mirrored farther along showed as a pale strip of sky along the trunk. Only those rays
+// run out (the debug view of 2026-11-10: strips beside near silhouettes), so the budget is what they may cost, not the others: 32.
+// (Going on with fewer samples instead, inline or as a call, cost every water pixel 0.1 to 0.6 ms: price-p-c9*, 2026-11-10.)
 #ifndef SHADE_SSRH_BUDGET
-#define SHADE_SSRH_BUDGET 8 // the 16-pixel intervals a ray may open (9 reads of the depth copy each) before it gives up
+#define SHADE_SSRH_BUDGET 32
 #endif
 #define SHADE_SSRH_N0 20      // the 128-pixel intervals at most (rays longer than 2560 pixels get longer ones)
 
@@ -712,6 +732,38 @@ static inline float shadeSsrhY(float2 px, float z, float2 size, constant ShadeFr
 		/ dot(float4(f.invViewProj[0].w, f.invViewProj[1].w, f.invViewProj[2].w, f.invViewProj[3].w), v);
 }
 
+// (candidate 9, Gael 2026-11-10: "debajo del agua se reflejan estos puntitos blancos ... y se hacen como tiras blancas"; a falling
+// leaf over the lake mirrored as a tall dark bar) SHADE_SSRH_THICK gives whatever a ray passes behind the depth of a block: right
+// for trunks, crowns and houses, wrong for a particle or a dropped item, which then "catches" every ray that passes up to 2 blocks
+// behind its few pixels: a streak along those rays (the coarse march rarely landed a step on one, and its jitter averaged it
+// away). Whether the thing at pixel px (linear depth wh) is SMALL: nothing of about its depth half a block further along the ray's
+// screen direction dir, nor 0.4 blocks to either side (a particle is up to 0.32 wide) (a roof's edge or a post is thin one way only: not small). pxB: the pixels
+// a block spans at depth 1. A small thing gets no thickness (a ray hits it only where it really crosses it) and never stands in
+// for what a ray passed behind (SHADE_SSR_BEHIND). Asked only at crossings farther behind than a real one can be, within
+// SHADE_SSRH_THIN_W blocks of the camera (a particle is under 2 pixels beyond). The quad's march (the default) asks after its
+// walk, in shadeSsrhPast: in the walk's loop the test cost every water pixel 0.15 ms inline and more as a call (price-p38,
+// price-p-c9b / c9c, 2026-11-10); the per-pixel marches (ultra, ssrOwn=false) ask in theirs.
+#define SHADE_SSRH_THIN_W 48.0
+static inline bool shadeSsrhSmall(depth2d<float> depth, float2 px, float2 dir, float wh, float pxB, float2 top, float A, float B) {
+	float e = pxB / max(wh, 0.05);
+	if (e < 6.0) return false; // (a block under 6 pixels there: too far to tell)
+	float tol = 0.4 + 0.04 * wh;
+	float2 n = float2(-dir.y, dir.x);
+	float z0 = depth.read(uint2(clamp(px + dir * (0.5 * e), float2(0.0), top)));
+	float z1 = depth.read(uint2(clamp(px + n * (0.4 * e), float2(0.0), top)));
+	float z2 = depth.read(uint2(clamp(px - n * (0.4 * e), float2(0.0), top)));
+	bool m0 = z0 > 0.0 && abs(B / max(z0 + A, 1e-7) - wh) < tol;
+	bool m1 = z1 > 0.0 && abs(B / max(z1 + A, 1e-7) - wh) < tol;
+	bool m2 = z2 > 0.0 && abs(B / max(z2 + A, 1e-7) - wh) < tol;
+	return !(m0 || m1 || m2);
+}
+// How far behind the depth copy (blocks) a ray can be at the first sample behind it when it really crossed that surface since the
+// last sample: its own depth step (stepW) and, on one surface (the last sample's depth wp close to wh), what the surface came nearer
+static inline float shadeSsrhThin(float wh, float wp, float stepW) {
+	float slope = abs(wp - wh);
+	return 0.05 + 0.01 * wh + stepW * 1.5 + (slope < 0.3 + 0.03 * wh ? slope : 0.0);
+}
+
 // The hit of the screen segment s0 + ds t, t in 0..1 (shadeSsrSegment): (uv over the rendered rect, fade, t), w < 0 for none.
 // yFloor: nothing below this camera-relative height can be hit (a ray that rises from a surface: that surface's height - 0.3;
 // -1e30 for none; FT1.2's shadeSsrBelowStart, tested at each crossing).
@@ -737,6 +789,8 @@ static float4 shadeSsrTrace(float3 s0, float3 ds, bool screenEnd, float yFloor, 
 	bool behind = SHADE_SSR_BEHIND != 0;
 	bool front = true; // the ray is in front of the scene where the walk stands
 	float tBack = -1.0;
+	float2 dirO = d / max(length(d), 1e-6); // the ray on screen, and the pixels a block spans at depth 1 (shadeSsrhSmall)
+	float pxB = 0.5 * size.y * abs(f.proj[1][1]);
 	int budget = SHADE_SSRH_BUDGET;
 	for (int i = 0; i < n0 && budget > 0; i++) {
 		float ta = float(i) * inv0;
@@ -763,11 +817,21 @@ static float4 shadeSsrTrace(float3 s0, float3 ds, bool screenEnd, float yFloor, 
 				// (never the sky: a ray that outruns the far plane is "behind" depth 0)
 				if (front && !fr && zs[k] > 0.0 && shadeSsrhY(a + d * t, zs[k], size, f) >= yFloor) { // the ray went from in front of the scene to behind it since the last sample
 					float wh = B / max(zs[k] + A, 1e-7), wr = B / max(zr + A, 1e-7);
-					float thick = SHADE_SSRH_THICK + 0.03 * wh + abs(wr - B / max(zr - ds.z * inv2 + A, 1e-7)) * SHADE_SSR_THICK_K;
+					float stepW = abs(wr - B / max(zr - ds.z * inv2 + A, 1e-7));
+					float thick = SHADE_SSRH_THICK + 0.03 * wh + stepW * SHADE_SSR_THICK_K;
+					float zp = zs[max(k - 1, 0)];
+					bool big = true;
+#ifdef SHADE_SSRH_THIN
+					float thin = shadeSsrhThin(wh, zp > 0.0 ? B / max(zp + A, 1e-7) : 1e9, stepW);
+					if (wr - wh > thin && wh < SHADE_SSRH_THIN_W && shadeSsrhSmall(depth, a + d * t, dirO, wh, pxB, top, A, B)) {
+						thick = thin;
+						big = false;
+					}
+#endif
 					if (wr - wh < thick) {
 						float tH = t;
-						if (k > 0 && zs[k - 1] > 0.0 && abs(B / max(zs[k - 1] + A, 1e-7) - wh) < thick) {
-							float dA = zr - ds.z * inv2 - zs[k - 1], dB = zs[k] - zr; // in front by dA at the last sample, behind by dB here
+						if (k > 0 && zp > 0.0 && abs(B / max(zp + A, 1e-7) - wh) < thick) {
+							float dA = zr - ds.z * inv2 - zp, dB = zs[k] - zr; // in front by dA at the last sample, behind by dB here
 							tH = t - inv2 * dB / max(dA + dB, 1e-12);
 						}
 						float3 sh = s0 + ds * tH;
@@ -788,7 +852,7 @@ static float4 shadeSsrTrace(float3 s0, float3 ds, bool screenEnd, float yFloor, 
 						return float4(uv, fade, tH);
 					}
 					// it passed behind something: on, and the first such thing beyond the reflecting point stands in if nothing is hit
-					if (behind && tBack < 0.0 && wh > wStart) tBack = t;
+					if (behind && big && tBack < 0.0 && wh > wStart) tBack = t;
 				}
 				front = fr;
 			}
@@ -889,7 +953,16 @@ static float4 shadeSsrTraceQuad(float3 s0, float3 ds, bool screenEnd, float yFlo
 					float zk = zl[k >> 2], zr = s0.z + ds.z * t;
 					if (shadeSsrhY(a + d * t, zk, size, f) >= yFloor) {
 						float wh = B / max(zk + A, 1e-7), wr = B / max(zr + A, 1e-7);
-						float thick = SHADE_SSRH_THICK + 0.03 * wh + abs(wr - B / max(zr - ds.z * inv2 + A, 1e-7)) * SHADE_SSR_THICK_K;
+						float stepW = abs(wr - B / max(zr - ds.z * inv2 + A, 1e-7));
+						float thick = SHADE_SSRH_THICK + 0.03 * wh + stepW * SHADE_SSR_THICK_K;
+						bool big = true;
+#ifdef SHADE_SSRH_THIN
+						float thin = shadeSsrhThin(wh, wh, stepW);
+						if (wr - wh > thin && wh < SHADE_SSRH_THIN_W && shadeSsrhSmall(depth, a + d * t, d / max(length(d), 1e-6), wh, 0.5 * size.y * abs(f.proj[1][1]), top, A, B)) {
+							thick = thin;
+							big = false;
+						}
+#endif
 						if (wr - wh < thick) {
 							float tH = t;
 							if (k > 0) { // on one surface: where the ray meets it between the two samples (their secant)
@@ -907,7 +980,7 @@ static float4 shadeSsrTraceQuad(float3 s0, float3 ds, bool screenEnd, float yFlo
 							if (!behind) fade *= 1.0 - smoothstep(0.6, 1.0, (wr - wh) / thick);
 							if (!screenEnd) fade *= 1.0 - smoothstep(0.85, 1.0, wr / max(B / max(s0.z + ds.z + A, 1e-7), 1e-3));
 							ev = float4(clamp(uv.x, 0.5 / size.x, 1.0 - 0.5 / size.x), min(uv.y, 1.0 - 0.5 / size.y), fade, 1.0);
-						} else if (behind && wh > wStart) ev.w = 2.0;
+						} else if (behind && big && wh > wStart) ev.w = 2.0;
 					}
 				}
 				ev = shadeQuadSum(ev);
@@ -932,6 +1005,66 @@ static float4 shadeSsrTraceQuad(float3 s0, float3 ds, bool screenEnd, float yFlo
 	if (!screenEnd) bf *= 1.0 - smoothstep(0.85, 1.0, wr / max(B / max(s0.z + ds.z + A, 1e-7), 1e-3));
 	return float4(clamp(uv.x, 0.5 / size.x, 1.0 - 0.5 / size.x), min(uv.y, 1.0 - 0.5 / size.y), bf, 11.0);
 }
+
+#if defined(SHADE_SSRH_OWN) && defined(SHADE_SSRH_THIN)
+// After shadeSsrTraceQuadOwn, for the few hits it flagged (far behind what they hit, near the camera) and for stand-ins: where
+// that thing is small (shadeSsrhSmall: a particle, a dropped item) the ray only passed behind it, so it goes on along its segment
+// from there, coarsely (8 pixels a step, growing 12 % a step, up to 32 steps; a crossing placed by two halvings), to what it
+// really meets; a small stand-in is dropped. hit as shadeSsrTraceQuadOwn returns it, and returned so. Called from shadeSsrResolve
+// (the one cold call at the end), once per flagged pixel.
+static inline float4 shadeSsrhPast(float4 hit, float3 so, float3 dso, bool screenEnd, float yFloor, constant ShadeFrame &f, depth2d<float> depth) {
+	float2 tex = float2(depth.get_width(), depth.get_height());
+	float2 size = shadeWaterRenderSize(f, tex);
+	float A = f.proj[2][2], B = f.proj[3][2];
+	float2 ao = (so.xy * 0.5 + 0.5) * size, dox = dso.xy * 0.5 * size;
+	float2 top = size - 1.0;
+	float len = length(dox);
+	if (len < 1.0) return hit;
+	float2 dir = dox / len;
+	float pxB = 0.5 * size.y * abs(f.proj[1][1]);
+	float z0 = depth.read(uint2(clamp(ao + dox * hit.x, float2(0.0), top)));
+	if (z0 <= 0.0) return hit;
+	float w0 = B / max(z0 + A, 1e-7);
+	if (w0 >= SHADE_SSRH_THIN_W || !shadeSsrhSmall(depth, ao + dox * hit.x, dir, w0, pxB, top, A, B)) return hit;
+	if (hit.w > 5.0) return float4(0.0, 0.0, 0.0, -1.0); // (a small thing does not stand in)
+	bool behind = SHADE_SSR_BEHIND != 0;
+	bool front = false; // behind the small thing
+	float t = hit.x, st = 8.0 / len;
+	for (int i = 0; i < 32; i++) {
+		float tp = t;
+		t += st;
+		st *= 1.12;
+		if (t >= 1.0) break;
+		float zk = depth.read(uint2(clamp(ao + dox * t, float2(0.0), top)));
+		bool bk = zk > 0.0 && so.z + dso.z * t <= zk;
+		if (bk && front) {
+			float lo = tp, hi = t;
+			for (int m = 0; m < 2; m++) {
+				float tm = 0.5 * (lo + hi);
+				float zm = depth.read(uint2(clamp(ao + dox * tm, float2(0.0), top)));
+				if (zm > 0.0 && so.z + dso.z * tm <= zm) { hi = tm; zk = zm; }
+				else lo = tm;
+			}
+			float zr = so.z + dso.z * hi;
+			float wh = B / max(zk + A, 1e-7), wr = B / max(zr + A, 1e-7);
+			float stepW = abs(wr - B / max(so.z + dso.z * lo + A, 1e-7));
+			float thick = SHADE_SSRH_THICK + 0.03 * wh + stepW * SHADE_SSR_THICK_K;
+			if (shadeSsrhY(ao + dox * hi, zk, size, f) >= yFloor && wr - wh < thick
+			    && !(wh < SHADE_SSRH_THIN_W && wr - wh > shadeSsrhThin(wh, wh, stepW) && shadeSsrhSmall(depth, ao + dox * hi, dir, wh, pxB, top, A, B))) {
+				float3 sh = so + dso * hi;
+				float off = abs(sh.x) - 1.0, offT = sh.y - 1.0;
+				float fade = smoothstep(0.0, 0.07, sh.y * 0.5 + 0.5) * mix(1.0, SHADE_SSR_SIDE_END, saturate(off / SHADE_SSR_SIDE) * saturate(off / SHADE_SSR_SIDE)) * (1.0 - smoothstep(0.0, SHADE_SSR_TOP, offT));
+				fade *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.5) * 4.0), saturate(max(off, offT) * 20.0));
+				if (!behind) fade *= 1.0 - smoothstep(0.6, 1.0, (wr - wh) / thick);
+				if (!screenEnd) fade *= 1.0 - smoothstep(0.85, 1.0, wr / max(B / max(so.z + dso.z + A, 1e-7), 1e-3));
+				return float4(hi, fade, 0.0, 1.0);
+			}
+		}
+		front = !bk;
+	}
+	return float4(0.0, 0.0, 0.0, -1.0);
+}
+#endif
 
 #ifdef SHADE_SSRH_OWN
 // The quad's search, each pixel's own hit (mcopt.shade.water.ssrOwn, the default): which intervals to open is decided together on
@@ -1015,11 +1148,19 @@ static float4 shadeSsrTraceQuadOwn(float3 s0, float3 ds, float3 so, float3 dso, 
 					float zr = so.z + dso.z * t;
 					if (shadeSsrhY(ao + dox * t, zs[k], size, f) < yFloor) continue;
 					float wh = B / max(zs[k] + A, 1e-7), wr = B / max(zr + A, 1e-7);
-					float thick = SHADE_SSRH_THICK + 0.03 * wh + abs(wr - B / max(zr - dso.z * inv2 + A, 1e-7)) * SHADE_SSR_THICK_K;
+					float stepW = abs(wr - B / max(zr - dso.z * inv2 + A, 1e-7));
+					float thick = SHADE_SSRH_THICK + 0.03 * wh + stepW * SHADE_SSR_THICK_K;
+					float zp = zs[max(k - 1, 0)];
 					if (wr - wh < thick) {
 						float tH = t;
-						float zp = zs[max(k - 1, 0)];
-						if (k > 0 && zp > 0.0 && abs(B / max(zp + A, 1e-7) - wh) < thick) { // one surface: the secant
+#ifdef SHADE_SSRH_THIN
+						// (farther behind it than a real crossing can be, near the camera: shadeSsrhPast looks at it after the walk; no reads here:
+						// the test inline in this loop cost every water pixel 0.15 ms, price-p38 2026-11-10)
+						bool sus = wh < SHADE_SSRH_THIN_W && wr - wh > shadeSsrhThin(wh, zp > 0.0 ? B / max(zp + A, 1e-7) : 1e9, stepW);
+#else
+						bool sus = false;
+#endif
+						if (!sus && k > 0 && zp > 0.0 && abs(B / max(zp + A, 1e-7) - wh) < thick) { // one surface: the secant
 							float dA = zr - dso.z * inv2 - zp, dB = zs[k] - zr;
 							tH = t - inv2 * saturate(dB / max(dA + dB, 1e-12));
 						}
@@ -1029,7 +1170,7 @@ static float4 shadeSsrTraceQuadOwn(float3 s0, float3 ds, float3 so, float3 dso, 
 						fade *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.5) * 4.0), saturate(max(off, offT) * 20.0));
 						if (!behind) fade *= 1.0 - smoothstep(0.6, 1.0, (wr - wh) / thick);
 						if (!screenEnd) fade *= 1.0 - smoothstep(0.85, 1.0, wr / max(B / max(so.z + dso.z + A, 1e-7), 1e-3));
-						res = float3(tH, fade, 0.0);
+						res = float3(tH, fade, float(sus));
 						done = true;
 						break;
 					}
@@ -1040,8 +1181,9 @@ static float4 shadeSsrTraceQuadOwn(float3 s0, float3 ds, float3 so, float3 dso, 
 			all = shadeQuadOr(uint(!done)) == 0u;
 		}
 	}
-	// x the hit's place on the pixel's segment (so + dso x), y its weight; w 1 a hit, 11 a crossing behind something standing in
-	if (done && ownOk) return float4(res.xy, 0.0, 1.0);
+	// x the hit's place on the pixel's segment (so + dso x), y its weight, z 1 = far behind what it hit (SHADE_SSRH_THIN: shadeSsrhPast
+	// then asks whether that is a small thing); w 1 a hit, 11 a crossing behind something standing in
+	if (done && ownOk) return float4(res, 1.0);
 	if (tBack < 0.0) return float4(0.0, 0.0, 0.0, -1.0);
 	float3 sh = so + dso * tBack;
 	float zh = depth.read(uint2(clamp(ao + dox * tBack, float2(0.0), top)));
@@ -1360,9 +1502,31 @@ static inline float2 shadeWaterPanoWanted(float3 p0, float3 r, constant ShadeFra
 // what the panorama holds there under it. rgb the mirrored radiance, a its weight over the sky's reflection.
 static SHADE_COLD float4 shadeSsrResolve(bool isHit, float hitW, float2 uv, float3 o, float3 r, float exposure, float prevExposure, constant ShadeFrame &f,
                                          constant ShadeLook *L, constant ShadeResources *R, texture2d<half> scene, depth2d<float> depth, texture2d<half> prev,
-                                         float2 fx, float2 fy, bool wide, bool known, float3 pwKnown, float panoW, float t0) {
+                                         float2 fx, float2 fy, bool wide, bool known, float3 pwKnown, float panoW, float t0,
+                                         float4 raw = float4(0.0), float3 so = float3(0.0), float3 dso = float3(0.0), bool rawEnd = false, float yFloor = 0.0) {
 	float3 c = 0.0;
 	float wgt = 0.0;
+#if defined(SHADE_SSR_QUAD) && defined(SHADE_SSRH_OWN) && defined(SHADE_SSRH_THIN)
+	// (candidate 9) the quad's march flagged this hit (raw, as it returned it: far behind what it hit near the camera, or a stand-in):
+	// past a small thing the ray goes on (shadeSsrhPast). Here, not after the march: a second call site there cost every water pixel
+	// 0.28 ms although almost none takes it (price-p39 / p40, 2026-11-10). The caller's tHit and footprint are those of the first hit.
+	if (isHit && (raw.z > 0.5 || raw.w > 5.0)) {
+		float4 h = shadeSsrhPast(raw, so, dso, rawEnd, yFloor, f, depth);
+		if (h.w < 0.0) isHit = false;
+		else if (h.x != raw.x) {
+			float3 hn = so + dso * h.x;
+			float2 sz = shadeWaterRenderSize(f, float2(depth.get_width(), depth.get_height()));
+			uv = float2(clamp(hn.x * 0.5 + 0.5, 0.5 / sz.x, 1.0 - 0.5 / sz.x), min(hn.y * 0.5 + 0.5, 1.0 - 0.5 / sz.y));
+			float4 hw = f.invViewProj * float4(hn, 1.0);
+			pwKnown = hw.xyz / hw.w;
+			known = true;
+			hitW = h.y;
+			fx = 0.0;
+			fy = 0.0;
+			wide = false;
+		}
+	}
+#endif
 	if (isHit) {
 		c = shadeWaterHitColorCore(uv, o, exposure, prevExposure, f, L, scene, depth, prev, fx, fy, wide, known, pwKnown);
 		wgt = hitW;
@@ -1440,6 +1604,7 @@ static float4 shadeSsrT(float3 p0, float3 r, float2 pixel, float maxDist, float 
 #ifndef SHADE_PRICE_NOMARCH // (pricing, -Dmcopt.shade.leanDev=SHADE_PRICE_...: in-session A/B of the exact march's parts)
 	if (seg) hit = shadeSsrTraceQuadOwn(s0, ds, so, dso, ownOk, endOwn, yFloor, int(q.x & 1u) + 2 * int(q.y & 1u), f, depth, hz);
 #endif
+	float4 raw = hit; // (as the march returned it: shadeSsrResolve's shadeSsrhPast)
 	// the hit is a point of this pixel's ray: its screen place, its world point and its distance without reading the depth copy back
 	bool onRay = hit.w >= 0.0 && hit.w < 5.0;
 	float3 hitNdc = so + dso * hit.x;
@@ -1527,7 +1692,8 @@ static float4 shadeSsrT(float3 p0, float3 r, float2 pixel, float maxDist, float 
 	span = 0.0;
 #endif
 #ifdef SHADE_SSRH_ONRAY
-	return shadeSsrResolve(hit.w >= 0.0, hit.z, hit.xy, p0Own, rOwn, exposure, prevExposure, f, L, R, scene, depth, prev, fx, fy, span > 1.5, onRay, hitP, want.x, want.y);
+	return shadeSsrResolve(hit.w >= 0.0, hit.z, hit.xy, p0Own, rOwn, exposure, prevExposure, f, L, R, scene, depth, prev, fx, fy, span > 1.5, onRay, hitP, want.x, want.y,
+	                       raw, so, dso, endOwn, yFloor);
 #undef SHADE_SSRH_ONRAY
 #elif defined(SHADE_SSR_QUAD)
 	return shadeSsrResolve(hit.w >= 0.0, hit.z, hit.xy, p0Own, rOwn, exposure, prevExposure, f, L, R, scene, depth, prev, fx, fy, span > 1.5, false, float3(0.0), want.x, want.y);
