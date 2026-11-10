@@ -310,6 +310,9 @@ public final class ShadeFrameUpdater {
 		if (mcopt.metal.shade.water.ShadeWater.ON) mcopt.metal.shade.water.ShadeWater.bake(ShadeBindings.ctx(), enc);
 		if (ShadeConfig.HDR && !ShadeBindings.fallback()) mcopt.metal.shade.weather.ShadeWeather.bakeNoise(enc);
 		if (ShadeConfig.HDR && !ShadeBindings.fallback()) ShadePost.beginWorld(encoder, enc, mc.gameRenderer.mainRenderTarget());
+		// (1.2.7 candidate 8) last frame's image into the reflections' panorama (what mirrors past the screen's sides); after
+		// beginWorld: ShadeResources.prevScene / prevDepth and ShadeLook.ssr are this frame's
+		if (ShadeConfig.HDR && !ShadeBindings.fallback()) mcopt.metal.shade.water.ShadeWaterPano.update(enc, f);
 		if (LOG_EVERY > 0 && now - lastLog > LOG_EVERY * 1_000_000_000L) {
 			lastLog = now;
 			System.out.println(String.format(java.util.Locale.ROOT, "[mcopt] shade: e %.1f deg, exposure ref %.3f gpu %.3f, metered log2 %.2f, sat %.2f, contrast %.2f, bloom %.3f, mist %.2f, wb %.0f%s",

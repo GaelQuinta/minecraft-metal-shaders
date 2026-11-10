@@ -117,7 +117,7 @@ struct ShadeResources {
 	texture2d<float> pbrNormal;
 	texture2d<float> pbrSpecular;
 	texture2d<half> waterOpen;   // 9  (2026-11-02, water round 1) RGBA8 128^2 toroidal open-water map, 2 blocks per texel (water.metal shadeWaterOpen; ShadeWater.openMap)
-	texture2d<half> reserved10;
+	texture2d<half> reflPano;    // 10 (1.2.7 candidate 8) RGBA16F 2048x512: what the view has shown, by direction from the eye (water.metal SHADE_WATER_PANO; ShadeWaterPano)
 	texture2d<half> aurora;      // 11 (M3.3 dims) RGBA16F the aurora for this frame's view at a fraction of the output size (aurora.metal; read when ShadeLook bit SHADE_DIMS_AURORA_TEX)
 	texture2d<half> cloudShadow; // 12 M3 clouds: R16F cumulus transmittance toward the light (ShadeLook.cloudShadowVP), 256^2
 	texture2d<half> cloudDome;   // 13 M3 clouds: RGBA16F (scattered light before exposure, transmittance) by direction, upper hemisphere

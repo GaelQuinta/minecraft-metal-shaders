@@ -1,0 +1,79 @@
+/*
+ * Copyright 2026 mcopt-shade contributors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the
+ * License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0. Unless required by applicable
+ * law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES
+ * OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package mcopt.metal.shade.water;
+
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+
+import mcopt.metal.shade.ShadeFrame;
+import mcopt.metal.shade.ShadeRender;
+
+/**
+ * 1.2.7 candidate 8: the reflections' panorama (water.metal SHADE_WATER_PANO; ShadeResources.reflPano, entry 10). Screen-space
+ * reflections end where the screen does: mirrored trees and shores near its sides were cut off along a line that swept over the
+ * water while the view turned. Once a frame, before the world is drawn, last frame's finished image (the TAA's history and its
+ * depth) is laid into a 2048x512 texture by direction from the eye; what the view no longer shows stays, re-aimed as the eye
+ * moves. The water marches the mirrored rays that leave the screen through it. Two textures alternate (the pass reads the one it
+ * replaces). Starts over on a jump of the eye (a teleport, a respawn) or a change of dimension. Render thread only.
+ */
+public final class ShadeWaterPano {
+	private static final int W = 2048, H = 512; // water.metal SHADE_PANO_W / _H
+	private static final long[] TEX = new long[2];
+	private static final ByteBuffer PARAMS = ByteBuffer.allocateDirect(32).order(ByteOrder.nativeOrder());
+	private static long pso;
+	private static int cur, frames, dimension = Integer.MIN_VALUE;
+	private static boolean failed;
+	// the eye of the frame whose image the last update laid in (last frame's at that time), and this frame's
+	private static double lastX, lastY, lastZ, nowX, nowY, nowZ;
+
+	private ShadeWaterPano() {
+	}
+
+	/** The panorama holds something the water may read (ShadeWaterParams.mirror.z is 0 until then). */
+	static boolean ready() {
+		return frames > 2 && !failed;
+	}
+
+	/** Lays last frame's image in; f: this frame's (its camera and dimension). Before the world passes, after ShadeBindings.publish. */
+	public static void update(long enc, ShadeFrame f) {
+		if (!ShadeWater.ON || !ShadeWater.PANO || !mcopt.metal.shade.taa.TaaConfig.ENABLED || failed || enc == 0) return;
+		try {
+			if (pso == 0) {
+				long t0 = mcopt.metal.shade.ShadeCompile.now();
+				pso = ShadeRender.pipeline(ShadeWater.passLibrary(), "shade_fs_vs", "shade_water_pano_fs", ShadeRender.RGBA16F, ShadeRender.BLEND_NONE);
+				TEX[0] = ShadeRender.texture(ShadeRender.RGBA16F, W, H, false, "mcopt shade water: reflection panorama A");
+				TEX[1] = ShadeRender.texture(ShadeRender.RGBA16F, W, H, false, "mcopt shade water: reflection panorama B");
+				mcopt.metal.shade.ShadeCompile.setup("water", t0);
+			}
+			// the image laid in now is last frame's, seen from last frame's eye (nowX.. still holds it); the panorama stood at the eye
+			// of the frame before
+			double mx = nowX - lastX, my = nowY - lastY, mz = nowZ - lastZ;
+			boolean reset = frames == 0 || f.dimension != dimension || Math.abs(mx) + Math.abs(my) + Math.abs(mz) > 16;
+			dimension = f.dimension;
+			PARAMS.clear();
+			PARAMS.putFloat((float) mx).putFloat((float) my).putFloat((float) mz).putFloat(reset ? 1f : 0f)
+				.putFloat(mcopt.metal.shade.Live.f("mcopt.shade.water.reflPanoBlend", 0.35f, 0.02f, 1f)).putFloat(0f).putFloat(0f).putFloat(0f).flip();
+			int next = cur ^ 1;
+			ShadeRender.pass(enc, pso, TEX[next], ShadeRender.DONT_CARE, new long[] {TEX[cur]}, PARAMS, "mcopt shade water: reflection panorama");
+			ShadeRender.resource(10, TEX[next]);
+			cur = next;
+			frames = reset ? 1 : frames + 1;
+			lastX = nowX;
+			lastY = nowY;
+			lastZ = nowZ;
+			nowX = f.cameraX;
+			nowY = f.cameraY;
+			nowZ = f.cameraZ;
+		} catch (Throwable e) {
+			failed = true;
+			System.out.println("[mcopt] shade: water reflection panorama failed, reflections end at the screen's sides: " + e);
+		}
+	}
+}

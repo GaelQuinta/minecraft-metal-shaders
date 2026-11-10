@@ -89,7 +89,8 @@ struct ShadeWaterParams {
 	               // the texels last frame wrote carry -z), w the clamp box's scale (.reflHistBox; 0 = the code isn't compiled in)
 	float4 mirror; // (2026-11-06, SHADE_WATER_MIRROR_AA) x the ripple-aware mirror normal's strength (mcopt.shade.water.mirrorAAStrength,
 	               // 0 = none), y (candidate 8, SHADE_SSR_HIER) the mirrored image's footprint filter (mcopt.shade.water.reflFilter, 1; 0 = one
-	               // tap per pixel), zw reserved
+	               // tap per pixel), z (candidate 8, SHADE_WATER_PANO) the panorama's share off screen (mcopt.shade.water.reflPano, 1; 0 = none),
+	               // w reserved
 };
 
 // (2026-11-06) the reflection history's textures (SHADE_WATER_RHIST; mcwater.m binds them, ping-pong): texture(29) last frame's,
@@ -1085,6 +1086,112 @@ static float3 shadeWaterSkyRefl(float3 r, float3 rs, float3 o, float prevExposur
 	return sky;
 }
 
+#ifdef SHADE_WATER_PANO
+// ---- the reflections' panorama (1.2.7 candidate 8) ----------------------------------------------------------------------------
+// Gael (candidates 6, 7 and 8): "cuando estás volteando o moviéndote, los reflejos a los lados de la pantalla se cortan así raro".
+// Screen-space reflections only know what is on screen: a mirrored ray that leaves it through a side finds nothing, so the trees
+// and shores mirrored near the screen's sides end in the sky's reflection, along a line that sweeps over the water as the view
+// turns. The panorama remembers what the view has shown: the finished image of every frame is laid into a texture by direction
+// from the eye (ShadeResources.reflPano, RGBA16F SHADE_PANO_W x SHADE_PANO_H: rgb the pre-exposed colour as last frame's image
+// holds it, a its distance from the eye in blocks, 60000 the sky, 0 never seen), kept where the view no longer looks and moved
+// with the eye (each texel's point re-aimed from the eye's new place). A mirrored ray whose vanishing point is off screen, and
+// that found nothing on screen, is marched through it (shadeWaterPano): what left the screen a moment ago still mirrors.
+// u: the azimuth; v: the sine of the elevation from -0.25 to 1, as a signed square root (most rows near the horizon, where the
+// shores and trees are).
+#define SHADE_PANO_W 2048
+#define SHADE_PANO_H 512
+static inline float2 shadePanoUv(float3 d) {
+	float az = atan2(d.z, d.x) * 0.15915494;
+	float sy = d.y >= 0.0 ? sqrt(d.y) : -sqrt(-d.y);
+	return float2(az < 0.0 ? az + 1.0 : az, saturate((sy + 0.5) * (1.0 / 1.5)));
+}
+static inline float3 shadePanoDir(float2 uv) {
+	float sy = uv.y * 1.5 - 0.5;
+	float y = sy * abs(sy);
+	float rh = sqrt(max(1.0 - y * y, 0.0));
+	float az = uv.x * 6.2831853;
+	return float3(cos(az) * rh, y, sin(az) * rh);
+}
+
+// The update (ShadeWaterPano.update, once a frame before the world): texture(0) the panorama as it was, buffer(0) the eye's move.
+struct ShadePanoParams {
+	float4 move; // xyz the eye of the image laid in now - the eye the panorama stood at, w 1 = start over (nothing kept)
+	float4 k;    // x how much of a texel the screen replaces per frame
+};
+fragment half4 shade_water_pano_fs(float4 pos [[position]], texture2d<half> was [[texture(0)]], constant ShadePanoParams &u [[buffer(0)]],
+                                   constant ShadeLook &L [[buffer(17)]], constant ShadeResources &sr [[buffer(19)]]) {
+	constexpr sampler wrapU(filter::linear, s_address::repeat, t_address::clamp_to_edge);
+	constexpr sampler lin(filter::linear, address::clamp_to_edge);
+	constexpr sampler nearest(filter::nearest, address::clamp_to_edge);
+	float3 dir = shadePanoDir(pos.xy / float2(SHADE_PANO_W, SHADE_PANO_H));
+	float4 o = float4(0.0);
+	if (u.move.w < 0.5) {
+		o = float4(was.read(uint2(pos.xy)));
+		// the eye moved: the point this direction shows now (at about the distance it showed) was seen from the old eye along another
+		if (o.a > 0.5 && o.a < 50000.0 && dot(u.move.xyz, u.move.xyz) > 1e-8) {
+			float3 q = dir * o.a + u.move.xyz;
+			float4 w = float4(was.sample(wrapU, shadePanoUv(normalize(q)), level(0.0)));
+			if (w.a > 0.5) o = float4(w.rgb, w.a < 50000.0 ? max(w.a - dot(u.move.xyz, dir), 0.6) : w.a);
+		}
+	}
+	if (L.ssr.x > 0.5 && L.ssr.y > 0.5) { // last frame's finished image and its depth
+		float4 c = L.prevViewProjNoJitter * float4(dir, 0.0);
+		if (c.w > 1e-4) {
+			float2 uvS = c.xy / c.w * 0.5 + 0.5;
+			if (min(min(uvS.x, 1.0 - uvS.x), min(uvS.y, 1.0 - uvS.y)) > 0.004) {
+				float pd = float(sr.prevDepth.sample(nearest, uvS).r);
+				float dist = pd > 60000.0 ? 60000.0 : max(pd / c.w, 0.6); // (c.w: the view depth of a point 1 block along dir)
+				// a texel spans ~5 image pixels across: 4 taps along the row
+				float px = 1.0 / float(sr.prevScene.get_width());
+				half3 col = sr.prevScene.sample(lin, uvS + float2(-1.875 * px, 0.0)).rgb + sr.prevScene.sample(lin, uvS + float2(-0.625 * px, 0.0)).rgb
+					+ sr.prevScene.sample(lin, uvS + float2(0.625 * px, 0.0)).rgb + sr.prevScene.sample(lin, uvS + float2(1.875 * px, 0.0)).rgb;
+				float3 cnow = min(float3(col) * 0.25, float3(60000.0));
+				// (a texel that turns from sky to something solid or back starts over)
+				float k = o.a > 0.5 && (o.a > 50000.0) == (dist > 50000.0) ? u.k.x : 1.0;
+				o = float4(mix(o.rgb, cnow, k), dist);
+			}
+		}
+	}
+	return half4(o);
+}
+
+// What the mirrored ray p0 + r t (camera-relative, r unit and rising) meets in the panorama: rgb its radiance before exposure (hazed
+// over the leg from the surface, as the on-screen hits are), a 1, or 0 where it meets nothing the panorama holds (the sky, or
+// directions never seen: the caller's sky stays). 10 steps, each 1.85 times the last (2 to 512 blocks), then two halvings of the
+// step that went behind something; behind it by more than the depth a thing may have (2 blocks + 10 % of the distance) the ray
+// passed it and goes on. prevExposure: the exposure last frame's image was drawn with (the panorama's colours are in its units).
+static __attribute__((noinline)) float4 shadeWaterPano(float3 p0, float3 r, float prevExposure, constant ShadeFrame &f, constant ShadeLook *L, texture2d<half> pano) {
+	constexpr sampler wrapU(filter::linear, s_address::repeat, t_address::clamp_to_edge);
+	float3 o = p0 - shadeEye(f.invViewProj);
+	float tp = 0.0, t = 2.0;
+	for (int i = 0; i < 10; i++) {
+		float3 q = o + r * t;
+		float dq = length(q);
+		float a = float(pano.sample(wrapU, shadePanoUv(q / dq), level(0.0)).a);
+		if (a > 0.5 && a < dq) { // behind what was seen there: where between the last step and this one
+			float lo = tp, hi = t;
+			for (int j = 0; j < 2; j++) {
+				float m = 0.5 * (lo + hi);
+				float3 qm = o + r * m;
+				float dm = length(qm);
+				float am = float(pano.sample(wrapU, shadePanoUv(qm / dm), level(0.0)).a);
+				if (am > 0.5 && am < dm) hi = m; else lo = m;
+			}
+			float3 qh = o + r * hi;
+			float dh = length(qh);
+			half4 c = pano.sample(wrapU, shadePanoUv(qh / dh), level(0.0));
+			if (float(c.a) > 0.5 && float(c.a) < 50000.0 && dh - float(c.a) < 2.0 + 0.1 * dh) {
+				float3 rgb = float3(c.rgb) / max(prevExposure, 1e-6);
+				return float4(shadeWaterHazed(rgb, p0 + r * hi, p0, f, L), 1.0);
+			}
+		}
+		tp = t;
+		t *= 1.85;
+	}
+	return float4(0.0);
+}
+#endif
+
 #ifdef SHADE_WATER_EDGE_REFL
 // FT1.2: a ray that rises from the surface cannot hit anything below where it started. SSR's edge-column hits past a side
 // could: below the horizon the edge column holds the bottom under the water (translucent, not in the opaque copy). Read from
@@ -1889,7 +1996,25 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 #ifdef SHADE_SSR
 #ifdef SHADE_LEAN_ABOVE
 	hitWeight = ssrW;
+#ifdef SHADE_WATER_PANO
+	// (candidate 8) a mirrored ray that leaves the screen (its vanishing point is outside it) and found nothing on it: what the
+	// panorama remembers there, under whatever the screen march did find (its hits past a side fade out toward the edge column's end)
+	float panoW = 0.0;
+	if (top && hitWeight < 0.999 && wp.mirror.z > 0.0 && w.res != nullptr && w.look != nullptr && w.prevExposure > 0.0 && fq > 0.022) {
+		float4 vc = f.viewProj * float4(rr, 0.0);
+		float2 vn = abs(vc.xy) / max(vc.w, 1e-4);
+		float outside = vc.w <= 1e-4 ? 1.0 : smoothstep(0.9, 1.0, max(vn.x, vn.y));
+		if (outside > 0.0) {
+			float4 pn = shadeWaterPano(w.p + n * 0.02, rr, w.prevExposure, f, w.look, w.res->reflPano);
+			panoW = pn.a * outside * min(wp.mirror.z, 1.0);
+			refl = mix(refl, pn.rgb, panoW);
+		}
+	}
 	refl = mix(refl, ssrHit.rgb, hitWeight);
+	hitWeight = max(hitWeight, panoW); // (the glint is hidden there too)
+#else
+	refl = mix(refl, ssrHit.rgb, hitWeight);
+#endif
 #else
 	// looking steeply down (within ~45 degrees of straight down) the surface reflects 2% and what it would mirror is mostly
 	// behind the camera: no march there, faded in up to ~50 degrees (quad-uniform: SSR's lanes work together)

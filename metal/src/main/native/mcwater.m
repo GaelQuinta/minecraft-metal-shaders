@@ -27,6 +27,7 @@
 // Manual retain/release (the dylib builds with -fno-objc-arc), like the other files.
 #import "mcmetal.h"
 
+const void *mc_shade_frame_bytes(void);
 int mc_shade_bind_render(id<MTLRenderCommandEncoder> r); // mcshade.m: the shade globals (ShadeFrame at buffer(16)) on an encoder of our own
 
 typedef struct {
@@ -293,6 +294,35 @@ int mc_water_capture(Enc *enc, WaterState *s) {
 			}
 			if (!s->rh[0] || !s->rh[1]) s->params.rhist[1] = 0.0f;
 			s->rhCaptured = s->rh[0] && s->rh[1];
+		}
+		// (dev) MCOPT_WATER_DUMP=<path prefix> [MCOPT_WATER_DUMP_AT=<capture number, 600>]: that capture's depth (rendered rect, raw
+		// float32 rows) and ShadeFrame to <prefix>.depth / .frame / .size, for replaying the SSR march outside the game
+		{
+			static int dumpAt = -1;
+			static const char *dumpPath;
+			if (dumpAt < 0) {
+				dumpPath = getenv("MCOPT_WATER_DUMP");
+				const char *at = getenv("MCOPT_WATER_DUMP_AT");
+				dumpAt = dumpPath ? (at ? atoi(at) : 600) : 0;
+			}
+			const void *fb = mc_shade_frame_bytes();
+			if (dumpAt > 0 && s->captures + 1 == dumpAt && fb) {
+				id<MTLBuffer> out = [enc->ctx->device newBufferWithLength:cw * ch * 4 options:MTLResourceStorageModeShared];
+				id<MTLBlitCommandEncoder> db = [cb blitCommandEncoder];
+				[db copyFromTexture:depth sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(cw, ch, 1)
+					toBuffer:out destinationOffset:0 destinationBytesPerRow:cw * 4 destinationBytesPerImage:cw * ch * 4];
+				[db endEncoding];
+				NSData *frame = [NSData dataWithBytes:fb length:1024];
+				NSString *prefix = [NSString stringWithUTF8String:dumpPath];
+				NSUInteger w = cw, h = ch;
+				[cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
+					[[NSData dataWithBytes:out.contents length:w * h * 4] writeToFile:[prefix stringByAppendingString:@".depth"] atomically:YES];
+					[frame writeToFile:[prefix stringByAppendingString:@".frame"] atomically:YES];
+					[[[NSString stringWithFormat:@"%lu %lu\n", (unsigned long) w, (unsigned long) h] dataUsingEncoding:NSUTF8StringEncoding]
+						writeToFile:[prefix stringByAppendingString:@".size"] atomically:YES];
+					[out release];
+				}];
+			}
 		}
 		mc_reopen_why = "after water copy";
 		mc_render_reopen(enc);

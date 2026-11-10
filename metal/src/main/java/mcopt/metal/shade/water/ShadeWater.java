@@ -80,6 +80,13 @@ public final class ShadeWater {
 	public static final boolean SSR_EXACT = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrExact", "true"));
 	private static final float SSR_EXACT_THICK = Math.clamp(floatProperty("mcopt.shade.water.ssrExactThick", 2f), 0.1f, 64f);
 	private static final int SSR_EXACT_BUDGET = Math.clamp(Integer.getInteger("mcopt.shade.water.ssrExactBudget", 8), 1, 64);
+	/**
+	 * 1.2.7 candidate 8 {@code mcopt.shade.water.pano} (true; Gael: the reflections at the screen's sides are cut off while turning or
+	 * moving): a panorama of what the view has shown, by direction (ShadeWaterPano, water.metal SHADE_WATER_PANO), which mirrored
+	 * rays that leave the screen are marched through. HDR with TAA only (it is made from the TAA's history and depth). Live:
+	 * {@code mcopt.shade.water.reflPano} (1; 0 = the sky there, as before).
+	 */
+	public static final boolean PANO = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.pano", "true"));
 	public static final float SSR_DIST = Math.clamp(floatProperty("mcopt.shade.ssrDist", 512f), 8f, 1024f);
 	public static final float WAVES = Math.clamp(floatProperty("mcopt.shade.waterWaves", 1f), 0f, 4f);
 	public static final boolean CAUSTICS = Boolean.parseBoolean(System.getProperty("mcopt.shade.caustics", "true"));
@@ -348,6 +355,7 @@ public final class ShadeWater {
 		b.append("#define SHADE_WATER_SUBRECT 1\n");
 		if (mcopt.metal.shade.taa.TaaConfig.ENABLED) b.append("#define SHADE_WATER_TAA 1\n");
 		if (RTR && mcopt.metal.shade.taa.TaaConfig.ENABLED) b.append("#define SHADE_WATER_RTR 1\n");
+		if (PANO && mcopt.metal.shade.taa.TaaConfig.ENABLED) b.append("#define SHADE_WATER_PANO 1\n"); // (candidate 8) reflections past the screen's sides
 		if (RHIST) b.append("#define SHADE_WATER_RHIST 1\n"); // (2026-11-06) the reflection's own history
 		if (MIRROR_AA) b.append("#define SHADE_WATER_MIRROR_AA 1\n"); // (2026-11-06) the ripple-aware mirror normal
 		// (candidate 7, dev) mcopt.shade.water.ssrJitterFrame=false: the SSR step jitter fixed per pixel even with TAA (the flicker hunt)
@@ -388,6 +396,10 @@ public final class ShadeWater {
 	private static int capturesAtBake = -1;
 
 	/** The module's own passes (wave bake, coarse depth): prelude + post (shade_fs_vs) + this prelude. */
+	static long passLibrary() {
+		return library();
+	}
+
 	private static long library() {
 		if (library == 0) library = mcopt.metal.shade.ShadeRender.library(librarySource());
 		return library;
@@ -511,7 +523,9 @@ public final class ShadeWater {
 		// (2026-11-06) the ripple-aware mirror normal's strength (water.metal SHADE_WATER_MIRROR_AA; 0 = none)
 		p.putFloat(128, MIRROR_AA ? mcopt.metal.shade.Live.f("mcopt.shade.water.mirrorAAStrength", 1f, 0f, 4f) : 0f)
 			// (candidate 8) the mirrored image read over each pixel's footprint (water.metal shadeWaterPrevTaps; 0 = one tap, as before)
-			.putFloat(132, mcopt.metal.shade.Live.f("mcopt.shade.water.reflFilter", 1f, 0f, 2f)).putFloat(136, 0f).putFloat(140, 0f);
+			.putFloat(132, mcopt.metal.shade.Live.f("mcopt.shade.water.reflFilter", 1f, 0f, 2f))
+			// (candidate 8) the panorama's share in what mirrors past the screen's sides (0 while it holds nothing)
+			.putFloat(136, ShadeWaterPano.ready() ? mcopt.metal.shade.Live.f("mcopt.shade.water.reflPano", 1f, 0f, 1f) : 0f).putFloat(140, 0f);
 		WaterNative.params(state, MemoryUtil.memAddress(p));
 	}
 }

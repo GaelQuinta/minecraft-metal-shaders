@@ -219,6 +219,11 @@ static void useResources(id<MTLRenderCommandEncoder> r, MTLRenderStages stages) 
 	if (n) [r useResources:list count:n usage:MTLResourceUsageRead stages:stages];
 }
 
+// (dev, mcwater.m's depth dump) this frame's ShadeFrame bytes (1024), NULL before the first frame.
+const void *mc_shade_frame_bytes(void) {
+	return frameBuffer ? (const char *) frameBuffer.contents + frameOffset : NULL;
+}
+
 // The same for a render encoder of our own (post passes such as mcvl.m's): 1 if the globals were bound, 0 if not set yet.
 int mc_shade_bind_render(id<MTLRenderCommandEncoder> r) {
 	if (!r || !frameBuffer) return 0;
