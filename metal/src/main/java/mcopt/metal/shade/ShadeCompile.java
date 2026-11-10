@@ -248,8 +248,8 @@ public final class ShadeCompile {
 			// ShadeWater.ready (coarse depth) and bake (waves, ripples)
 			List<Pso> water = new ArrayList<>();
 			if (mcopt.metal.shade.water.ShadeWater.SSR && mcopt.metal.shade.water.ShadeWater.SSR_EXACT) {
-				water.add(Pso.fullScreen("shade_water_pyr_fs", ShadeRender.RGBA32F));
-				water.add(Pso.fullScreen("shade_water_pyr2_fs", ShadeRender.RGBA32F));
+				water.add(Pso.fullScreen("shade_water_pyr_fs", ShadeRender.RG16F));
+				water.add(Pso.fullScreen("shade_water_pyr2_fs", ShadeRender.RG16F));
 			} else if (mcopt.metal.shade.water.ShadeWater.SSR) water.add(Pso.fullScreen("shade_water_hz_fs", ShadeRender.R32F));
 			if (mcopt.metal.shade.water.ShadeWater.PANO && mcopt.metal.shade.taa.TaaConfig.ENABLED) water.add(Pso.fullScreen("shade_water_pano_fs", ShadeRender.RGBA16F));
 			if (mcopt.metal.shade.water.ShadeWater.BAKE) {

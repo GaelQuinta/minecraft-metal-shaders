@@ -319,7 +319,9 @@ public final class ShadeWater {
 		if (SSR) b.append("#define SHADE_SSR 1\n");
 		if (SSR_QUAD) b.append("#define SHADE_SSR_QUAD 1\n");
 		if (SSR_EXACT) b.append("#define SHADE_SSR_HIER 1\n#define SHADE_SSRH_THICK ").append(SSR_EXACT_THICK).append("\n#define SHADE_SSRH_BUDGET ").append(SSR_EXACT_BUDGET).append('\n');
-		if (SSR_EXACT && Boolean.getBoolean("mcopt.shade.water.ssrExactDebug")) b.append("#define SHADE_SSRH_DEBUG 1\n"); // (-Dmcopt.shade.debug=7 shows the march's work)
+		// (candidate 8) the quad searches together, each pixel finds its own hit (false: one shared hit, re-aimed per pixel)
+		if (SSR_EXACT && Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrOwn", "true"))) b.append("#define SHADE_SSRH_OWN 1\n");
+		if (SSR_EXACT && Boolean.getBoolean("mcopt.shade.water.ssrExactDebug")) b.append("#define SHADE_SSRH_DEBUG 1\n"); // (-Dmcopt.shade.debug=10 shows the per-pixel march's work; 11: the panorama's share)
 		b.append("#define SHADE_SSR_STEPS ").append(SSR_STEPS).append('\n');
 		if (CAUSTICS) b.append("#define SHADE_CAUSTICS 1\n");
 		if (FOAM) b.append("#define SHADE_FOAM 1\n");
@@ -372,10 +374,10 @@ public final class ShadeWater {
 			if (SSR) {
 				try {
 					long t0 = mcopt.metal.shade.ShadeCompile.now();
-					if (SSR_EXACT) WaterNative.setPyr(state, mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_pyr_fs", mcopt.metal.shade.ShadeRender.RGBA32F,
-						mcopt.metal.shade.ShadeRender.BLEND_NONE), mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_pyr2_fs", mcopt.metal.shade.ShadeRender.RGBA32F,
+					if (SSR_EXACT) WaterNative.setPyr(state, mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_pyr_fs", mcopt.metal.shade.ShadeRender.RG16F,
+						mcopt.metal.shade.ShadeRender.BLEND_NONE), mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_pyr2_fs", mcopt.metal.shade.ShadeRender.RG16F,
 						mcopt.metal.shade.ShadeRender.BLEND_NONE));
-					else WaterNative.setHz(state, mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_hz_fs", mcopt.metal.shade.ShadeRender.R32F,
+					if (!SSR_EXACT || Boolean.getBoolean("mcopt.shade.water.ssrBoth")) WaterNative.setHz(state, mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_hz_fs", mcopt.metal.shade.ShadeRender.R32F,
 						mcopt.metal.shade.ShadeRender.BLEND_NONE));
 					mcopt.metal.shade.ShadeCompile.setup("water", t0);
 				} catch (Throwable e) {

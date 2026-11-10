@@ -34,7 +34,7 @@ import org.lwjgl.system.MemoryUtil;
  */
 public final class ShadeRender {
 	/** MTLPixelFormat values used by shade. */
-	public static final int RGBA8 = 70, RGBA16F = 115, RG11B10F = 92, R16F = 25, RG16F = 65, R8 = 10, R32F = 55, RGBA32F = 125;
+	public static final int RGBA8 = 70, RGBA16F = 115, RG11B10F = 92, R16F = 25, RG16F = 65, R8 = 10, R32F = 55;
 	/** Load actions for {@link #pass}. */
 	public static final int DONT_CARE = 0, LOAD = 1, CLEAR = 2;
 	/** Blend modes for {@link #pipeline}. */

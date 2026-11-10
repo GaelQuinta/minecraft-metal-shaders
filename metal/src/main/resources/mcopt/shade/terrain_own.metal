@@ -158,7 +158,11 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #endif
 #ifdef SHADE_WATER
 	, texture2d<half> sceneCopy [[texture(18)]], depth2d<float> depthCopy [[texture(19)]], constant ShadeWaterParams &wp [[buffer(23)]]
+#ifdef SHADE_PRICE_OLD
+	, texture2d<half> waterWaves [[texture(20)]], texture2d<float> waterCoarse [[texture(31)]], texture2d<half> waterDetail [[texture(22)]]
+#else
 	, texture2d<half> waterWaves [[texture(20)]], texture2d<float> waterCoarse [[texture(21)]], texture2d<half> waterDetail [[texture(22)]]
+#endif
 #ifdef SHADE_WATER_RHIST
 	// (2026-11-06) the reflection's own history (water.metal SHADE_RH_PARAMS; mcwater.m): last frame's, and this frame's to write
 	, texture2d<half> rhPrev [[texture(29)]], texture2d<half, access::write> rhOut [[texture(30)]]
