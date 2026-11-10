@@ -2712,12 +2712,14 @@ public final class OwnTerrain {
 		if (!TRANSLUCENT || !MetalBridge.inRenderPass(this.encoder)) return false;
 		// (probe modes "notrans" / "skipall": our translucent terrain not drawn, the frame's translucent cost measured apart)
 		if (PROBE_MS > 0 && (PROBE_MODES[this.probeMode].equals("notrans") || PROBE_MODES[this.probeMode].equals("skipall"))) return true;
-		if (mcopt.metal.shade.terrain.ShadeTerrain.ON) mcopt.metal.shade.terrain.ShadeTerrain.beforeTranslucent(this.encoder); // mcopt-shade: water copy
 		if (NO_FADE) fadeMs = 0;
 		int k = (int) (this.frame % FRAMES);
 		GpuBufferSlice projection = RenderSystem.getProjectionMatrixBuffer(), fog = RenderSystem.getShaderFog();
 		GpuBuffer globals = RenderSystem.getGlobalSettingsUniform();
-		if (projection == null || fog == null || globals == null) return false;
+		if (projection == null || fog == null || globals == null) {
+			if (mcopt.metal.shade.terrain.ShadeTerrain.ON) mcopt.metal.shade.terrain.ShadeTerrain.beforeTranslucent(this.encoder); // (vanilla's water then)
+			return false;
+		}
 		int n = 0;
 		// -Dmcopt.own.int.visible: only the visible slots with translucent units, in the same far-to-near order (OwnVisible)
 		int[] order = null;
@@ -2893,6 +2895,10 @@ public final class OwnTerrain {
 		MemoryUtil.memPutInt(args + 12, 0);
 		MemoryUtil.memPutInt(args + 16, 0);
 		if (at == 0) return true;
+		// mcopt-shade: the water copy (a pass split, colour and depth blits), only for a frame that draws translucent terrain (1.2.7,
+		// audit E2: it ran before this test, ~0.4-0.7 ms in caves, forests and mountains with no water in view); before the useBuffer
+		// calls below, as reopening the pass drops earlier ones
+		if (mcopt.metal.shade.terrain.ShadeTerrain.ON) mcopt.metal.shade.terrain.ShadeTerrain.beforeTranslucent(this.encoder);
 		Matrix4f proj = new Matrix4f();
 		long pa = MetalBridge.bufferAddress(projection.buffer());
 		if (pa != 0) proj.setFromAddress(pa + projection.offset());

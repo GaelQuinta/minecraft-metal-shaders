@@ -29,7 +29,7 @@ import org.joml.Matrix4f;
  * ShadeFrame and CloudWeather, no game types: the offline preview packs it too.
  */
 public final class CloudParams {
-	public static final int SIZE = 448;
+	public static final int SIZE = 528;
 	/** Art knobs: multiple-scattering octave weight and extinction factors, sky-light extinction (diffuse) factor. */
 	static final float OCTAVE_WEIGHT = CloudConfig.floatProperty("mcopt.shade.clouds.octaveWeight", 0.68f),
 		OCTAVE_EXTINCTION = CloudConfig.floatProperty("mcopt.shade.clouds.octaveExtinction", 0.48f),
@@ -67,6 +67,8 @@ public final class CloudParams {
 	public float vanillaStepX;
 	/** How far the cumulus moved since last frame (blocks). */
 	public float windStepX, windStepZ;
+	/** (2026-11) This frame's cumulus cell scale and billow scale (CloudConfig.cellScale / billowScale; 1 = M3). */
+	public float cellScale = 1f, billowScale = 1f;
 	/** Overall opacity (fades the clouds and their shadows; 1.1: the player's mcopt.shade.user.cloudOpacity, ShadeClouds). */
 	public float opacity = 1f;
 	/** This frame's dev bits (CloudConfig.devBits): the passes read them in lightDir.w, the consumers in ShadeLook.clouds1.z. */
@@ -86,6 +88,9 @@ public final class CloudParams {
 	/** Packs CloudParams (SIZE bytes) at out's position 0. */
 	public void pack(ByteBuffer out, ShadeFrame f, CloudWeather w) {
 		ByteBuffer b = out.duplicate().order(ByteOrder.LITTLE_ENDIAN);
+		// (2026-11) this frame's cell and billow scales (the blocky style keeps the weather map's own: its cells are 12 blocks)
+		this.cellScale = ShadeClouds.blocky() ? 1f : CloudConfig.cellScale();
+		this.billowScale = ShadeClouds.blocky() ? 1f : CloudConfig.billowScale();
 		// matrices without the TAA jitter: the clouds' raster stays put, the sky pass samples them by direction
 		m.translation(-f.jitterX, -f.jitterY, 0f).mul(f.viewProj).invert(inv);
 		inv.get(0, b);
@@ -100,15 +105,18 @@ public final class CloudParams {
 		float camY = (float) f.cameraY;
 		put4(b, 160, this.base, this.top, camY, 1f / (2f * CURVATURE_RADIUS));
 		float storm = w.storm;
-		float sigma = 0.15f * CloudConfig.density() * (1f + 0.6f * storm); // (1.1: density live)
+		float sigma = 0.15f * CloudConfig.density() * CloudConfig.sigmaScale() * (1f + 0.6f * storm); // (1.1: density live; 2026-11: x sigmaScale)
 		put4(b, 176, w.coverage, w.type, sigma, 0.78f);
 		if (this.vanillaCells) {
 			put4(b, 192, (float) wrap(f.cameraX + this.vanillaX, this.vanillaPeriodX), (float) wrap(f.cameraZ + 3.96, this.vanillaPeriodZ),
 				(float) wrap(f.cameraX + this.wind3X, NOISE_PERIOD), (float) wrap(f.cameraZ + this.wind3Z, NOISE_PERIOD));
 			put4(b, 208, this.vanillaStepX, 0f, 0f, storm); // (no cirrus: the mask is bound in place of the weather map it reads)
 		} else {
-			put4(b, 192, (float) wrap(f.cameraX + this.windX, WEATHER_PERIOD), (float) wrap(f.cameraZ + this.windZ, WEATHER_PERIOD),
-				(float) wrap(f.cameraX + this.wind3X, NOISE_PERIOD), (float) wrap(f.cameraZ + this.wind3Z, NOISE_PERIOD));
+			// (2026-11: the weather map and the 3D noise read at cellScale / billowScale times their frequency, so they wrap that much
+			// sooner: still a whole number of tiles, no seam)
+			double wp = WEATHER_PERIOD / this.cellScale, np = NOISE_PERIOD / this.billowScale;
+			put4(b, 192, (float) wrap(f.cameraX + this.windX, wp), (float) wrap(f.cameraZ + this.windZ, wp),
+				(float) wrap(f.cameraX + this.wind3X, np), (float) wrap(f.cameraZ + this.wind3Z, np));
 			// (1.1: the cirrus on/off live, its coverage x the player's mcopt.shade.user.cirrusAmount)
 			put4(b, 208, this.windStepX, this.windStepZ, CloudConfig.cirrus() ? w.cirrus * CloudConfig.userCirrus() : 0f, storm);
 		}
@@ -200,6 +208,22 @@ public final class CloudParams {
 		// wind shear: the tops lean downwind by ~40 blocks over the layer (more on windy days)
 		float shear = ShadeClouds.blocky() ? 0f : 25f + 3f * w.windSpeed;
 		put4(b, 432, w.windX * shear, w.windZ * shear, OD_STEP, OD_MIN);
+		// (2026-11) toward Photon's look: the cells' and billows' scales, the edges; the altocumulus layer (none with the blocky style)
+		put4(b, 448, this.cellScale, this.billowScale, ShadeClouds.blocky() ? 1f : CloudConfig.edge(), CloudConfig.photonLight());
+		float altoDay = CloudConfig.altoDay();
+		float alto = ShadeClouds.blocky() || this.vanillaCells ? 0f : (altoDay >= 0f ? altoDay : w.alto) * CloudConfig.alto();
+		put4(b, 464, alto, this.top + CloudConfig.altoAbove(), CloudConfig.altoThickness(), CloudConfig.altoSigma() * CloudConfig.density());
+		// (2026-11) from farStart to farEnd blocks the cumulus go back to M3's edges and extinction (the long grazing steps toward the
+		// horizon sliced crisp, dense small cells into stripes)
+		float farStart = Live.f("mcopt.shade.clouds.farStart", 1200f, 100f, 20000f);
+		put4(b, 480, farStart, Math.max(farStart + 100f, Live.f("mcopt.shade.clouds.farEnd", 4000f, 200f, 30000f)), 1f / CloudConfig.sigmaScale(),
+			CloudConfig.dtMax());
+		// (round 2) the altocumulus' look (its puffs' frequency a whole number of quarters: whole tiles per period, no seam) and the deck's
+		// aerial perspective at the horizon
+		put4(b, 496, Math.round(CloudConfig.altoCells() * 4f) / 4f, CloudConfig.altoSoft(), CloudConfig.altoRows(), CloudConfig.altoCover());
+		// (round 4) z, w: the far light samples' weather mip and density factor (the blocky style's cell mask has no mips: off)
+		put4(b, 512, CloudConfig.horizonAp(), Live.f("mcopt.shade.clouds.horizonTop", 0.08f, 0.01f, 0.5f), ShadeClouds.blocky() ? 0f : CloudConfig.farLightMip(),
+			CloudConfig.farLightGain());
 		// (1.1: shadows on/off and their strength live; off = 0, the consumers read 1, ShadeClouds skips the map's pass)
 		this.shadowStrength = CloudConfig.shadows() ? CloudConfig.shadowStrength() * smoothstep(0.04f, 0.18f, f.sky.lightDir[1]) * this.opacity : 0f;
 

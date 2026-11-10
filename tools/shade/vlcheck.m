@@ -1,6 +1,7 @@
 // Copyright 2026 mcopt-shade contributors. Licensed under the Apache License, Version 2.0.
 // Dev tool: compiles the volumetric light MSL (ShadeMsl.prelude + vl.metal, as VlConfig.source() assembles it) like
-// mcvl.m does (MSL 3.0, fast math) and builds every pipeline mcvl.m builds: march and temporal (RGBA16Float; vl_temporal_fold with its RGBA16Float lightT target), vl_composite
+// mcvl.m does (MSL 3.0, fast math) and builds every pipeline mcvl.m builds: march and temporal (RGBA16Float; vl_temporal_fold with its RGBA16Float lightT target;
+// since 2026-11 the march and the fold with a third R16Float target, the od of what dims the scene), vl_composite
 // for the LDR main target (RGBA8Unorm, programmable blending), vl_composite_hdr for both M2 HDR world formats (RG11B10Float
 // and RGBA16Float, One / SourceAlpha blending), and the canopy kernel with VL_HDR false and true. Usage: vlcheck <file.metal>
 #import <Foundation/Foundation.h>
@@ -18,6 +19,8 @@ static int build(id<MTLDevice> dev, id<MTLLibrary> lib, NSString *fs, MTLPixelFo
 	pd.colorAttachments[0].pixelFormat = fmt;
 	if ([fs isEqualToString:@"vl_march"]) pd.colorAttachments[1].pixelFormat = MTLPixelFormatR8Unorm;
 	if ([fs isEqualToString:@"vl_temporal_fold"]) pd.colorAttachments[1].pixelFormat = MTLPixelFormatRGBA16Float;
+	// (2026-11) the od of what dims the scene (VlParams.air8.z): a third target of the march and the fold
+	if ([fs isEqualToString:@"vl_march"] || [fs isEqualToString:@"vl_temporal_fold"]) pd.colorAttachments[2].pixelFormat = MTLPixelFormatR16Float;
 	if (hdr && [fs isEqualToString:@"vl_composite_hdr"]) {
 		pd.colorAttachments[0].blendingEnabled = YES;
 		pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
@@ -45,6 +48,7 @@ int main(int argc, const char **argv) {
 		if (!lib) { printf("FAIL compile %s\n%s\n", argv[1], e.localizedDescription.UTF8String); return 1; }
 		int fail = 0;
 		fail |= build(dev, lib, @"vl_march", MTLPixelFormatRGBA16Float, false);
+		fail |= build(dev, lib, @"vl_march", MTLPixelFormatRGBA16Float, true); // (2026-11) the HDR variant (air mode)
 		fail |= build(dev, lib, @"vl_temporal", MTLPixelFormatRGBA16Float, false);
 		fail |= build(dev, lib, @"vl_temporal_fold", MTLPixelFormatRGBA16Float, true);
 		fail |= build(dev, lib, @"vl_veil_down", MTLPixelFormatR16Float, true);   // 2026-10-09: the shafts' local contrast

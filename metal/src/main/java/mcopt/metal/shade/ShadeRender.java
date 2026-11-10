@@ -113,6 +113,23 @@ public final class ShadeRender {
 		}
 	}
 
+	/**
+	 * (2026-11-02) A sampled RGBA8 texture (one mip, shared storage) that the CPU fills with {@link #upload}: small maps (the water's
+	 * open-water map). The caller must not write it while a frame in flight reads it (keep a ring).
+	 */
+	public static long textureCpu(int width, int height, String label) {
+		try (MemoryStack stack = MemoryStack.stackPush()) {
+			long t = ShadeNative.textureCpu(ShadeBindings.ctx(), Math.max(1, width), Math.max(1, height), 1, MemoryUtil.memAddress(stack.UTF8(label)));
+			if (t == 0) throw new IllegalStateException("shade texture " + label + " " + width + "x" + height);
+			return t;
+		}
+	}
+
+	/** Writes a w x h RGBA8 rectangle (rowBytes apart, at address bytes) at x, y of a {@link #textureCpu} texture. */
+	public static void upload(long texture, int x, int y, int w, int h, long bytes, int rowBytes) {
+		ShadeNative.textureUpload(texture, 0, x, y, w, h, bytes, rowBytes);
+	}
+
 	public static int width(long texture) {
 		return ShadeNative.textureWidth(texture);
 	}

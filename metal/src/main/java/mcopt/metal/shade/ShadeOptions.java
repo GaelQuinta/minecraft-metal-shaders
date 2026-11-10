@@ -261,6 +261,10 @@ public final class ShadeOptions {
 				}, p -> p < 0 ? ShadeLang.t("Del clima", "Weather") : p + "%"),
 			pct("mcopt.shade.clouds.density", "Densidad", "Density", "Nubes más gruesas y oscuras o más ligeras.", "Thicker, darker clouds or lighter ones.", 30, 300, 100),
 			pct("mcopt.shade.clouds.detail", "Detalle", "Detail", "Los rizos finos de los bordes.", "The fine curls on their edges.", 0, 300, 100),
+			pct("mcopt.shade.clouds.size", "Tamaño", "Size", "Nubes más grandes y pocas, o más chicas y muchas.", "Bigger, fewer clouds, or smaller and more of them.",
+				40, 200, 100),
+			pct("mcopt.shade.clouds.alto", "Altocúmulos", "Altocumulus", "Un campo alto de nubecitas (\"borreguitos\") algunos días.",
+				"A high field of small puffy clouds on some days.", 0, 200, 100),
 			pct(U + "cloudBrightness", "Brillo", "Brightness", "Qué tan iluminadas se ven.", "How bright they look.", 25, 200, 100),
 			pct(U + "cloudOpacity", "Opacidad", "Opacity", "Qué tan transparentes son.", "How see-through they are.", 0, 100, 100),
 			custom("mcopt.shade.clouds.base", "Altura", "Height", "Dónde empiezan. Automática: a la altura de las nubes de Minecraft.",
@@ -307,12 +311,19 @@ public final class ShadeOptions {
 				new String[] {"Natural", "Azul", "Turquesa", "Verde", "Cristalina"}, new String[] {"Natural", "Blue", "Turquoise", "Green", "Clear"}, () -> 0),
 			pctInt("mcopt.shade.water.clarity", "Transparencia", "Clarity", "Qué tan lejos se ve dentro del agua.", "How far you can see into the water.", 25, 300, 100),
 			pct("mcopt.shade.waterWaves", "Olas", "Waves", "La altura de las olas.", "How high the waves are.", 0, 200, 100),
+			pct("mcopt.shade.water.swell", "Oleaje", "Swell", "Olas largas en mar abierto; lagos y ríos quedan tranquilos. 0 = como antes (más FPS mirando el mar).",
+				"Long waves on open water; lakes and rivers stay calm. 0 = as before (more FPS facing the sea).", 0, 200, 130),
 			pct(U + "waveSpeed", "Ritmo de olas", "Wave speed", "Qué tan rápido se mueve el agua.", "How fast the water moves.", 0, 300, 100),
 			pct("mcopt.shade.waterReflect", "Reflejos", "Reflections", "Qué tanto refleja el agua.", "How strongly the water reflects.", 0, 200, 100),
 			toggle(U + "ssr", "Reflejo del paisaje", "Scene reflections", "El agua refleja montañas, árboles y nubes en pantalla. No = solo el cielo (más FPS junto a lagos).",
 				"Water mirrors hills, trees and clouds on screen. Off = sky only (more FPS around lakes).", true),
 			num("mcopt.shade.ssrDist", "Alcance reflejo", "Mirror reach", "Hasta dónde busca qué reflejar.", "How far it looks for things to mirror.", 32, 1024,
 				() -> 512, 1, ""),
+			// (1.2.7 candidate 8) the reflections' panorama (ShadeWaterPano.on, live): what mirrors past the screen's sides
+			toggle("mcopt.shade.water.reflSides", "Reflejo a los lados", "Side reflections",
+				"Cuando lo reflejado queda fuera de la pantalla por un lado, el reflejo sigue con lo que viste hace poco. No = ahí se refleja solo el cielo (un poco más de FPS con mucha agua).",
+				"When what is mirrored is off screen past a side, the reflection continues with what you saw a moment ago. Off = only the sky there (a little more FPS with a lot of water).",
+				true),
 			pct(U + "glint", "Destello del sol", "Sun glint", "El brillo del sol sobre las olas.", "The sun's sparkle on the waves.", 0, 300, 100),
 			pct(U + "caustics", "Cáusticas", "Caustics", "Las líneas de luz en el fondo.", "The light patterns on the bottom.", 0, 200, 100),
 			pct(U + "foam", "Espuma", "Foam", "La espuma en las orillas.", "The foam along the shore.", 0, 300, 100),
@@ -343,6 +354,15 @@ public final class ShadeOptions {
 			num("mcopt.shade.flashLight", "Brillo relámpagos", "Lightning brightness", "Qué tan fuerte iluminan.", "How strongly they light things.", 0, 100, () -> 50, 10, ""),
 			toggle("mcopt.shade.snowLine", "Nieve solo en lo alto", "Snow only up high", "En biomas templados, nieva solo arriba de la línea de nieve.",
 				"In temperate biomes snow only falls above the snow line.", true));
+
+		// (1.2.7, issue #18) waving foliage (ShadeFoliage, own/terrain.metal ownSway)
+		page("Vegetación", "Foliage", "Hojas, pasto y flores que se mueven con el viento.", "Leaves, grass and flowers moving in the wind.",
+			pct("mcopt.shade.foliage.leaves", "Hojas al viento", "Waving leaves", "Cuánto se mueven las hojas y enredaderas. 0 = quietas.",
+				"How much leaves and vines move. 0 = still.", 0, 300, 100),
+			pct("mcopt.shade.foliage.plants", "Plantas al viento", "Waving plants", "Cuánto se mecen el pasto, las flores y los cultivos. 0 = quietos.",
+				"How much grass, flowers and crops sway. 0 = still.", 0, 300, 100),
+			toggle("mcopt.shade.foliage.push", "Pasto que se aparta", "Plants make way", "El pasto y las flores se hacen a un lado cuando pasas tú o un animal.",
+				"Grass and flowers bend aside as you or a mob walk through.", true));
 
 		page("Nether y End", "Nether and End", "Niebla, luz y cielo de las otras dimensiones.", "Fog, light and sky of the other dimensions.",
 			toggle("mcopt.shade.dims.pause", "Efectos Nether/End", "Nether/End effects", "Luz, niebla y cielo propios del shader en el Nether y el End.",

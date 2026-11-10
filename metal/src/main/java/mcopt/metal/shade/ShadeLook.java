@@ -80,6 +80,8 @@ public final class ShadeLook {
 	public float skyRose;
 	/** Rose strength per look (epic, storybook, natural). */
 	private static final float[] ROSE_LOOK = {1f, 1.15f, 0.6f};
+	/** (2026-11) The evening rose's default share (mcopt.shade.skyRoseAmount; 1 = M3 to candidate 4). */
+	static final float ROSE_AMOUNT = 0.25f; // (run at-e: 0.25-0.3 keeps a warm hint low down, the upper sky blue as Photon's)
 	/**
 	 * mcopt.shade.skyRose (default true; false = M2.1's evening sky, skyRose 0). Read every frame, so a bench can shoot the
 	 * same sunset with and without it in one session (mcbench EntityShots "rose").
@@ -121,6 +123,15 @@ public final class ShadeLook {
 	public float toneB, toneBeta, inset, exposureRef;
 	public float starBrightness, moonPhaseAngle, borderRadius;
 	private float eyeSky = 1f;
+	/** (1.2.7) The air around the camera gets neither sun nor sky this frame (caveAir in a cave): the air-mode god rays add nothing. */
+	public static volatile boolean caveAirOff;
+	/**
+	 * (2026-11 godrays, C4) This frame's golden-hour mist share (mcopt.shade.vl.goldenMist while the VL air mode ran last frame,
+	 * else 0): the mist toward Photon's density and its evening glow (update, pack).
+	 */
+	public float goldenMist;
+	/** The frame (frames) in which the VL air mode last shadowed the haze (markVlAir); far in the past = never. */
+	private int vlAirFrame = -100;
 	/** (1.1) This frame's rain share of the fog terms (rain x user.rainFog). */
 	float rainFog;
 	private final float[] waterTint = new float[4];
@@ -134,6 +145,14 @@ public final class ShadeLook {
 	/** Exposure jumps to its target next frame (teleport, dimension change, resize, setup). */
 	public void snapExposure() {
 		this.snapExposure = true;
+	}
+
+	/**
+	 * (2026-11 godrays, C4) ShadeVl: the VL air mode shadowed the final pass's haze this frame (its passes ran and were folded).
+	 * The golden-hour mist (mcopt.shade.vl.goldenMist) is denser only while that holds: unshadowed it would be a veil.
+	 */
+	public void markVlAir() {
+		this.vlAirFrame = this.frames;
 	}
 
 	/**
@@ -170,6 +189,26 @@ public final class ShadeLook {
 			this.mistSigma *= 1f - 0.1f * lowSun;
 			this.whiteBalance += 8f * lowSun;
 		}
+		// (2026-11 godrays, C4) the golden-hour mist toward Photon's: its Mie density by the time of day (x 1e-3 / block at the mist's
+		// base: 7 in the morning, 5 in the evening, from about -6 to 12 degrees of sun, 0.1 at noon, plus 2 in the blue hour; its
+		// midnight term is left out, nights stay as they were), times mcopt.shade.vl.goldenMist (live, 0..1.5; 0 = as before, 1 =
+		// Photon's own density), never below ours (noon keeps ours). Only while the VL air mode cuts it with the shadows of hills,
+		// trees and clouds (it ran last frame): unshadowed, denser mist is a veil. Rain and the player's mist multiply it below.
+		// Portions adapted from Photon Shaders by Benjamin Stott ("sixthsurge"), MIT License, commit 26c2906e (full text:
+		// LICENSES/MIT-Photon.txt): program/c0_vl.vsh (air_fog_mie_coeff: the densities and the blue hour) and shaders.properties
+		// (the time uniforms me_fade, me_weight, time_sunrise, time_noon, time_sunset)
+		// (2026-11 clouds: 1.2 -> 1.0, Photon's own density. Gael wants Photon's golden hour; at 1.2, and 7 in the morning, the mist
+		// veiled the whole low sky and the clouds into one peach haze; the shafts stay, run at-e)
+		float gm = this.frames - this.vlAirFrame <= 2 ? Live.f("mcopt.shade.vl.goldenMist", 1.0f, 0f, 1.5f) : 0f;
+		this.goldenMist = gm;
+		if (gm > 0f) {
+			float fade = sunY < 0.18f ? 0.37f + 1.2f * Math.max(0f, -sunY) : 1.7f;
+			float me = Math.max(0f, Math.min(1f, 1f - fade * Math.abs(sunY - 0.18f)));
+			me *= me;
+			float blue = linearStep(0.05f, 1f, (float) Math.exp(-190.0 * (sunY + 0.07283) * (sunY + 0.07283)));
+			float photon = (this.rising > 0f ? 7f : 5f) * me + (sunY > 0f ? 0.1f * (1f - me) : 0f) + 2f * blue;
+			this.mistSigma = Math.max(this.mistSigma, gm * photon / MIST_SCALE);
+		}
 		// golden-hour sky gain (mornings a little less warm), none in rain
 		float[] sg = SKY_GOLD[SKY_GOLD.length - 1];
 		if (this.elevation <= SKY_GOLD[0][0]) sg = SKY_GOLD[0];
@@ -192,7 +231,9 @@ public final class ShadeLook {
 				break;
 			}
 		}
-		this.skyRose = roseOn() ? rose * goldK * ROSE_LOOK[look] : 0f;
+		// (2026-11, mcopt.shade.skyRoseAmount, live, 0..2: the rose's share; Gael asked for Photon's golden hour, a deep blue sky with the
+		// warm glow only around the sun and low down, and at full strength the rose turned the whole upper sky peach-lilac)
+		this.skyRose = roseOn() ? rose * goldK * ROSE_LOOK[look] * Live.f("mcopt.shade.skyRoseAmount", ROSE_AMOUNT, 0f, 2f) : 0f;
 		ShadeSky.sunsetArt = ShadeConfig.flag("mcopt.shade.sunsetArt", true); // read every frame (bench A/B in one session)
 		// (1.1) user.rainFog: the rain's share of the fog and mist terms below (and ShadeFrame's distance haze), 0 = rain adds none
 		float rainFog = rain * Live.f(U + "rainFog", 1f, 0f, 3f);
@@ -313,10 +354,18 @@ public final class ShadeLook {
 		// w: the haze's evening glow, its strength times its bell around the sun's elevation (-1 degree, 2.5 wide): the same for
 		// every pixel, so made here once instead of in shadeHazeInscatter per pixel (2026-10-08 optimisation)
 		double glowBell = Math.exp(-Math.pow((this.elevation + 1.0) / 2.5, 2.0));
+		double glow = 0.6 * (1f - f.rain) * glowBell;
+		// (2026-11 godrays, C4) with the golden-hour mist (goldenMist, see update) Photon's evening glow too: up to 2 x goldenMist
+		// around a sun 1 degree below the horizon (x3 at goldenMist 1, ours x1.6), whichever is more. Adapted from Photon Shaders by
+		// Benjamin Stott ("sixthsurge"), MIT License, commit 26c2906e: include/fog/air_fog_vl.glsl (evening_glow)
+		if (this.goldenMist > 0f) {
+			double sy = Math.sin(Math.toRadians(this.elevation));
+			glow = Math.max(glow, (1f - f.rain) * this.goldenMist * 2.0 * linearStep(0.05f, 1f, (float) Math.exp(-300.0 * (sy + 0.02) * (sy + 0.02))));
+		}
 		// (1.1) user.borderFog: where the render distance's fog starts (share of its radius; 0.78 as released); user.eveningGlow
 		float border = Live.f(U + "borderFog", 0.78f, 0.3f, 0.97f);
 		put4(b, FOG_MISC, SEA + HAZE_BASE, this.rainFog > 0f ? border - 0.18f * this.rainFog * (border / 0.78f) : border, this.borderRadius,
-			(float) (0.6 * (1f - f.rain) * glowBell) * Live.f(U + "eveningGlow", 1f, 0f, 3f));
+			(float) glow * Live.f(U + "eveningGlow", 1f, 0f, 3f));
 		// (1.1) was the volumetric light's reserved slot (read by no shader; ShadeVl has its own parameters): the water colour the
 		// player chose (ShadeSettings), linear rgb and its weight (0 = the biome's own colour)
 		ShadeSettings.waterTint(this.waterTint);
@@ -357,6 +406,7 @@ public final class ShadeLook {
 		boolean caveAir = !"false".equalsIgnoreCase(System.getProperty("mcopt.shade.caveAir", "true").trim());
 		boolean caveSun = caveAir && !"false".equalsIgnoreCase(System.getProperty("mcopt.shade.caveAir.sun", "true").trim());
 		float airSky = caveAir ? smooth(2f / 15f, 10f / 15f, this.eyeSky) : 1f;
+		caveAirOff = caveSun && airSky <= 0f; // (1.2.7, audit P5: ShadeVl.pack)
 		put4(b, CLOCK2, f.skyTime, airSky, caveAir ? 1f : 0f, caveSun ? airSky : 1f);
 		b.putInt(TIER, ShadeConfig.TIER).putInt(TIER + 4, this.features).putInt(TIER + 8, ShadeSettings.look()).putInt(TIER + 12, f.debug);
 		putRows(b, GRADE_IN, this.gradeIn);
@@ -376,8 +426,10 @@ public final class ShadeLook {
 		// user1: x Distant Horizons' far water: its reflections' strength (= the near water's, user waterReflect), y its screen-space
 		// part (1 on, 0 = the player's "sky only"), z the near water's foam (user.foam), w its refraction (user.refraction)
 		put4(b, USER1, ShadeSettings.reflect(), ShadeSettings.ssr() ? 1f : 0f, Live.f(U + "foam", 1f, 0f, 3f), Live.f(U + "refraction", 1f, 0f, 3f));
-		// user2: x the sun's glint on water (user.glint), y beacon radiance, zw free
-		put4(b, USER2, Live.f(U + "glint", 1f, 0f, 3f), Live.f("mcopt.shade.beaconBrightness", 1f, 1f, 8f), 0f, 0f);
+		// user2: x the sun's glint on water (user.glint), y beacon radiance, z (candidate 6) Distant Horizons' sea: the swell's strength
+		// (ShadeWater.dhSwell, 0 = flat), w its share in the mirrored direction (= the near water's mcopt.shade.water.swellRefl)
+		put4(b, USER2, Live.f(U + "glint", 1f, 0f, 3f), Live.f("mcopt.shade.beaconBrightness", 1f, 1f, 8f),
+			mcopt.metal.shade.water.ShadeWater.dhSwell, Live.f("mcopt.shade.water.swellRefl", 0.45f, 0f, 1f));
 		// x: daylight contrast strength 0..2. Zero preserves Current; 1 retains the original Natural look.
 		put4(b, USER3, f.naturalLighting, ShadePbr.strength("normal"), ShadePbr.strength("specular"), ShadePbr.strength("emission"));
 		mcopt.metal.shade.weather.ShadeWeather.pack(b); // M3 weather: wet, wind, flash
@@ -523,6 +575,10 @@ public final class ShadeLook {
 	private static float smooth(float e0, float e1, float x) {
 		float t = Math.min(Math.max((x - e0) / (e1 - e0), 0f), 1f);
 		return t * t * (3f - 2f * t);
+	}
+
+	private static float linearStep(float e0, float e1, float x) {
+		return Math.min(Math.max((x - e0) / (e1 - e0), 0f), 1f);
 	}
 
 	private static void put4(ByteBuffer b, int at, float x, float y, float z, float w) {

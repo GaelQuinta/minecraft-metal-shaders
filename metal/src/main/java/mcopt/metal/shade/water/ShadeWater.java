@@ -70,6 +70,30 @@ public final class ShadeWater {
 	/** Preset defaults (Shade.TIER): quad-shared (half-resolution) SSR except ultra; steps 16 / 24 / 24 / 32 (TAAU integrates the per-frame step jitter). */
 	public static final boolean SSR_QUAD = Boolean.parseBoolean(System.getProperty("mcopt.shade.ssrQuad", Shade.TIER >= 3 ? "false" : "true"));
 	public static final int SSR_STEPS = Math.clamp(Integer.getInteger("mcopt.shade.ssrSteps", new int[] {16, 24, 24, 32}[Shade.TIER]), 4, 64);
+	/**
+	 * 1.2.7 candidate 8 {@code mcopt.shade.water.ssrExact} (true; Gael: the mirrored trees and houses flicker): every pixel traces its
+	 * own mirrored ray to the pixel, without jitter, through a small pyramid of the depth copy (water.metal SHADE_SSR_HIER) instead
+	 * of the 16-32 jittered steps shared by a 2x2 quad, which found or stepped over whatever stood between two steps by the frame.
+	 * {@code .ssrExactThick} (2): what a crossing may be behind a surface and still hit it, blocks; {@code .ssrExactBudget} (32; 8 in candidate 8, which left a strip of sky beside anything near the camera): the
+	 * 16-pixel intervals a ray may open. false = candidate 7's march (ssrQuad, ssrSteps, ssrLane, ssrJitterFrame apply to it only).
+	 */
+	public static final boolean SSR_EXACT = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrExact", "true"));
+	private static final float SSR_EXACT_THICK = Math.clamp(floatProperty("mcopt.shade.water.ssrExactThick", 2f), 0.1f, 64f);
+	private static final int SSR_EXACT_BUDGET = Math.clamp(Integer.getInteger("mcopt.shade.water.ssrExactBudget", 32), 1, 160);
+	/**
+	 * 1.2.7 candidate 9 (Gael: particles mirrored as streaks from under water) {@code mcopt.shade.water.ssrThin} (true): a thing under
+	 * about half a block on screen gets no thickness in the exact march and never stands in for what a ray passed behind
+	 * (water.metal shadeSsrhSmall).
+	 */
+	private static final boolean SSR_THIN = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrThin", "true"));
+	/**
+	 * 1.2.7 candidate 8 {@code mcopt.shade.water.pano} (true; Gael: the reflections at the screen's sides are cut off while turning or
+	 * moving): a panorama of what the view has shown, by direction (ShadeWaterPano, water.metal SHADE_WATER_PANO), which mirrored
+	 * rays that leave the screen are marched through. HDR with TAA only (it is made from the TAA's history and depth). Live:
+	 * {@code mcopt.shade.water.reflPano} (1; 0 = the sky there, as before). The settings screen's switch is {@code mcopt.shade.water.reflSides}
+	 * (ShadeWaterPano.on, live).
+	 */
+	public static final boolean PANO = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.pano", "true"));
 	public static final float SSR_DIST = Math.clamp(floatProperty("mcopt.shade.ssrDist", 512f), 8f, 1024f);
 	public static final float WAVES = Math.clamp(floatProperty("mcopt.shade.waterWaves", 1f), 0f, 4f);
 	public static final boolean CAUSTICS = Boolean.parseBoolean(System.getProperty("mcopt.shade.caustics", "true"));
@@ -125,14 +149,41 @@ public final class ShadeWater {
 	public static final float SSR_THICK = Math.clamp(floatProperty("mcopt.shade.water.ssrThick", 3f), 0.5f, 8f);
 	public static final boolean SSR_BEHIND = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrBehind", "true"));
 	/**
+	 * 1.2.7 (water.metal SHADE_SSR_TOP): how far past the top screen edge (NDC) the march goes on against the top row, fading to
+	 * nothing there (mcopt.shade.water.ssrTop, 0.15; 0 = candidate 3: the top edge ends it; candidate 4 went 0.5 at half weight and
+	 * streaked the top row down the water when looking down at a lake).
+	 */
+	public static final float SSR_TOP = Math.clamp(floatProperty("mcopt.shade.water.ssrTop", 0.15f), 0.001f, 1f);
+	/** (candidate 7, water.metal SHADE_SSR_SIDE / _END) past a side edge: how far (NDC; mcopt.shade.water.ssrSide, 0.25; M2.1 1) and the weight kept there (.ssrSideEnd, 0; M2.1 0.5), a quadratic fade between. */
+	public static final float SSR_SIDE = Math.clamp(floatProperty("mcopt.shade.water.ssrSide", 0.25f), 0.001f, 1f);
+	public static final float SSR_SIDE_END = Math.clamp(floatProperty("mcopt.shade.water.ssrSideEnd", 0f), 0f, 1f);
+	/** (candidate 7) the mirrored image's temporal reprojection's code (water.metal SHADE_WATER_RTR; mcopt.shade.water.rtr, startup). */
+	public static final boolean RTR = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.rtr", "true"));
+	/**
+	 * (2026-11-06, work/notes/2026-11-06/rhist.md) {@code mcopt.shade.water.reflHist} (false, startup): the mirrored image keeps a history
+	 * of its own (water.metal SHADE_WATER_RHIST: the reflection term before the Fresnel, reprojected where the point behind the mirror
+	 * was last frame; two RGBA16F textures at the world target's size, mcwater.m). Needs the HDR world and TAAU. Live once compiled in:
+	 * {@code mcopt.shade.water.reflHistK} (0.85, its weight; 0 = off, the image as without it) and {@code .reflHistBox} (1, the
+	 * scale of the clamp box around this 2x2 quad's reflections).
+	 */
+	public static final boolean RHIST = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.reflHist", "false"))
+		&& mcopt.metal.shade.ShadeConfig.HDR && mcopt.metal.shade.taa.TaaConfig.ENABLED;
+	/**
+	 * (2026-11-06, research-taa-flicker.md fix 5) {@code mcopt.shade.water.mirrorAA} (false, startup): the ripples a pixel can't resolve
+	 * (the shading normal's spread over the 2x2 quad) calm the mirrored images' normal and widen the glint (water.metal
+	 * SHADE_WATER_MIRROR_AA). Live once compiled in: {@code mcopt.shade.water.mirrorAAStrength} (1; 0 = the image as without it).
+	 */
+	public static final boolean MIRROR_AA = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.mirrorAA", "false"));
+	/**
 	 * FT1.3 {@code mcopt.shade.water.style}: "photon" (default; Gael: "reflejos pixeleados", "agua como el mar de Photon"):
 	 * smooth ripples without M2.1's 1/16-block cells and crest pattern, calmer in clear weather (mcopt.shade.water.calm, 0.55
 	 * of the M2.1 slopes; rain brings them back), patches of calmer and rougher water, flatter at grazing angles (a near-mirror
 	 * far surface, sharp reflections). "m21" = M3.4's water.
 	 */
 	public static final boolean SMOOTH = !"m21".equals(System.getProperty("mcopt.shade.water.style", "photon"));
+	/** The long waves' calm in clear weather at startup (mcopt.shade.water.calm, 0.05..2; 2026-11-02: read every frame, {@link #frame}). */
 	static final float CALM = Math.clamp(floatProperty("mcopt.shade.water.calm", 0.55f), 0.05f, 2f);
-	/** FT1.3 style photon: the fine ripples' slopes in clear weather (mcopt.shade.water.ripple, x the M2.1 detail layer). */
+	/** FT1.3 style photon: the fine ripples' slopes in clear weather (mcopt.shade.water.ripple, x the M2.1 detail layer; read every frame too). */
 	static final float RIPPLE = Math.clamp(floatProperty("mcopt.shade.water.ripple", 2.0f), 0f, 3f);
 	/**
 	 * M3: the sun glint's distance widening (normals averaging out across a pixel) only at grazing views; from high up the
@@ -165,6 +216,79 @@ public final class ShadeWater {
 		return Math.max(mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.waterShadowContact", 0f), 0f);
 	}
 
+	/**
+	 * (2026-11-02, water round 1: work/notes/2026-11-02/water/DESIGN.md, ROUND1.md) {@code mcopt.shade.water.swellCode} (false, startup):
+	 * the round's per-pixel code compiled into the translucent terrain (water.metal SHADE_WATER_SWELL: the swell, its open-water map,
+	 * the light through its crests; SHADE_WATER_GLITTER: the glint's glitter, unless {@code mcopt.shade.water.glitterCode} says
+	 * otherwise). The water shader is bound by registers (code that never runs still costs ~0.1-0.3 ms), so it is out unless asked
+	 * for; once in, everything it does is read every frame (mcopt.shade.water.swell, .swellMask, .swellFresnel, .swellRefl,
+	 * .swellOpen, .swellGlow, .glitter) and its defaults are the look without it. Pricing the code's presence in one session:
+	 * -Dmcopt.shade.leanDev=SHADE_WATER_SWELL (and/or SHADE_WATER_GLITTER) with mcopt.shade.leanDev.on (ShadeLean).
+	 */
+	public static final boolean SWELL_CODE = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.swellCode", "true"));
+	/** The glint's glitter's code (water.metal SHADE_WATER_GLITTER, live mcopt.shade.water.glitter): with the swell's unless set on its own. */
+	public static final boolean GLITTER_CODE = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.glitterCode", String.valueOf(SWELL_CODE)));
+	static final boolean SWELL_DEV = mcopt.metal.shade.ShadeLean.DEV_DEFINES.contains("SHADE_WATER_SWELL ");
+
+	/** Whether the swell's code is in some variant of the translucent terrain (its CPU side, the open-water map, is then worth running). */
+	public static boolean swellCompiled() {
+		return ON && (SWELL_CODE || SWELL_DEV);
+	}
+
+	/** (2026-11-02, S2) ShadeResources entry of the open-water map (shade_look.metal waterOpen). */
+	static final int RES_OPEN = 9;
+	/** The map's textures (WaterOpenScan's size, RGBA8, filled by the CPU): a ring, so a new map never overwrites one a frame in flight reads. */
+	private static final long[] OPEN_TEX = new long[3];
+	private static int openNext;
+	private static boolean openFailed;
+	/** The map's outer-ring mean for the water beyond it (ShadeWaterParams.swell2.x); < 0 = no map: the swell everywhere at its strength. */
+	private static float openFar = -1f;
+
+	/**
+	 * (2026-11-02, S2) A new open-water map (WaterOpenScan): size x size RGBA8 in the direct buffer rgba (toroidal: texel (x mod size, z mod size)
+	 * holds the 2x2-block cell (floor(X / 2), floor(Z / 2)); r = how open the water is there, 0..1), and far = its outer ring's mean, for
+	 * the water beyond it. Uploaded into the next texture of a small ring and published as ShadeResources entry {@link #RES_OPEN}; HDR
+	 * only (the terrain reads ShadeResources). Render thread.
+	 */
+	static void openMap(ByteBuffer rgba, int size, float far) {
+		if (openFailed || !mcopt.metal.shade.ShadeConfig.HDR || !mcopt.metal.shade.ShadeRender.ready()) return; // (not set up yet: the next map)
+		try {
+			int i = openNext;
+			if (OPEN_TEX[i] == 0) OPEN_TEX[i] = mcopt.metal.shade.ShadeRender.textureCpu(size, size, "mcopt shade water: open-water map " + i);
+			mcopt.metal.shade.ShadeRender.upload(OPEN_TEX[i], 0, 0, size, size, MemoryUtil.memAddress(rgba), size * 4);
+			openPending = OPEN_TEX[i];
+			openPendingFar = far;
+			openNext = (i + 1) % OPEN_TEX.length;
+		} catch (Throwable e) {
+			openFailed = true;
+			openFar = -1f;
+			System.out.println("[mcopt] shade: water open-water map failed, the swell is the same everywhere from now on: " + e);
+		}
+	}
+
+	/** (2026-11-02, S2) No open-water map (off, a new world): the shader scales the swell by 1 everywhere. */
+	static void openNone() {
+		openFar = -1f;
+		openPending = 0;
+	}
+
+	/** A map uploaded but not yet published (openMap runs before this frame's ShadeResources slot exists). */
+	private static long openPending;
+	private static float openPendingFar = -1f;
+
+	/**
+	 * (2026-11-03) Publishes the last uploaded open-water map as ShadeResources entry {@link #RES_OPEN}: right after the frame's
+	 * ShadeBindings.nextSlot (ShadeFrameUpdater), as the other per-frame resources. openMap runs in WaterFrame.update, before it:
+	 * publishing there wrote the entry into the slot the previous frame's encoders still read, which had made only the old map
+	 * resident (Metal validation with Distant Horizons: GPU address faults, 2-3 a run).
+	 */
+	public static void publishOpen() {
+		if (openPending == 0) return;
+		mcopt.metal.shade.ShadeRender.resource(RES_OPEN, openPending);
+		openFar = openPendingFar;
+		openPending = 0;
+	}
+
 	/** M3.4: the default soft shadow radius on water (blocks). */
 	static final float SHADOW_SOFT_DEFAULT = 2f;
 	/** M2.1: the water animates on a real-time clock instead of the (server-corrected, tick-based) game time. */
@@ -182,7 +306,7 @@ public final class ShadeWater {
 
 	private static long state;
 	private static boolean failed;
-	private static final ByteBuffer PARAMS = ByteBuffer.allocateDirect(64).order(ByteOrder.nativeOrder());
+	private static final ByteBuffer PARAMS = ByteBuffer.allocateDirect(144).order(ByteOrder.nativeOrder()); // water.metal ShadeWaterParams
 	private static int captures;
 
 	private ShadeWater() {
@@ -201,6 +325,12 @@ public final class ShadeWater {
 		StringBuilder b = new StringBuilder("#define SHADE_WATER 1\n");
 		if (SSR) b.append("#define SHADE_SSR 1\n");
 		if (SSR_QUAD) b.append("#define SHADE_SSR_QUAD 1\n");
+		if (SSR_EXACT) b.append("#define SHADE_SSR_HIER 1\n#define SHADE_SSRH_THICK ").append(SSR_EXACT_THICK).append("\n#define SHADE_SSRH_BUDGET ").append(SSR_EXACT_BUDGET).append('\n');
+		// (candidate 9, Gael 2026-11-10) small things get no thickness (particles mirrored as streaks)
+		if (SSR_EXACT && SSR_THIN) b.append("#define SHADE_SSRH_THIN 1\n");
+		// (candidate 8) the quad searches together, each pixel finds its own hit (false: one shared hit, re-aimed per pixel)
+		if (SSR_EXACT && Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrOwn", "true"))) b.append("#define SHADE_SSRH_OWN 1\n");
+		if (SSR_EXACT && Boolean.getBoolean("mcopt.shade.water.ssrExactDebug")) b.append("#define SHADE_SSRH_DEBUG 1\n"); // (-Dmcopt.shade.debug=10 shows the per-pixel march's work, without ssrQuad)
 		b.append("#define SHADE_SSR_STEPS ").append(SSR_STEPS).append('\n');
 		if (CAUSTICS) b.append("#define SHADE_CAUSTICS 1\n");
 		if (FOAM) b.append("#define SHADE_FOAM 1\n");
@@ -212,7 +342,9 @@ public final class ShadeWater {
 			if (DETAIL_EXTRAS) b.append("#define SHADE_WATER_DETAIL_EXTRAS 1\n");
 		}
 		if (SSR_EDGE) b.append("#define SHADE_SSR_EDGE 1\n");
-		b.append("#define SHADE_SSR_THICK_K ").append(SSR_THICK).append("\n#define SHADE_SSR_BEHIND ").append(SSR_BEHIND ? 1 : 0).append('\n');
+		b.append("#define SHADE_SSR_THICK_K ").append(SSR_THICK).append("\n#define SHADE_SSR_BEHIND ").append(SSR_BEHIND ? 1 : 0)
+			.append("\n#define SHADE_SSR_TOP ").append(SSR_TOP).append("\n#define SHADE_SSR_SIDE ").append(SSR_SIDE)
+			.append("\n#define SHADE_SSR_SIDE_END ").append(SSR_SIDE_END).append('\n');
 		// 2026-10-08: the SSR march decides in reversed-Z depth (same decisions, no division per step); false = FT1.3's march
 		if (Boolean.parseBoolean(System.getProperty("mcopt.shade.water.rawz", "true"))) b.append("#define SHADE_SSR_RAWZ 1\n");
 		// (FT2.8, audit idx 57/58) the RAWZ march's bisection in 2 rounds of 3 reads and its fallback kept as one float: same image,
@@ -223,14 +355,22 @@ public final class ShadeWater {
 		if (Boolean.getBoolean("mcopt.shade.wdev")) b.append("#define SHADE_WDEV_ON 1\n");
 		if (EDGE_REFL) b.append("#define SHADE_WATER_EDGE_REFL 1\n");
 		if (SMOOTH && SSR_QUAD && Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrLane", "true"))) b.append("#define SHADE_SSR_LANE 1\n");
-		if (SMOOTH) b.append("#define SHADE_WATER_SMOOTH 1\n#define SHADE_WATER_CALM ").append(CALM).append("\n#define SHADE_WATER_RIPPLE ").append(RIPPLE).append('\n');
+		if (SMOOTH) b.append("#define SHADE_WATER_SMOOTH 1\n"); // (2026-11-02: calm and ripple are read every frame, ShadeWaterParams.swell2.zw)
 		if (GLINT_GRAZE) b.append("#define SHADE_WATER_GLINT_GRAZE 1\n");
+		if (SWELL_CODE) b.append("#define SHADE_WATER_SWELL 1\n"); // (2026-11-02, water round 1)
+		if (GLITTER_CODE) b.append("#define SHADE_WATER_GLITTER 1\n");
 		if (BAKE) b.append("#define SHADE_WAVE_BAKE 1\n#define SHADE_WAVE_BAKE_SIZE ").append(BAKE_SIZE).append('\n');
 		// TAAU (mcopt.shade.taa): the world draws into a live sub-rect of fixed-size targets (so do the copies), and the SSR
 		// jitter changes per frame for the temporal resolve to integrate. The sub-rect mapping is exact without TAAU too
 		// (ShadeFrame.screen = the copy's size then).
 		b.append("#define SHADE_WATER_SUBRECT 1\n");
 		if (mcopt.metal.shade.taa.TaaConfig.ENABLED) b.append("#define SHADE_WATER_TAA 1\n");
+		if (RTR && mcopt.metal.shade.taa.TaaConfig.ENABLED) b.append("#define SHADE_WATER_RTR 1\n");
+		if (PANO && mcopt.metal.shade.taa.TaaConfig.ENABLED) b.append("#define SHADE_WATER_PANO 1\n"); // (candidate 8) reflections past the screen's sides
+		if (RHIST) b.append("#define SHADE_WATER_RHIST 1\n"); // (2026-11-06) the reflection's own history
+		if (MIRROR_AA) b.append("#define SHADE_WATER_MIRROR_AA 1\n"); // (2026-11-06) the ripple-aware mirror normal
+		// (candidate 7, dev) mcopt.shade.water.ssrJitterFrame=false: the SSR step jitter fixed per pixel even with TAA (the flicker hunt)
+		if (!Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrJitterFrame", "true"))) b.append("#define SHADE_SSR_JITTER_STILL 1\n");
 		return b.append(ShadeMsl.resource("water.metal")).append('\n').toString();
 	}
 
@@ -243,15 +383,18 @@ public final class ShadeWater {
 			if (SSR) {
 				try {
 					long t0 = mcopt.metal.shade.ShadeCompile.now();
-					WaterNative.setHz(state, mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_hz_fs", mcopt.metal.shade.ShadeRender.R32F,
+					if (SSR_EXACT) WaterNative.setPyr(state, mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_pyr_fs", mcopt.metal.shade.ShadeRender.RG16F,
+						mcopt.metal.shade.ShadeRender.BLEND_NONE), mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_pyr2_fs", mcopt.metal.shade.ShadeRender.RG16F,
+						mcopt.metal.shade.ShadeRender.BLEND_NONE));
+					if (!SSR_EXACT || Boolean.getBoolean("mcopt.shade.water.ssrBoth")) WaterNative.setHz(state, mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_hz_fs", mcopt.metal.shade.ShadeRender.R32F,
 						mcopt.metal.shade.ShadeRender.BLEND_NONE));
 					mcopt.metal.shade.ShadeCompile.setup("water", t0);
 				} catch (Throwable e) {
 					System.out.println("[mcopt] shade: water coarse depth failed, SSR finds nothing: " + e);
 				}
 			}
-			System.out.println("[mcopt] shade: water on (ssr " + SSR + (SSR_QUAD ? " quad" : "") + ", " + SSR_STEPS + " steps, " + SSR_DIST + " blocks; waves " + WAVES
-				+ ", detail " + DETAIL + ", ssr edges " + SSR_EDGE + ", real-time clock " + CLOCK + ", caustics " + CAUSTICS + ", foam " + FOAM + ", glossy " + GLOSSY + ", prev-frame reflections " + SSR_PREV + ", baked waves " + BAKE + ", glint graze " + GLINT_GRAZE + ", edge reflections " + EDGE_REFL + ", style " + (SMOOTH ? "photon (calm " + CALM + ", ripple " + RIPPLE + ")" : "m21") + ")");
+			System.out.println("[mcopt] shade: water on (ssr " + SSR + (SSR_EXACT ? " exact" : "") + (SSR_QUAD ? " quad" : "") + ", " + SSR_STEPS + " steps, " + SSR_DIST + " blocks; waves " + WAVES
+				+ ", detail " + DETAIL + ", ssr edges " + SSR_EDGE + ", real-time clock " + CLOCK + ", caustics " + CAUSTICS + ", foam " + FOAM + ", glossy " + GLOSSY + ", prev-frame reflections " + SSR_PREV + ", baked waves " + BAKE + ", glint graze " + GLINT_GRAZE + ", edge reflections " + EDGE_REFL + ", reflection history " + RHIST + ", mirror AA " + MIRROR_AA + ", style " + (SMOOTH ? "photon (calm " + CALM + ", ripple " + RIPPLE + ")" : "m21") + ")");
 		} catch (Throwable e) {
 			failed = true;
 			System.out.println("[mcopt] shade: water setup failed, M1 water from now on: " + e);
@@ -264,6 +407,15 @@ public final class ShadeWater {
 	private static int capturesAtBake = -1;
 
 	/** The module's own passes (wave bake, coarse depth): prelude + post (shade_fs_vs) + this prelude. */
+	/** How many scene copies (= frames that drew translucent terrain) so far. */
+	static int captures() {
+		return captures;
+	}
+
+	static long passLibrary() {
+		return library();
+	}
+
 	private static long library() {
 		if (library == 0) library = mcopt.metal.shade.ShadeRender.library(librarySource());
 		return library;
@@ -334,8 +486,17 @@ public final class ShadeWater {
 	 * rectangles (u0, v0, u1, v1; zeros = unknown, the shader then guesses water from the vertex colour like M1);
 	 * surfaceY: the water surface above the eye, camera-relative (under water; 0 otherwise); wetness 0..1.
 	 */
+	/**
+	 * (1.2.7 candidate 6, DESIGN.md S6) the swell's strength for Distant Horizons' sea (ShadeLook user2.z; dh_terrain.fs.metal): the near
+	 * water's past 120 blocks (swell x the open-water map's outer ring x the wet; the storm factor is applied in the shader), 0 without the
+	 * swell's code or with mcopt.shade.dh.waterSwell=0 (live; candidate 5's flat far sea). Written by frame(), read when ShadeLook packs.
+	 */
+	public static volatile float dhSwell;
+
 	public static void frame(long ctx, float[] still, float[] flow, float surfaceY, float wetness) {
 		if (!ready(ctx)) return;
+		dhSwell = swellCompiled() && mcopt.metal.shade.Live.f("mcopt.shade.dh.waterSwell", 1f, 0f, 1f) > 0.5f
+			? mcopt.metal.shade.Live.f("mcopt.shade.water.swell", 1.3f, 0f, 3f) * (openFar < 0f ? 1f : openFar) * (1f + 0.8f * wetness) : 0f;
 		ByteBuffer p = PARAMS;
 		for (int i = 0; i < 4; i++) p.putFloat(i * 4, still[i]);
 		for (int i = 0; i < 4; i++) p.putFloat(16 + i * 4, flow[i]);
@@ -346,6 +507,41 @@ public final class ShadeWater {
 		p.putFloat(48, mcopt.metal.shade.ShadeSettings.waves()).putFloat(52, mcopt.metal.shade.ShadeSettings.ssr() ? ssrDist : 0f)
 			.putFloat(56, mcopt.metal.shade.ShadeSettings.reflect())
 			.putFloat(60, CAUSTICS ? mcopt.metal.shade.Live.f("mcopt.shade.user.caustics", 1f, 0f, 2f) : 0f);
+		// (2026-11-02, water round 1) swell (64), swell2 (80), swell3 (96): water.metal ShadeWaterParams. The calm of the long waves and the
+		// ripples' strength in clear weather (style photon), read every frame since round 1 (they were startup defines: now A/B-able in session)
+		// the swell (mcopt.shade.water.swell 0..3, 0 = none: the look before it): its strength, its masking k (.swellMask), the light through
+		// its crests at golden hour (.swellGlow 0..4, 0 = none), its share in the Fresnel (.swellFresnel, 1 physical, 0 = the cosine without it)
+		p.putFloat(64, mcopt.metal.shade.Live.f("mcopt.shade.water.swell", 1.3f, 0f, 3f)).putFloat(68, mcopt.metal.shade.Live.f("mcopt.shade.water.swellMask", 0.45f, 0f, 1f))
+			.putFloat(72, mcopt.metal.shade.Live.f("mcopt.shade.water.swellGlow", 0.5f, 0f, 4f))
+			.putFloat(76, mcopt.metal.shade.Live.f("mcopt.shade.water.swellFresnel", 1f, 0f, 1f));
+		// (candidate 7) the mirrored images' calm (.mirrorCalm 0.05..1: how far their normal is pulled toward the face's; 0.55 = before;
+		// 0.75 with reflTemporal 0.8: at Gael's pond, frozen waves, pixels flickering again and again walking 21 -> 9 %, running 32 -> 17 %,
+		// jumping 30 -> 16 %; 0.9 measured the same and smooths the reflections more)
+		p.putFloat(80, openFar).putFloat(84, mcopt.metal.shade.Live.f("mcopt.shade.water.mirrorCalm", 0.75f, 0.05f, 1f)).putFloat(88, mcopt.metal.shade.Live.f("mcopt.shade.water.calm", CALM, 0.05f, 2f))
+			.putFloat(92, mcopt.metal.shade.Live.f("mcopt.shade.water.ripple", RIPPLE, 0f, 3f));
+		// the swell's share in the mirrored images' direction (.swellRefl: 0.45 = the ripples' share, 1 = all of it; STUDY item 2)
+		// and the glint's glitter (.glitter 0..3, 0 = none; STUDY item 3). 1.2.7 candidate 5 (Gael, 2026-11-03: "los reflejos se
+		// cortan de repente"): 1 -> 0.45. All of the swell tilted the mirrored rays by up to ~12 degrees: shores and trees mirrored
+		// far from where they stand, cut into slivers and doubled lines; at the ripples' share the images stay whole and wavy
+		p.putFloat(96, mcopt.metal.shade.Live.f("mcopt.shade.water.swellRefl", 0.45f, 0f, 1f))
+			// (candidate 5, Gael's Photon references: the sun's road a narrow column of separate dashes) the glitter 1 -> 1.5 and the glint's
+			// base roughness factor (.glintSharp 0.1..2; 1 = candidate 4's broad ribbon; 0.3: A/B at sunrise and sunset over the sea,
+			// work/notes/2026-11-03 ps-k2, against 0.5 and 0.2)
+			.putFloat(100, mcopt.metal.shade.Live.f("mcopt.shade.water.glitter", 1.5f, 0f, 3f))
+			.putFloat(104, mcopt.metal.shade.Live.f("mcopt.shade.water.glintSharp", 0.3f, 0.1f, 2f))
+			// (candidate 7) the mirrored image's temporal reprojection: its weight x the Fresnel (.reflTemporal 0..0.95; 0 = candidate 6;
+			// water.metal SHADE_WATER_RTR, Gael's flicker on the water while moving)
+			.putFloat(108, RTR ? mcopt.metal.shade.Live.f("mcopt.shade.water.reflTemporal", 0.8f, 0f, 0.95f) : 0f);
+		// (2026-11-06) the reflection's own history (water.metal SHADE_WATER_RHIST): x its weight (0 = no read, no write), w the clamp
+		// box's scale (> 0 tells mcwater.m the code is compiled in: it binds texture(29)/(30) then); y and z (valid, tag) are mcwater.m's
+		p.putFloat(112, RHIST ? mcopt.metal.shade.Live.f("mcopt.shade.water.reflHistK", 0.85f, 0f, 0.97f) : 0f).putFloat(116, 0f).putFloat(120, 0f)
+			.putFloat(124, RHIST ? Math.max(mcopt.metal.shade.Live.f("mcopt.shade.water.reflHistBox", 1f, 0f, 16f), 0.001f) : 0f);
+		// (2026-11-06) the ripple-aware mirror normal's strength (water.metal SHADE_WATER_MIRROR_AA; 0 = none)
+		p.putFloat(128, MIRROR_AA ? mcopt.metal.shade.Live.f("mcopt.shade.water.mirrorAAStrength", 1f, 0f, 4f) : 0f)
+			// (candidate 8) the mirrored image read over each pixel's footprint (water.metal shadeWaterPrevTaps; 0 = one tap, as before)
+			.putFloat(132, mcopt.metal.shade.Live.f("mcopt.shade.water.reflFilter", 1f, 0f, 2f))
+			// (candidate 8) the panorama's share in what mirrors past the screen's sides (0 while it holds nothing)
+			.putFloat(136, ShadeWaterPano.ready() ? mcopt.metal.shade.Live.f("mcopt.shade.water.reflPano", 1f, 0f, 1f) : 0f).putFloat(140, 0f);
 		WaterNative.params(state, MemoryUtil.memAddress(p));
 	}
 }

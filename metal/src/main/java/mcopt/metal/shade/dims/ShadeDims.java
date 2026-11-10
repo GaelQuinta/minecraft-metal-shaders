@@ -308,7 +308,8 @@ public final class ShadeDims {
 			float target = t < 0.05f ? 1f : t < 0.3f ? 0.6f : 0f;
 			cold = snap ? target : cold + (target - cold) * (1f - (float) Math.exp(-8f * Math.max(dt, 0f) / 6f));
 		}
-		long day = Math.floorDiv(level.getDefaultClockTime() + 6000L, 24000L); // a night belongs to the day it starts in
+		long day = Math.floorDiv(level.getDefaultClockTime() - 6000L, 24000L); // a night belongs to the day it starts in (1.2.7, audit D1: days
+			// from noon to noon; "+ 6000" turned the day over at midnight, 18000, so a night's aurora chance flipped halfway through)
 		float chance = mcHash(day) < 0.35f ? 1f : 0f;
 		// auto (Gael, 2026-10-08, "frecuentes"): every clear night in cold biomes (0.6 in cool ones), and on about one night in
 		// three anywhere else at half strength; rare = M3's auto (cold biomes, those nights only); always = every night

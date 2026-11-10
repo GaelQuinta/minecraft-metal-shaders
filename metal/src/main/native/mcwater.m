@@ -17,18 +17,29 @@
 //  2. The bindings, fragment stage only, on every render encoder native shading binds (ShadeBindings.bind):
 //       texture(18)  sceneCopy  texture2d<half>  the copy of colour attachment 0 (a 1x1 dummy until the first capture)
 //       texture(19)  depthCopy  depth2d<float>   the copy of the depth attachment (a 1x1 dummy until the first capture)
-//       buffer(23)   ShadeWaterParams (64 bytes, setFragmentBytes): this frame's water sprite rectangles and state; its
+//       buffer(23)   ShadeWaterParams (144 bytes, setFragmentBytes): this frame's water sprite rectangles and state; its
 //                    state.x is 1 only after this frame's capture, so shaders never trust last frame's copies.
+//       texture(29)  (2026-11-06, water.metal SHADE_WATER_RHIST; only while its code is compiled in: params.rhist.w > 0) the
+//                    reflection's own history last frame wrote (RGBA16F, the world target's size), texture(30) this frame's
+//                    (written by the water's fragments: ShaderWrite). The two swap roles once per frame (mc_water_params).
 //     Slots: the bible reserves texture(17-19) for pass-local inputs (17 is M1's sky LUT); buffer 23 is free in every
 //     pipeline that binds shade globals (far terrain's own pipelines use 22-28 but rebind shade after drawing).
 // Manual retain/release (the dylib builds with -fno-objc-arc), like the other files.
 #import "mcmetal.h"
+
+const void *mc_shade_frame_bytes(void);
+int mc_shade_bind_render(id<MTLRenderCommandEncoder> r); // mcshade.m: the shade globals (ShadeFrame at buffer(16)) on an encoder of our own
 
 typedef struct {
 	float still[4];  // atlas uv rectangle (u0, v0, u1, v1) of minecraft:block/water_still
 	float flow[4];   // the same for minecraft:block/water_flow
 	float state[4];  // x copies valid this frame (0/1), y water surface height above the eye (camera-relative y, under water), z wetness, w 0
 	float tune[4];   // x wave strength, y SSR max distance (blocks), z reflection strength, w caustic strength
+	float swell[4];  // (2026-11-02, water round 1) the swell: strength, masking k, crest glow, Fresnel share
+	float swell2[4]; // x open-water map's outer-ring mean (< 0: no map), y reserved, z calm, w ripple
+	float swell3[4]; // x the swell's share in the mirrored images' direction, y the glint's glitter, zw reserved
+	float rhist[4];  // (2026-11-06) the reflection history: x weight (0 = off), y last frame's valid (set here), z this frame's tag (here), w box (> 0: compiled in)
+	float mirror[4]; // (2026-11-06) x the ripple-aware mirror normal's strength, yzw reserved
 } WaterParams;
 
 typedef struct {
@@ -39,8 +50,18 @@ typedef struct {
 	int detailBaked;                        // detail was rendered this frame (else texture(22) falls back to waves)
 	id<MTLTexture> hz, dummyHz;             // the SSR march's half-size nearest depth (R32F reversed-Z), made after each copy
 	id<MTLRenderPipelineState> hzPso;       // water.metal shade_water_hz_fs (set by ShadeWater; no coarse depth without it)
+	// (1.2.7 candidate 8, SHADE_SSR_HIER) the exact march's depth pyramid instead: one RG16F texture (nearest and farthest reversed-Z
+	// per 16x16 and per 128x128 pixel block of the depth copy; layout: water.metal ShadeSsrPyrBuild), bound at
+	// texture(21) in hz's place. pyrTop: the plain 8-pixel blocks; pyrFar: the 128-pixel blocks before they are copied into pyr.
+	id<MTLTexture> pyr, pyrTop, pyrFar;
+	id<MTLRenderPipelineState> pyrPso, pyr2Pso; // water.metal shade_water_pyr_fs / shade_water_pyr2_fs (set by ShadeWater in that mode)
 	WaterParams params;
 	int captures;
+	// (2026-11-06, SHADE_WATER_RHIST) the reflection history's ping-pong pair (made at the first capture with params.rhist.x > 0,
+	// remade when the world target's size changes), which one this frame writes, and whether a capture (= water drawing with it)
+	// happened this frame / last frame. dummyRh: a 1x1 writable stand-in for texture(30) before the pair exists.
+	id<MTLTexture> rh[2], dummyRh;
+	int rhCur, rhCaptured;
 } WaterState;
 
 // The one state mc_water_bind binds from (set by mc_water_new).
@@ -63,6 +84,11 @@ WaterState *mc_water_new(Ctx *ctx) {
 		float zero = 0.0f; // reads as sky: SSR finds nothing
 		[s->dummyHz replaceRegion:MTLRegionMake2D(0, 0, 1, 1) mipmapLevel:0 withBytes:&zero bytesPerRow:4];
 		s->dummyHz.label = @"mcopt shade water: no coarse depth";
+		td.pixelFormat = MTLPixelFormatRGBA16Float;
+		td.storageMode = MTLStorageModePrivate;
+		td.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+		s->dummyRh = [ctx->device newTextureWithDescriptor:td];
+		s->dummyRh.label = @"mcopt shade water: no reflection history";
 		water = s;
 		return s;
 	}
@@ -80,13 +106,42 @@ void mc_water_free(WaterState *s) {
 	[s->hz release];
 	[s->dummyHz release];
 	[s->hzPso release];
+	[s->pyr release];
+	[s->pyrTop release];
+	[s->pyrFar release];
+	[s->pyrPso release];
+	[s->pyr2Pso release];
+	[s->rh[0] release];
+	[s->rh[1] release];
+	[s->dummyRh release];
 	free(s);
 }
 
-// This frame's parameters (16 floats: still, flow, state, tune); state.x (copies valid) is cleared until the capture.
+// This frame's parameters (36 floats: still, flow, state, tune, swell, swell2, swell3, rhist, mirror); state.x (copies valid) is cleared until the
+// capture. Called once per frame, before anything draws: the reflection history's pair swaps roles here (rhist.y: what is now last
+// frame's was written by a capture last frame; rhist.z: the tag this frame's texels get, the opposite of last frame's).
 void mc_water_params(WaterState *s, const float *p) {
 	memcpy(&s->params, p, sizeof(WaterParams));
 	s->params.state[0] = 0.0f;
+	s->rhCur ^= 1;
+	s->params.rhist[1] = s->rhCaptured && s->rh[0] && s->rh[1] ? 1.0f : 0.0f;
+	s->params.rhist[2] = s->rhCur ? 1.0f : -1.0f;
+	s->rhCaptured = 0;
+}
+
+// (2026-11-06) the reflection history's pair at the world target's size (ShaderRead | ShaderWrite, private; not compressible, which
+// the fragment writes rule out anyway); 1 when it was (re)made: nothing in it is last frame's then.
+static int rhistTargets(Ctx *ctx, WaterState *s, NSUInteger w, NSUInteger h) {
+	if (s->rh[0] && s->rh[1] && s->rh[0].width == w && s->rh[0].height == h) return 0;
+	MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float width:w height:h mipmapped:NO];
+	td.storageMode = MTLStorageModePrivate;
+	td.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget; // (RenderTarget: the clear when new)
+	for (int i = 0; i < 2; i++) {
+		[s->rh[i] release];
+		s->rh[i] = [ctx->device newTextureWithDescriptor:td];
+		s->rh[i].label = i ? @"mcopt shade water: reflection history B" : @"mcopt shade water: reflection history A";
+	}
+	return 1;
 }
 
 static id<MTLTexture> copyTarget(Ctx *ctx, id<MTLTexture> old, id<MTLTexture> like, NSString *label) {
@@ -110,8 +165,14 @@ void mc_water_bind(Enc *enc) {
 	[r setFragmentTexture:valid ? s->depth : s->dummyDepth atIndex:19];
 	[r setFragmentTexture:s->params.state[3] > 0.5f ? s->waves : s->dummyColor atIndex:20];
 	[r setFragmentTexture:s->params.state[3] > 0.5f ? (s->detailBaked && s->detail ? s->detail : s->waves) : s->dummyColor atIndex:22];
-	[r setFragmentTexture:valid && s->hz && s->hzPso ? s->hz : s->dummyHz atIndex:21];
+	[r setFragmentTexture:valid && s->pyr && s->pyrPso && s->pyr2Pso ? s->pyr : valid && s->hz && s->hzPso ? s->hz : s->dummyHz atIndex:21];
+	if (s->pyrPso && s->hzPso) [r setFragmentTexture:valid && s->hz ? s->hz : s->dummyHz atIndex:31]; // (dev: both marches)
 	[r setFragmentBytes:&s->params length:sizeof(WaterParams) atIndex:23];
+	if (s->params.rhist[3] > 0.0f) { // (2026-11-06) the reflection history's code is compiled in (SHADE_WATER_RHIST)
+		int have = s->rh[0] && s->rh[1];
+		[r setFragmentTexture:have ? s->rh[s->rhCur ^ 1] : s->dummyColor atIndex:29];
+		[r setFragmentTexture:have ? s->rh[s->rhCur] : s->dummyRh atIndex:30];
+	}
 }
 
 // The scene copy at the switch to translucent terrain: ends the open render encoder (stored), copies colour attachment 0
@@ -134,7 +195,58 @@ int mc_water_capture(Enc *enc, WaterState *s) {
 		bool whole = cw == color.width && ch == color.height && cw == depth.width && ch == depth.height;
 		// (FT2.8, audit idx 61) the coarse depth first, from the attachment itself (the same texels as the copy): it then depends
 		// only on the ended world encoder and can run alongside the ~0.37 ms copy below instead of waiting for all of it
-		if (s->hzPso) {
+		NSUInteger pyrFarW = 0, pyrFarH = 0, pyrFarY = 0; // (the 128-pixel blocks made this frame: copied into the pyramid below)
+		if (s->pyrPso && s->pyr2Pso) {
+			// (candidate 8) the exact march's pyramid in three small passes: the plain 8-pixel blocks from the depth attachment (their
+			// own texture), the 16-pixel blocks (each with half a block around it) from those, and the 128-pixel blocks from the
+			// 16-pixel ones (their own small target: copied into its region by the scene copy's blit encoder below). Straight from the
+			// 8-pixel blocks a 128-pixel block was 1024 reads in one fragment: 0.28 ms for 176 fragments (prof-px28, 2026-11-10).
+			NSUInteger ew = (depth.width + 7) / 8, eh = (depth.height + 7) / 8;
+			NSUInteger bw = (depth.width + 15) / 16, bh = (depth.height + 15) / 16;
+			NSUInteger tw = (depth.width + 127) / 128, th = (depth.height + 127) / 128;
+			if (!s->pyr || s->pyr.width != bw || s->pyr.height != bh + th) {
+				[s->pyr release];
+				[s->pyrTop release];
+				[s->pyrFar release];
+				MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG16Float width:bw height:bh + th mipmapped:NO];
+				td.storageMode = MTLStorageModePrivate;
+				td.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+				s->pyr = [enc->ctx->device newTextureWithDescriptor:td];
+				s->pyr.label = @"mcopt shade water: depth pyramid";
+				td.width = ew;
+				td.height = eh;
+				s->pyrTop = [enc->ctx->device newTextureWithDescriptor:td];
+				s->pyrTop.label = @"mcopt shade water: depth pyramid, 8-pixel blocks";
+				td.width = tw;
+				td.height = th;
+				s->pyrFar = [enc->ctx->device newTextureWithDescriptor:td];
+				s->pyrFar.label = @"mcopt shade water: depth pyramid, 128-pixel blocks";
+			}
+			NSUInteger vw = (cw + 7) / 8, vh = (ch + 7) / 8;     // the 8-pixel blocks of the rendered rect
+			NSUInteger mw = (cw + 15) / 16, mh = (ch + 15) / 16; // the 16-pixel ones
+			pyrFarW = (cw + 127) / 128;
+			pyrFarH = (ch + 127) / 128;
+			pyrFarY = bh;
+			for (int level = 0; level < 3; level++) {
+				MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+				rp.colorAttachments[0].texture = level == 0 ? s->pyrTop : level == 1 ? s->pyr : s->pyrFar;
+				rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+				rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+				id<MTLRenderCommandEncoder> r = [cb renderCommandEncoderWithDescriptor:rp];
+				r.label = level == 0 ? @"mcopt shade water: depth pyramid 8" : level == 1 ? @"mcopt shade water: depth pyramid 16" : @"mcopt shade water: depth pyramid 128";
+				[r setRenderPipelineState:level ? s->pyr2Pso : s->pyrPso];
+				[r setFragmentTexture:level == 0 ? depth : level == 1 ? s->pyrTop : s->pyr atIndex:0];
+				NSUInteger w = level == 0 ? vw : level == 1 ? mw : pyrFarW, h = level == 0 ? vh : level == 1 ? mh : pyrFarH;
+				// (level 1: a 16-pixel block = 2x2 8-pixel ones and 1 around; level 2: a 128-pixel block = 8x8 16-pixel ones and 4 around)
+				int32_t u[8] = {level == 2 ? 8 : 2, 0, 0, level == 2 ? 4 : 1, (int32_t) (level == 0 ? cw : level == 1 ? vw : mw), (int32_t) (level == 0 ? ch : level == 1 ? vh : mh), 0, 0};
+				[r setViewport:(MTLViewport) {0, 0, (double) w, (double) h, 0, 1}];
+				[r setScissorRect:(MTLScissorRect) {0, 0, w, h}];
+				[r setFragmentBytes:u length:sizeof(u) atIndex:0];
+				[r drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+				[r endEncoding];
+			}
+		}
+		if (s->hzPso) { // (alone, or beside the pyramid for the in-session pricing of the two marches: mcopt.shade.water.ssrBoth)
 			NSUInteger hw = (depth.width + 1) / 2, hh = (depth.height + 1) / 2;
 			if (!s->hz || s->hz.width != hw || s->hz.height != hh) {
 				[s->hz release];
@@ -167,7 +279,74 @@ int mc_water_capture(Enc *enc, WaterState *s) {
 			[b copyFromTexture:depth sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(cw, ch, 1)
 				toTexture:s->depth destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
 		}
+		if (pyrFarW > 0 && s->pyrFar && s->pyr) // (candidate 8) the pyramid's 128-pixel blocks into their region
+			[b copyFromTexture:s->pyrFar sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(pyrFarW, pyrFarH, 1)
+				toTexture:s->pyr destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, pyrFarY, 0)];
 		[b endEncoding];
+		// (2026-11-06) the reflection history: its pair at the attachment's size (the water writes at its fragment's pixel), cleared
+		// when new (tag 0: no texel of it passes for last frame's)
+		if (s->params.rhist[0] > 0.0f && s->params.rhist[3] > 0.0f) {
+			if (rhistTargets(enc->ctx, s, color.width, color.height)) {
+				s->params.rhist[1] = 0.0f;
+				for (int i = 0; i < 2; i++) {
+					if (!s->rh[i]) continue;
+					MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+					rp.colorAttachments[0].texture = s->rh[i];
+					rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+					rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+					rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+					id<MTLRenderCommandEncoder> c = [cb renderCommandEncoderWithDescriptor:rp];
+					c.label = @"mcopt shade water: reflection history clear";
+					[c endEncoding];
+				}
+			}
+			if (!s->rh[0] || !s->rh[1]) s->params.rhist[1] = 0.0f;
+			s->rhCaptured = s->rh[0] && s->rh[1];
+		}
+		// (dev) MCOPT_WATER_DUMP=<path prefix> [MCOPT_WATER_DUMP_AT=<capture number, 600>]: that capture's depth (rendered rect, raw
+		// float32 rows) and ShadeFrame to <prefix>.depth / .frame / .size, for replaying the SSR march outside the game
+		{
+			static int dumpAt = -1;
+			static const char *dumpPath;
+			if (dumpAt < 0) {
+				dumpPath = getenv("MCOPT_WATER_DUMP");
+				const char *at = getenv("MCOPT_WATER_DUMP_AT");
+				dumpAt = dumpPath ? (at ? atoi(at) : 600) : 0;
+			}
+			const void *fb = mc_shade_frame_bytes();
+			if (dumpAt > 0 && s->captures + 1 == dumpAt && fb) {
+				id<MTLBuffer> out = [enc->ctx->device newBufferWithLength:cw * ch * 4 options:MTLResourceStorageModeShared];
+				id<MTLBlitCommandEncoder> db = [cb blitCommandEncoder];
+				[db copyFromTexture:depth sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(cw, ch, 1)
+					toBuffer:out destinationOffset:0 destinationBytesPerRow:cw * 4 destinationBytesPerImage:cw * ch * 4];
+				[db endEncoding];
+				id<MTLBuffer> pout = nil;
+				NSUInteger pw = s->pyr ? s->pyr.width : 0, ph = s->pyr ? s->pyr.height : 0;
+				if (s->pyr && s->pyrPso && s->pyr2Pso) { // the pyramid as the GPU made it (.pyr: RG16F rows, .pyrsize)
+					pout = [enc->ctx->device newBufferWithLength:pw * ph * 4 options:MTLResourceStorageModeShared];
+					id<MTLBlitCommandEncoder> pbl = [cb blitCommandEncoder];
+					[pbl copyFromTexture:s->pyr sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(pw, ph, 1)
+						toBuffer:pout destinationOffset:0 destinationBytesPerRow:pw * 4 destinationBytesPerImage:pw * ph * 4];
+					[pbl endEncoding];
+				}
+				NSData *frame = [NSData dataWithBytes:fb length:1024];
+				NSString *prefix = [NSString stringWithUTF8String:dumpPath];
+				NSUInteger w = cw, h = ch;
+				[cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
+					[[NSData dataWithBytes:out.contents length:w * h * 4] writeToFile:[prefix stringByAppendingString:@".depth"] atomically:YES];
+					[frame writeToFile:[prefix stringByAppendingString:@".frame"] atomically:YES];
+					[[[NSString stringWithFormat:@"%lu %lu\n", (unsigned long) w, (unsigned long) h] dataUsingEncoding:NSUTF8StringEncoding]
+						writeToFile:[prefix stringByAppendingString:@".size"] atomically:YES];
+					if (pout) {
+						[[NSData dataWithBytes:pout.contents length:pw * ph * 4] writeToFile:[prefix stringByAppendingString:@".pyr"] atomically:YES];
+						[[[NSString stringWithFormat:@"%lu %lu\n", (unsigned long) pw, (unsigned long) ph] dataUsingEncoding:NSUTF8StringEncoding]
+							writeToFile:[prefix stringByAppendingString:@".pyrsize"] atomically:YES];
+						[pout release];
+					}
+					[out release];
+				}];
+			}
+		}
 		mc_reopen_why = "after water copy";
 		mc_render_reopen(enc);
 	}
@@ -182,6 +361,17 @@ void mc_water_set_hz(WaterState *s, id<MTLRenderPipelineState> pso) {
 	[pso retain];
 	[s->hzPso release];
 	s->hzPso = pso;
+}
+
+// (candidate 8) the exact march's depth pyramid pipelines (water.metal shade_water_pyr_fs / _pyr2_fs into RG16Float); retained. With it set the
+// capture makes the pyramid instead of the coarse depth.
+void mc_water_set_pyr(WaterState *s, id<MTLRenderPipelineState> pso, id<MTLRenderPipelineState> pso2) {
+	[pso retain];
+	[pso2 retain];
+	[s->pyrPso release];
+	[s->pyr2Pso release];
+	s->pyrPso = pso;
+	s->pyr2Pso = pso2;
 }
 
 // The baked wave field's texture (size^2, made on first use): ShadeWater.bake renders mip 0 with a ShadeRender pass, then calls

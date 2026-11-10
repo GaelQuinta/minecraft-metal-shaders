@@ -79,7 +79,7 @@ int main(int argc, const char **argv) {
 		NSData *frame = [NSData dataWithContentsOfFile:[dir stringByAppendingFormat:@"/%@.frame", name]];
 		NSData *look = [NSData dataWithContentsOfFile:[dir stringByAppendingFormat:@"/%@.look", name]];
 		NSData *params = [NSData dataWithContentsOfFile:[dir stringByAppendingFormat:@"/%@.params", name]];
-		const int PB = 448;
+		const int PB = 528; // CloudParams (clouds.metal; 2026-11: + art2, alto, art3, alto2, hz)
 		int frames = (int) (params.length / PB);
 		frameBuf = [dev newBufferWithLength:2048 options:MTLResourceStorageModeShared];
 		memcpy(frameBuf.contents, frame.bytes, frame.length);
@@ -97,7 +97,7 @@ int main(int argc, const char **argv) {
 		td.textureType = MTLTextureType3D; td.pixelFormat = MTLPixelFormatRGBA8Unorm; td.width = td.height = td.depth = 64; td.mipmapLevelCount = 7;
 		td.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite; td.storageMode = MTLStorageModePrivate;
 		id<MTLTexture> noise = [dev newTextureWithDescriptor:td];
-		MTLTextureDescriptor *wd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:512 height:512 mipmapped:NO];
+		MTLTextureDescriptor *wd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:512 height:512 mipmapped:YES];
 		wd.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite; wd.storageMode = MTLStorageModePrivate;
 		id<MTLTexture> weather = [dev newTextureWithDescriptor:wd];
 		{
@@ -111,7 +111,7 @@ int main(int argc, const char **argv) {
 			[c setComputePipelineState:bw]; [c setTexture:weather atIndex:0];
 			[c dispatchThreads:MTLSizeMake(512, 512, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
 			[c endEncoding];
-			id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder]; [bl generateMipmapsForTexture:noise]; [bl endEncoding];
+			id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder]; [bl generateMipmapsForTexture:noise]; [bl generateMipmapsForTexture:weather]; [bl endEncoding];
 			[cb commit]; [cb waitUntilCompleted];
 			printf("bakes %.2f ms\n", (cb.GPUEndTime - cb.GPUStartTime) * 1000.0);
 		}

@@ -67,6 +67,12 @@ final class Recorder {
 	private static final String SIZE = System.getProperty("mcopt.rec.size", "1920x1080");
 	private static final String CROP = System.getProperty("mcopt.rec.crop", "").trim();
 	private static final double FPS = Double.parseDouble(System.getProperty("mcopt.rec.fps", "60"));
+	/**
+	 * (2026-11-06) -Dmcopt.rec.everyFrame=true: every finished frame is the next video frame (no wall-clock ticks: the video plays at
+	 * the game's frame count, not in real time). With mcbench's fixed-step clock (mcbench.fixedFps) a recorded clip is then the same
+	 * frames in every run, for A/B flicker measurements. A frame finding every buffer busy is still dropped (logged as skipped).
+	 */
+	private static final boolean EVERY_FRAME = Boolean.getBoolean("mcopt.rec.everyFrame");
 	private static final String START = System.getProperty("mcopt.rec.start", "0").trim();
 	private static final String STOP = System.getProperty("mcopt.rec.stop", "").trim();
 	private static final double DURATION = Double.parseDouble(System.getProperty("mcopt.rec.duration", "0"));
@@ -334,7 +340,7 @@ final class Recorder {
 			this.gateOn = on;
 			if (!on) return;
 		}
-		long k =(long) Math.floor((now - this.t0) / this.periodNs);
+		long k = EVERY_FRAME ? this.lastK + 1 : (long) Math.floor((now - this.t0) / this.periodNs);
 		if (k <= this.lastK) return;
 		int w = view.getWidth(0), h = view.getHeight(0);
 		if (w != this.srcW || h != this.srcH) this.layout(w, h);

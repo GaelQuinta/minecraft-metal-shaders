@@ -40,9 +40,13 @@ fragment float4 shade_motion_fs(ShadeMotionOut in [[stage_in]], texture2d<float>
     if (length(unjitteredUv-oldUv)>0.25) return center;
     velocity *= min(1.0,0.04/max(len,1e-8));
     if (len*float(scene.get_width())<0.5) return center;
+    // 1.2.7 (audit A1): taps about 3 px apart along the trail (4..16) at a per-pixel offset. Ten fixed taps drew a flick's 60-90 px
+    // trail as ten separate copies of every sharp edge; the offset turns what stepping is left into fine noise TAA has already passed
+    int n = clamp(int(min(len,0.04)*float(scene.get_width())/3.0), 4, 16);
+    float jit = shadeNoise(in.position.xy, f.flags2.x);
     float3 sum = center.rgb; float weight = 1.0;
-    for (int i=0; i<10; i++) {
-        float t = (float(i)+0.5)/10.0-0.5;
+    for (int i=0; i<n; i++) {
+        float t = (float(i)+jit)/float(n)-0.5;
         float2 at = uv+velocity*t;
         if (any(at<0.0)||any(at>1.0)) continue;
         float dz = depth.sample(motionPoint,clamp(at+(p.config.w>0.5?jitter:float2(0.0)),0.0,1.0)*depthScale);

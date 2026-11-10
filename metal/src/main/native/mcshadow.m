@@ -252,9 +252,12 @@ int mc_shadow_own_init(Shadow *s, id<MTLLibrary> lib, int compact, int fat, char
 	return 0;
 }
 
+int mco_sway_bind(id<MTLRenderCommandEncoder> r, int b, int t, int moves);  // (mcown.m, mcopt-shade 1.2.7)
+
 // The own-terrain lists of d into the open cascade encoder r (the cutout's atlas bound at fragment texture 0 by the caller).
 static void ownDraw(Shadow *s, id<MTLRenderCommandEncoder> r, const OwnShadowDraw *d, id<MTLTexture> atlas) {
 	if (!d || !s->ownSolid || !d->arena || !d->args) return;
+	int sway = mco_sway_bind(r, 6, 1, 2);  // (1.2.7: own_shadow_vs' foliage arguments, always bound; 2: the shadow's copy, candidate 7)
 	[r setVertexBuffer:d->arena offset:0 atIndex:0];
 	[r setVertexBuffer:d->sections offset:0 atIndex:1];
 	[r setVertexBuffer:d->recs offset:0 atIndex:2];
@@ -265,6 +268,7 @@ static void ownDraw(Shadow *s, id<MTLRenderCommandEncoder> r, const OwnShadowDra
 		OwnShadowFrame f = d->frame;
 		f.listBase = (uint32_t) layer * d->listCap;
 		if (layer == 1 && how == 2) f.flags |= 1u;
+		if (layer == 1 && how == 1 && sway) f.flags |= 4u;  // (1.2.7: the alpha-tested cutout's foliage waves as own_vs waves it)
 		[r setRenderPipelineState:layer == 1 && how == 1 ? s->ownCutout : s->ownSolid];
 		if (d->classes > 0) {  // (P8) a draw per size class, each its own quads an instance
 			for (uint32_t c = 0; c < d->classes; c++) {

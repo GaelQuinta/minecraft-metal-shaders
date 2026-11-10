@@ -291,7 +291,7 @@ public final class ShadowPass {
 			this.lightIsMoon = false;
 			this.lightKey = 0x456e64L; // constant: never forces a far redraw
 		} else {
-			this.chooseLight(sky.sunAngle, sky.moonAngle);
+			this.chooseLight(mcopt.metal.shade.SunClock.angle(sky.sunAngle, 0), mcopt.metal.shade.SunClock.angle(sky.moonAngle, 1));
 		}
 		double x = cam.pos.x, y = cam.pos.y, z = cam.pos.z;
 		this.camX = x;
@@ -350,15 +350,14 @@ public final class ShadowPass {
 	}
 
 	/** The light that casts this frame: the sun, or the moon while the sun is below the horizon, quantized to the sun step. */
-	private void chooseLight(float sunAngle, float moonAngle) {
-		double step = Math.toRadians(ShadowConfig.SUN_STEP_DEGREES);
-		double sun = quantize(sunAngle, step), moon = quantize(moonAngle, step);
+	private void chooseLight(double sunAngle, double moonAngle) {
 		// vanilla's celestial transform: RotY(-90) * RotX(angle) * (0, 1, 0) = (-sin a, cos a, 0)
 		// the same switch as the shade sky (ShadeSky.compute: the moon once the sun is 0.06 below the horizon), so the light
 		// the terrain is lit by and the one the map is drawn from are always the same
 		boolean useMoon = Math.cos(sunAngle) * Math.cos(Math.toRadians(mcopt.metal.shade.Shade.SUN_TILT)) < -0.06;
-		double a = useMoon ? moon : sun;
-		double[] d = new double[3];
+		double raw = useMoon ? moonAngle : sunAngle;
+		double a = quantize(raw, this.sunStep(raw));
+		double[] d = this.dirScratch;
 		mcopt.metal.shade.Shade.celestial(a, d); // vanilla's direction, tilted by the shared sun path tilt
 		double lx = d[0], ly = d[1], lz = d[2];
 		if (ly < MIN_ELEVATION) { // keep the projection sane at the horizon (direct light is ~0 there anyway)
@@ -386,6 +385,27 @@ public final class ShadowPass {
 		this.cascades[1].valid = false;
 		this.backPart = -1;
 		this.draw[0] = this.draw[1] = false;
+	}
+
+	private final double[] dirScratch = new double[3];
+
+	/**
+	 * (1.2.7, issue #19) The quantization step for a light at this angle: ShadowConfig.SUN_STEP_DEGREES, halved (up to eight times:
+	 * 0.0004 degree, under a frame's motion at 60 fps) while a step would move the ground end of a shadow by more than 1 % of its
+	 * caster's height. A shadow's length is h / tan(e), so a step de moves its tip by h de / sin^2(e): at 5 degrees a 0.1 degree
+	 * step was 0.23 h (a tree's shadow and the god-ray shafts through it jumped over a block three times a second at sunset and
+	 * sunrise). Halving keeps the finer grids' points on the coarser ones, and the sun crosses each band once, so the light never
+	 * steps back. The far cascade still swaps every FAR_EVERY frames (redrawing it whole each frame instead measured worse:
+	 * its texel grid then shimmers), so its hops are smaller, not gone: pixels jumping 12+ levels -48 to -60 % in sunset holds.
+	 */
+	private double sunStep(double angle) {
+		double base = Math.toRadians(ShadowConfig.SUN_STEP_DEGREES);
+		if (base <= 0 || !ShadowConfig.sunStepAdaptive()) return base;
+		mcopt.metal.shade.Shade.celestial(angle, this.dirScratch);
+		double s = Math.max(Math.abs(this.dirScratch[1]), MIN_ELEVATION), allowed = 0.01 * s * s;
+		int n = 0;
+		while (n < 8 && base / (1 << n) > allowed) n++;
+		return base / (1 << n);
 	}
 
 	private static double quantize(double angle, double step) {

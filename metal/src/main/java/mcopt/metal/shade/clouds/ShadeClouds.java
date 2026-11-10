@@ -112,7 +112,7 @@ public final class ShadeClouds {
 	 * rendered that frame).
 	 */
 	private static int lastChecker = -1;
-	private static float lastBase = Float.NaN, lastThickness = -1f;
+	private static float lastBase = Float.NaN, lastThickness = -1f, lastCells = -1f, lastBillows = -1f;
 	private static boolean lastDome, lastShadows;
 
 	/**
@@ -301,6 +301,11 @@ public final class ShadeClouds {
 			if (Float.compare(baseSet, lastBase) != 0 || thickness != lastThickness) modeChanged = true;
 			lastBase = baseSet;
 			lastThickness = thickness;
+			// (2026-11) a new cell or billow scale moves every cloud: the history drops once
+			float cellK = CloudConfig.cellScale(), billowK = CloudConfig.billowScale();
+			if (cellK != lastCells || billowK != lastBillows) modeChanged = true;
+			lastCells = cellK;
+			lastBillows = billowK;
 			p.base = Float.isNaN(baseSet) ? (Float.isFinite(vanillaHeight) && vanillaHeight > 0f ? vanillaHeight + (cells ? 0f : 8f) : 200f) : baseSet;
 			p.top = p.base + thickness;
 			p.histW = hw;

@@ -42,6 +42,10 @@ public final class ShadePbr {
 		}
 		pending = new Atlas(a.mcopt$adWidth(), a.mcopt$adHeight(), a.mcopt$adMaxMip() + 1, List.copyOf(sprites));
 		attempted = false;
+		// (1.2.7) the waving foliage's class map, from the same sprites (their pixels, padding excluded)
+		List<ShadeFoliage.Sprite> foliage = new ArrayList<>(sprites.size());
+		for (Sprite s : sprites) foliage.add(new ShadeFoliage.Sprite(s.name().getPath(), s.x() + s.pad(), s.y() + s.pad(), s.w(), s.h()));
+		ShadeFoliage.atlasUploaded(pending.w(), pending.h(), foliage);
 	}
 
 	/** Called after the resource ring advances, before the frame's strengths are packed. */

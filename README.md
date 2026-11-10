@@ -78,15 +78,22 @@ For reference, on the same Mac: Iris + Complementary Reimagined (OpenGL) at 3024
 - **Lighting**: sky light, block light and bounce, held lights (a torch in your hand lights the world around you, around
   corners), emissive blocks.
 - **Sky**: physically based atmosphere, sun and moon discs, stars and the Milky Way, **aurora** in cold biomes.
-- **An in-game settings menu** (pause menu → **Shaders...**): about 120 settings on 11 pages (lighting, shadows, colour and
-  camera, atmosphere, god rays, clouds, night sky, water, weather, Nether and End, performance), in English, Spanish, Simplified Chinese and Traditional Chinese, most
+- **An in-game settings menu** (pause menu → **Shaders...**): about 150 settings on 12 pages (lighting, shadows, colour and
+  camera, atmosphere, god rays, clouds, night sky, water, weather, foliage, Nether and End, performance), in English, Spanish, Simplified Chinese and Traditional Chinese, most
   of them applied live while you watch.
 - **Volumetric clouds** with cloud shadows, lit by the sunset; or **blocky clouds**: Minecraft's own cloud shapes with volume,
   sunlight, shadows and reflections; or the game's normal clouds. Since 1.2.3, when you're up high (at the clouds' height or
-  above them), the edges of clouds behind a hill or a tree no longer show through it.
-- **God rays** (volumetric light) through forests, cave mouths and clouds; morning mist and forest air.
+  above them), the edges of clouds behind a hill or a tree no longer show through it. Since 1.2.7: smaller, better defined
+  clouds with two-tone sunsets, optional altocumulus fields (**Clouds → Size / Altocumulus**).
+- **God rays** (volumetric light) through forests, cave mouths and clouds; morning mist and forest air. Since 1.2.7: crisp
+  shafts near you and a golden-hour mist.
 - **Water**: waves, screen-space reflections, refraction, absorption, caustics, foam, **waterfalls with white water**,
   underwater fog and light shafts. Since 1.2.4, torch light fades smoothly across water (no flat square per block).
+  Since 1.2.7: a long **swell** on open water (**Water → Swell**; lakes and rivers stay calm), reflections traced exactly
+  for every pixel (mirrored trees and houses no longer flicker), and reflections that carry on past the screen's sides
+  from what you saw a moment ago (**Water → Side reflections**).
+- **Waving foliage** (since 1.2.7): leaves, grass, flowers and crops move in the wind, and plants make way when you or
+  an animal walk through them (**Shaders → Foliage**).
 - **labPBR resource packs** (since 1.2.6): tangent-space normals, material AO, roughness/specular highlights,
   metal reflections and emissive pixels on near-terrain blocks. Enable a labPBR pack in Minecraft's Resource Packs, then
   **Shaders → Lighting → PBR (resource packs)** controls normals, specular and emission (0–200%). No change without a pack.
@@ -199,9 +206,9 @@ by Noah Dunnagan, so a star on his repo is a nice thank-you too.
 
 - **mcopt** by Noah Dunnagan — Apache-2.0. Since 1.2 (mcopt 0.3) nothing is derived from Sodium; versions up to 1.0-alpha.4
   had Sodium-derived terrain shaders under the PolyForm Shield 1.0.0 licence.
-- Portions of the clouds and volumetric light are adapted from **Photon Shaders** by sixthsurge, from its MIT-licensed
-  snapshot `26c2906e` (`LICENSES/MIT-Photon.txt`). Other techniques credited in `NOTICE` (SE Natural Bloom, MJP's
-  Catmull-Rom, public papers). No code from Complementary, BSL or SEUS: those were only studied.
+- Portions of the clouds, the volumetric light and the golden-hour mist are adapted from **Photon Shaders** by
+  sixthsurge, from its MIT-licensed snapshot `26c2906e` (`LICENSES/MIT-Photon.txt`). Other techniques credited in
+  `NOTICE` (SE Natural Bloom, MJP's Catmull-Rom, public papers). No code from Complementary, BSL or SEUS: those were only studied.
 - Distant Horizons is LGPL and is not included; install it separately.
 - Shader code and the harness: Apache-2.0. Not affiliated with Mojang or Microsoft.
 
@@ -232,6 +239,8 @@ Minecraft con volumen, luz y sombras), las normales del juego, o ninguna. **Gene
 **"Salida"** del menú de pausa, y la interna con **"Resolución"** (desde la 1.2.4, en % de la salida: 85, 75, 67, 59 o 50 %, o Auto; también en **Shaders... → Rendimiento**). Compatible con Distant Horizons 3.3.4 + Fabric API (opcional); desde la 1.2.2, en **Shaders... → Rendimiento → Distant Horizons** eliges presets de DH probados con los shaders (Rendimiento, Balanceado, Calidad, Ultra), y el agua lejana de DH siempre tiene los reflejos de los shaders. El preset gráfico **Fabulous** ya funciona (antes el agua se volvía invisible). Desde la 1.2.3, cuando estás alto (a la altura de las nubes o arriba de ellas), los bordes de las nubes ya no se ven a través de las lomas y los árboles que tienes enfrente; con DH, una nube detrás de una montaña lejana de DH, por debajo del horizonte, todavía puede verse encima de ella. Si con DH la mitad de
 abajo de la pantalla se ve oscura (versión 1.0-alpha): en `config/DistantHorizons.toml` pon `vanillaFadeMode = "NONE"` y
 reinicia el juego; desde la 1.0-alpha.2 el mod lo hace solo.
+
+**Novedades de la 1.2.7:** reflejos del agua trazados con exactitud en cada pixel (los árboles y casas reflejados ya no parpadean) y que continúan cuando lo reflejado sale por un lado de la pantalla (**Agua → Reflejo a los lados**); oleaje en mar abierto (**Agua → Oleaje**); rayos de sol nítidos cerca de ti y neblina de la hora dorada; nubes más chicas y definidas con altocúmulos opcionales (**Nubes → Tamaño / Altocúmulos**); hojas, pasto y flores que se mueven con el viento (**Vegetación**); atardecer opuesto ajustable (**Atmósfera → Atardecer opuesto**).
 
 **PBR y movimiento (1.2.6):** activa un pack **labPBR** en los paquetes de recursos de Minecraft. En
 **Shaders... → Iluminación → PBR (packs de texturas)** ajustas relieve, brillo especular y emisión (0–200%).

@@ -79,7 +79,7 @@ struct ShadeLook {
 	// (1.1) the player's settings (ShadeLook.USER0..3, the settings screen; 1 = as released unless noted)
 	float4 user0;         // 1024 x soft shadows' sun radius (rad), y vignette strength (0.12), z leaves' / plants' light through them, w glowing blocks
 	float4 user1;         // 1040 x Distant Horizons' far water reflection strength, y its screen-space part on (1) / off (0), z foam, w refraction
-	float4 user2;         // 1056 x the sun's glint on water, y beacon radiance multiplier, zw free
+	float4 user2;         // 1056 x the sun's glint on water, y beacon radiance multiplier, z (cand. 6) Distant Horizons' sea swell, w its mirrored share
 	float4 user3;         // 1072 x Natural lighting daylight strength 0..2 (0 = Current, 1 = original Natural), y signed normal strength (negative flips Y), z specular, w emission (0 without PBR)
 };
 
@@ -116,8 +116,8 @@ struct ShadeResources {
 	texture2d<half> shadowTint;  // 6  (M3 weather) coloured shadows: near cascade tint map (RGBA16F, rgb transmittance, a reversed-Z light depth of the nearest translucent caster)
 	texture2d<float> pbrNormal;
 	texture2d<float> pbrSpecular;
-	texture2d<half> reserved9;
-	texture2d<half> reserved10;
+	texture2d<half> waterOpen;   // 9  (2026-11-02, water round 1) RGBA8 128^2 toroidal open-water map, 2 blocks per texel (water.metal shadeWaterOpen; ShadeWater.openMap)
+	texture2d<half> reflPano;    // 10 (1.2.7 candidate 8) RGBA16F 2048x512: what the view has shown, by direction from the eye (water.metal SHADE_WATER_PANO; ShadeWaterPano)
 	texture2d<half> aurora;      // 11 (M3.3 dims) RGBA16F the aurora for this frame's view at a fraction of the output size (aurora.metal; read when ShadeLook bit SHADE_DIMS_AURORA_TEX)
 	texture2d<half> cloudShadow; // 12 M3 clouds: R16F cumulus transmittance toward the light (ShadeLook.cloudShadowVP), 256^2
 	texture2d<half> cloudDome;   // 13 M3 clouds: RGBA16F (scattered light before exposure, transmittance) by direction, upper hemisphere

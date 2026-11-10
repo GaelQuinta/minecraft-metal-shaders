@@ -208,7 +208,8 @@ CloudState *mc_clouds_new(Ctx *ctx, const char *source, char *err, int errCap) {
 		td.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
 		s->noise = [dev newTextureWithDescriptor:td];
 		s->noise.label = @"mcopt shade: cloud noise 3D";
-		MTLTextureDescriptor *wd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:512 height:512 mipmapped:NO];
+		// (2026-11 round 4) with mips: the far light samples read the cloud shape blurred (clouds.metal cloudLightDepthB, CloudParams.hz.z)
+		MTLTextureDescriptor *wd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:512 height:512 mipmapped:YES];
 		wd.storageMode = MTLStorageModePrivate;
 		wd.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
 		s->weather = [dev newTextureWithDescriptor:wd];
@@ -226,6 +227,7 @@ CloudState *mc_clouds_new(Ctx *ctx, const char *source, char *err, int errCap) {
 		[c endEncoding];
 		id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder];
 		[bl generateMipmapsForTexture:s->noise];
+		[bl generateMipmapsForTexture:s->weather];
 		[bl endEncoding];
 		[cb commit];
 		[cb waitUntilCompleted];

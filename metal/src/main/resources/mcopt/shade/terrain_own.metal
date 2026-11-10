@@ -158,12 +158,26 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #endif
 #ifdef SHADE_WATER
 	, texture2d<half> sceneCopy [[texture(18)]], depth2d<float> depthCopy [[texture(19)]], constant ShadeWaterParams &wp [[buffer(23)]]
+#ifdef SHADE_PRICE_OLD
+	, texture2d<half> waterWaves [[texture(20)]], texture2d<float> waterCoarse [[texture(31)]], texture2d<half> waterDetail [[texture(22)]]
+#else
 	, texture2d<half> waterWaves [[texture(20)]], texture2d<float> waterCoarse [[texture(21)]], texture2d<half> waterDetail [[texture(22)]]
+#endif
+#ifdef SHADE_WATER_RHIST
+	// (2026-11-06) the reflection's own history (water.metal SHADE_RH_PARAMS; mcwater.m): last frame's, and this frame's to write
+	, texture2d<half> rhPrev [[texture(29)]], texture2d<half, access::write> rhOut [[texture(30)]]
+#endif
 #endif
 #ifdef MCOPT_HDR
 	, constant ShadeResources &sr [[buffer(19)]]
 #endif
 	) {
+#if defined(SHADE_WATER) && defined(SHADE_WATER_RHIST)
+	// (2026-11-06) the reflection history's write is a side effect: the GPU must then run this function even for fragments the depth
+	// test will drop (the water of a lake behind a hill). Those behind the opaque scene (this frame's depth copy) leave at once,
+	// whole quads only (the water's SSR works across the quad); their output is dropped by the depth test anyway.
+	if (wp.state.x > 0.5 && shadeQuadMax(in.fragCoord.z - depthCopy.read(uint2(in.fragCoord.xy))) < 0.0) return float4(0.0);
+#endif
 	float2 uv = in.texCoord0;
 	float2 pixelSize = 1.0 / float2(t.TextureSize);
 	float2 du = dfdx(uv);
@@ -174,6 +188,13 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	half blockLight = in.shadeLight.x, skyLight = in.shadeLight.y;
 	half fade = SO_RICH ? half(in.chunkVisibility) : half(1.0); // the chunk's fade-in (1: faded in)
 	float4 vertexColor = SO_HALF ? float4(in.vertexColorH) : in.vertexColor;
+	// (1.2.7 candidate 7) a waving leaf's or vine's sway amplitude, carried above 1 in the colour's alpha by own_vs: back to 1 here
+	// (the cutout test and the albedo see the real colour), and out through this pass's alpha as 2 + it for the TAA (taa.metal)
+	float swayA = 0.0;
+	if (vertexColor.a > 1.0005) {
+		swayA = (vertexColor.a - 1.0) * 0.5;
+		vertexColor.a = 1.0;
+	}
 	float3 dpx = dfdx(p), dpy = dfdy(p);
 	float3 nf = cross(dpx, dpy); // before any discard: the whole 2x2 quad takes part
 #ifdef SHADE_WATER
@@ -277,7 +298,11 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	bool endLit = sf.flags.x == SHADE_DIM_END, netherLit = sf.flags.x == SHADE_DIM_NETHER;
 #endif
 	half shadowSky = endLit ? half(1.0) : skyLight;
+#ifdef SHADE_PRICE_NOWSHADOW
+	half shadow = (skyLight <= 0.3h && !endLit) || netherLit || waterFull ? half(1.0)
+#else
 	half shadow = (skyLight <= 0.3h && !endLit) || netherLit ? half(1.0)
+#endif
 		// M3.4 (mcopt.shade.waterShadowSoft, ShadeLook.waterShadow.x, read every frame): up-facing water gets a soft-edged shadow
 		: waterFull ? (n.y > 0.5h && sl.waterShadow.x > 0.0 ? shadeShadowSoft(shadowMap, shadowCompare, sf, p, n, sl.waterShadow.x, in.fragCoord.xy, sl.waterShadow.z)
 		                                                    : shadeShadow(shadowMap, shadowCompare, sf, p, n, false))
@@ -356,7 +381,27 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		wi.detail = float4(0.0);
 #ifdef SHADE_WATER_DETAIL
 		// M2.1 fine ripples (baked waves): top faces, and the surface seen from below with the camera under water
+#ifndef SHADE_PRICE_NODETAIL
 		if (!SHADE_WDEV_IS(sf, SHADE_WDEV_NO_DETAIL) && (n.y > 0.5h || (n.y < -0.5h && SHADE_CAMERA_UNDERWATER(sf))) && wp.state.w > 0.5) wi.detail = shadeWaterDetailIn(wi, sf, waterDetail);
+#endif
+#endif
+#ifdef SHADE_WATER_SWELL
+		// (2026-11-02, water round 1) the swell (water.metal shadeWaterSwell; mcopt.shade.water.swell, 0 = none): still water's top
+		// faces seen from above (currents and falls keep their own look), computed here like the fine ripples; rain and thunder raise it,
+		// (S2) the open-water map decides where (the sea swells, lakes and rivers stay calm, shores calm it; HDR: ShadeResources)
+		wi.swell = float4(0.0);
+		float swellOpen = 0.0;
+		if (n.y > 0.5h && waterSprite == 1 && wp.swell.x > 0.0 && !SHADE_CAMERA_UNDERWATER(sf)) {
+#ifdef MCOPT_HDR
+			swellOpen = shadeWaterOpen(p, sf, wp, sr.waterOpen);
+#else
+			swellOpen = 1.0;
+#endif
+			float amp = wp.swell.x * (1.0 + 0.8 * wp.state.z) * (1.0 + 0.6 * sf.weather.y) * swellOpen;
+#ifndef SHADE_PRICE_NOSWELL
+			if (amp > 0.0) wi.swell = shadeWaterSwell(shadeWaterXZ(p.xz, sf), shadeWaterTime(sf), wi.dxz, amp);
+#endif
+		}
 #endif
 #if defined(SHADE_WAVE_BAKE) && !defined(SHADE_LEAN_NOFALLS)
 		// (FT2.11) falling water's sides (only in the variant drawn while moving water is near: WaterFlowScan): the ripples tilt
@@ -396,7 +441,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		wi.fog = SHADE_CAMERA_UNDERWATER(sf) ? shadeWaterDisplayRadiance(half3(sf.fogColor.rgb), ex) : float3(0.0);
 		texture2d<half> prevScene = sceneCopy;
 #endif
-		radiance = shadeWaterSurface(wi, sf, wp, skyLut, skyLutSmplr, sceneCopy, depthCopy, prevScene, waterWaves, waterCoarse);
+		radiance = shadeWaterSurface(wi, sf, wp, skyLut, skyLutSmplr, sceneCopy, depthCopy, prevScene, waterWaves, waterCoarse SHADE_RH_ARGS);
 #if defined(SHADE_WAVE_BAKE) && !defined(SHADE_LEAN_NOFALLS)
 		// (FT2.11) and its white water over the result, lit like the shore's foam (wi.lit is live to the water's end anyway)
 		if (shadeWaterIsFall(float(n.y), sl.bloom.w, wp)) radiance = mix(radiance, wi.lit * 0.55, shadeWaterFallFoam(p, float3(n), waterFootprint, sl.bloom.w, sf));
@@ -406,6 +451,10 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #endif
 		alpha = 1.0; // the water composited what is behind it from the scene copy
 		if (debug == 7) radiance = float3(saturate(wi.footprint * 4.0), float(waterSprite == 2), saturate(length(p) / 128.0)) / max(ex, 1e-3);
+#ifdef SHADE_WATER_SWELL
+		// (2026-11-02, mcopt.shade.debug=9) the swell: r its open-water share, g its resolved slope (0.1 = 1), b the faded trains' roughness
+		if (debug == 9) radiance = float3(swellOpen, saturate(length(wi.swell.xy) * 10.0), saturate(sqrt(wi.swell.w) * 20.0)) / max(ex, 1e-3);
+#endif
 	} else
 #endif
 	if (water) {
@@ -536,7 +585,11 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	}
 	float fogValue = SHADE_FOG_VALUE;
 #undef SHADE_FOG_VALUE
+#ifdef SHADE_PRICE_NOWFOG
+	if (!dims && !waterFull) {
+#else
 	if (!dims && !(waterFull && SHADE_WDEV_IS(sf, SHADE_WDEV_NO_FOG))) { // Nether/End: the final pass fogs
+#endif
 #ifdef MCOPT_HDR
 		radiance = shadeFogAir2(radiance, p, fogValue, 1.0 - float(fade), skyLut, skyLutSmplr, sf, sl, &sr);
 #else
@@ -550,5 +603,5 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		float3 tint1 = sf.flags.z == 0 ? float3(1.0, 0.3, 0.3) : d < sf.cascadeSplits.x ? float3(0.4, 1.0, 0.4) : d < sf.cascadeSplits.y ? float3(0.4, 0.6, 1.0) : float3(1.0);
 		rgb = shadeVanillaOut(tint1 * (0.25 + 0.75 * float(shadow)), sl);
 	}
-	return float4(rgb, alpha);
+	return float4(rgb, swayA > 0.0 ? 2.0 + swayA : alpha);
 }

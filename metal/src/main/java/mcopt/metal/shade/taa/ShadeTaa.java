@@ -56,7 +56,7 @@ public final class ShadeTaa {
 	private static final double TELEPORT = 8;
 	/** Frames further apart than this (a menu, a loading screen) start a fresh history. */
 	private static final long GAP_NANOS = 500_000_000L;
-	private static final int PARAMS = 304;
+	private static final int PARAMS = 352; // (1.2.7 candidate 7: + leafNow, leafPrev, leafCam)
 
 	private static @Nullable ShadeTaa instance;
 	private static boolean failed;
@@ -324,6 +324,13 @@ public final class ShadeTaa {
 	}
 
 	/** Whether the world target stands in for the main one right now (between beginWorld and resolve). */
+	/** (1.2.7) The last resolve's camera stood still (no move, the same reprojection): ShadePost skips the motion blur, which then returns its input. */
+	public boolean still() {
+		return this.still;
+	}
+
+	private boolean still;
+
 	public boolean swapped() {
 		return this.swapped;
 	}
@@ -410,6 +417,7 @@ public final class ShadeTaa {
 			this.prevViewProj.translate((float) d.x, (float) d.y, (float) d.z, this.reprojection); // last frame's clip from this frame's camera-relative world
 			still = d.lengthSqr() < 1e-8 && this.reprojection.equals(this.viewProj, 1e-6f);
 		}
+		this.still = still;
 		this.viewProj.invert(this.invViewProj);
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			long p = stack.nmalloc(16, PARAMS);
@@ -417,14 +425,22 @@ public final class ShadeTaa {
 			this.reprojection.getToAddress(p + 64);
 			Matrix4f m = this.viewProj; // row 3: clip w (linear view depth)
 			put4(p + 128, m.m03(), m.m13(), m.m23(), m.m33());
-			put4(p + 144, this.width, this.height, 0, 0);
+			put4(p + 144, this.width, this.height, TaaConfig.flickerHold(), TaaConfig.flickerHoldSensitivity());
 			put4(p + 160, this.outWidth, this.outHeight, 1f / this.outWidth, 1f / this.outHeight);
 			put4(p + 176, this.jittered ? this.jitterX : 0, this.jittered ? this.jitterY : 0, (float) this.width / this.outWidth, (float) this.height / this.outHeight);
 			put4(p + 192, TaaConfig.alphaMin(), TaaConfig.clipGamma(still), 32, cut ? 1 : 0);
-			put4(p + 208, this.historyRescale, 0f, reactive != 0 ? 0.85f : 0f, TaaConfig.DEBUG); // no mask: the shader skips its read
-			put4(p + 224, sharpen, TaaConfig.motionAlpha(), 0, 0);
+			put4(p + 208, this.historyRescale, TaaConfig.boostFrom(), reactive != 0 ? 0.85f : 0f, TaaConfig.DEBUG); // no mask: the shader skips its read
+			put4(p + 224, sharpen, TaaConfig.motionAlpha(), TaaConfig.antiFlicker(), TaaConfig.floorCentre());
 			this.combinedD.set(this.reprojection).mul(this.invD.set(this.invViewProj));
 			this.combined.set(this.combinedD).getToAddress(p + 240);
+			// (candidate 7) waving leaves: their wobble phases now and last frame, the camera modulo 1024 (taa.metal taaLeafSway)
+			float[] ln = mcopt.metal.shade.ShadeFoliage.leafNow(), lp = mcopt.metal.shade.ShadeFoliage.leafPrev();
+			// (only with an RGBA16F world, quality and ultra: rg11b10f, the default below them, has no alpha for the leaves' flag)
+			boolean leaf = !cut && mcopt.metal.shade.ShadeConfig.HDR_FORMAT == 115 && mcopt.metal.shade.Live.f("mcopt.shade.taa.leafMotion", 1f, 0f, 1f) > 0.5f
+				&& this.position != null;
+			put4(p + 304, ln[0], ln[1], ln[2], ln[3]);
+			put4(p + 320, lp[0], lp[1], lp[2], lp[3]);
+			put4(p + 336, leaf ? mod1024(this.position.x) : 0f, leaf ? mod1024(this.position.y) : 0f, leaf ? mod1024(this.position.z) : 0f, leaf ? 1f : 0f);
 			TaaNative.resolve(this.enc, this.taa, color, depth, reactive, dst, p, PARAMS);
 		}
 		this.prevViewProj.set(this.viewProj);
@@ -432,6 +448,10 @@ public final class ShadeTaa {
 		this.level = level;
 		this.lastResolve = now;
 		this.reset = false;
+	}
+
+	private static float mod1024(double v) {
+		return (float) (v - 1024.0 * Math.floor(v / 1024.0));
 	}
 
 	/** Safety net at FogRenderer.endFrame: a frame that never reached resolve (no hand pass) leaves nothing swapped. */

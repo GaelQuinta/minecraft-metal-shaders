@@ -35,14 +35,30 @@ struct TaaParams {
 	float4x4 invCur;  //   0  this frame's unjittered clip -> camera-relative world
 	float4x4 prevVP;  //  64  camera-relative world (this frame's camera) -> last frame's unjittered clip
 	float4 curRowW;   // 128  4th row of this frame's unjittered viewProj (clip w = linear view depth, blocks)
-	float4 input;     // 144  xy active input size (px), zw unused
+	float4 input;     // 144  xy active input size (px), z flicker hold (0 off), w its sensitivity
 	float4 output;    // 160  xy output size (px), zw 1 / output size
 	float4 jitter;    // 176  xy this frame's jitter (input px), zw input px per output px (input.xy / output.xy)
 	float4 blend;     // 192  x minimum blend weight of the current frame, y clip box size (sigmas), z history age cap, w 1 = no history
-	float4 misc;      // 208  x history rescale (exposure now / then; M2 reads ShadeGpu.exposure at buffer(1) instead), y unused (HDR input: function constant TAA_HDR), z reactive strength, w debug view (taau_debug_fs)
-	float4 sharpen;   // 224  x strength (0 off), y current-frame weight floor in motion (full at 0.5 px/frame), zw unused
+	float4 misc;      // 208  x history rescale (exposure now / then; M2 reads ShadeGpu.exposure at buffer(1) instead), y where the clip boost starts (box units, <= 1: 1), z reactive strength, w debug view (taau_debug_fs)
+	float4 sharpen;   // 224  x strength (0 off), y current-frame weight floor in motion (full at 0.5 px/frame), z anti-flicker (0 off), w motion floor only off-centre (0 off)
 	float4x4 reproj;  // 240  (FT2.8, audit idx 64) prevVP x invCur: this frame's unjittered clip -> last frame's, times h.w
+	// (1.2.7 candidate 7) swaying leaves: the leaves' wobble phases this frame and last (ShadeFoliage, own/terrain.metal ownSway),
+	// and xyz the camera's absolute position modulo 1024 (the wobble's wrap), w 1 = follow them (mcopt.shade.taa.leafMotion)
+	float4 leafNow;   // 304
+	float4 leafPrev;  // 320
+	float4 leafCam;   // 336
 };
+
+// (1.2.7 candidate 7) The leaves' and vines' wobble at absolute (mod 1024) position a for phases ph, times amplitude A: own/terrain.metal
+// ownSway's leaves branch, KEEP IN SYNC. The terrain's cutout pass writes 2 + A into the scene's alpha where a waving leaf is drawn.
+static inline float3 taaLeafSway(float3 a, float4 ph, float A) {
+	const float K = 6.2831853 / 32.0;
+	float3 d;
+	d.x = sin(ph.x + dot(a, K * float3(3, 2, 5))) + 0.5 * sin(ph.y + dot(a, K * float3(-7, 4, 3)));
+	d.y = 0.5 * sin(ph.z + dot(a, K * float3(5, -3, 2)));
+	d.z = sin(ph.y + dot(a, K * float3(-2, 5, 4))) + 0.5 * sin(ph.w + dot(a, K * float3(6, 3, -5)));
+	return d * A;
+}
 
 // M3 per-object motion (bible E18 step 4, original, cheap): the entities that moved since last frame (ShadeMotion, at most
 // TAA_MOVERS), as camera-relative world boxes at this frame's render position plus their render-position change this frame.
@@ -197,6 +213,20 @@ static inline TaaOut taauResolve(float2 q, constant TaaParams &p, constant float
 		moved = taaMoverDelta((p.invCur * v4).xyz * iw, movers);
 		prev -= p.prevVP * float4(moved, 0.0);
 	}
+	// (1.2.7 candidate 7) a waving leaf (the nearest of the 2x2, as the depth: alpha 2 + its amplitude) stood elsewhere last frame:
+	// reprojected from its own sway as well as the camera's. Without it a canopy moving close to a pixel a frame near the camera
+	// never settled: shimmering leaves, orange specks at sunset (Gael 2026-11-04). Its swaying shadows and light stay rectified.
+	if (p.leafCam.w > 0.5 && zmax > 0.0) {
+		half4 a4 = cur.gather(point, pin / float2(cur.get_width(), cur.get_height()), int2(0), component::w);
+		half la = z4.x == zmax ? a4.x : z4.y == zmax ? a4.y : z4.z == zmax ? a4.z : a4.w;
+		if (la > 1.5h) {
+			float A = float(la) - 2.0;
+			float3 w = (p.invCur * v4).xyz * iw;
+			float3 a = w + p.leafCam.xyz;
+			float3 leafMoved = taaLeafSway(a, p.leafNow, A) - taaLeafSway(a, p.leafPrev, A);
+			prev -= p.prevVP * float4(leafMoved, 0.0);
+		}
+	}
 	float2 uvPrev = prev.xy / prev.w * 0.5 + 0.5;
 
 	TaaOut o;
@@ -238,14 +268,44 @@ static inline TaaOut taauResolve(float2 q, constant TaaParams &p, constant float
 	// samples rely on the history), raised where the history had to be clipped hard (something changed: anti-ghosting)
 	// and where the reactive mask says the input is not reprojectable (particles, animated translucents).
 	half alpha = age < 0.5h ? 1.0h : max(1.0h / (age + 1.0h), half(p.blend.x)) * mix(0.35h, 1.0h, wnear);
-	alpha = max(alpha, saturate((outside - 1.0h) * 0.25h) * 0.5h);
+	// (1.2.7 candidate 7) anti-flicker (Karis 2014, slide 43, as Blender EEVEE does it): a history near the edge of the box (or past
+	// it) is where a pixel flips between being clipped and not, frame after frame: lean on the (clipped) history there instead of
+	// the current frame. 1 at the box's centre, 0 at its edge, below 0 outside. Applied to the running average and the motion floor;
+	// the clip boost below still lets a real change through. Gael 2026-11-06: water reflections and sunlit leaves shimmering.
+	half kf = 1.0h;
+	if (p.sharpen.z > 0.0) {
+		const half3 L = half3(0.25h, 0.5h, 0.25h);
+		half eL = max(dot(extent, L), 0.002h);
+		half d = (eL - abs(dot(history - mean, L))) / eL;
+		kf = mix(1.0h, saturate(4.0h * d + 0.1h), half(p.sharpen.z));
+	}
+	half hold = 1.0h;
+	// (candidate 7) flicker hold (Photon MIT 26c2906e c4_taa_exposure get_flicker_reduction, adapted; Photon Shaders by Benjamin
+	// Stott ("sixthsurge"), MIT License): an unclipped history well inside a wide box (a noisy, flickering neighbourhood: rippled
+	// reflections, leaves) is kept rather than replaced; only the running average, not the motion floor or the clip boost.
+	if (p.input.z > 0.0 && outside <= 1.0h) {
+		half3 dc = max(extent - abs(history - mean), 0.0h);
+		hold = 1.0h - half(p.input.z) * saturate(length(dc) * half(p.input.w));
+	}
+	alpha *= kf * hold;
+	// (candidate 7) misc.y: where the boost starts. From 1 (the box's edge) it fired on every pixel that oscillates around the edge,
+	// i.e. on the flicker itself; from 3 only on a real change (anti-ghosting).
+	alpha = max(alpha, saturate((outside - half(max(p.misc.y, 1.0))) * 0.25h) * 0.5h);
 	// Motion: every frame in motion resamples the history at a new sub-pixel offset. Catmull-Rom at a half-pixel offset
 	// passes a 2.5 px period at 0.45, and fed back with a weight of 0.07 that leaves 0.12 of it: pixel-art detail melts
 	// while strafing even though the reprojection is exact (taaDebug 4). A floor on the current frame's weight as soon as
 	// the pixel moves (full at 0.5 px/frame) keeps it (0.2: 0.31 of a 2.5 px period, 0.9 of a 3 px one), trading a little
 	// stability in motion, where shimmer is far less visible than smear.
 	float motionPx = length(uvPrev * p.output.xy - q);
-	alpha = max(alpha, half(p.sharpen.y) * half(saturate(motionPx * 2.0)));
+	half floorW = half(saturate(motionPx * 2.0));
+	// (candidate 7) sharpen.w: only as far as the history is actually resampled between its pixels (Photon MIT 26c2906e
+	// c4_taa_exposure offcenter_rejection, adapted): a reprojection that lands on a history pixel's centre does not blur, so it needs
+	// no floor. 1 at the centre, 0 halfway between pixels on both axes. (Photon shaders, MIT, (c) SixthSurge)
+	if (p.sharpen.w > 0.0) {
+		float2 px = 1.0 - abs(2.0 * fract(uvPrev * p.output.xy) - 1.0);
+		floorW *= half(mix(1.0, 1.0 - sqrt(px.x * px.y), p.sharpen.w));
+	}
+	alpha = max(alpha, half(p.sharpen.y) * floorW * kf);
 	if (p.misc.z > 0.0) alpha = max(alpha, reactive.read(uint2(clamp(base, int2(0), int2(reactive.get_width(), reactive.get_height()) - 1))).r * half(p.misc.z));
 	half3 resolved = mix(clipped, current, saturate(alpha));
 	float3 rgb = taaExpand(float3(resolved));
