@@ -70,6 +70,16 @@ public final class ShadeWater {
 	/** Preset defaults (Shade.TIER): quad-shared (half-resolution) SSR except ultra; steps 16 / 24 / 24 / 32 (TAAU integrates the per-frame step jitter). */
 	public static final boolean SSR_QUAD = Boolean.parseBoolean(System.getProperty("mcopt.shade.ssrQuad", Shade.TIER >= 3 ? "false" : "true"));
 	public static final int SSR_STEPS = Math.clamp(Integer.getInteger("mcopt.shade.ssrSteps", new int[] {16, 24, 24, 32}[Shade.TIER]), 4, 64);
+	/**
+	 * 1.2.7 candidate 8 {@code mcopt.shade.water.ssrExact} (true; Gael: the mirrored trees and houses flicker): every pixel traces its
+	 * own mirrored ray to the pixel, without jitter, through a small pyramid of the depth copy (water.metal SHADE_SSR_HIER) instead
+	 * of the 16-32 jittered steps shared by a 2x2 quad, which found or stepped over whatever stood between two steps by the frame.
+	 * {@code .ssrExactThick} (2): what a crossing may be behind a surface and still hit it, blocks; {@code .ssrExactBudget} (8): the
+	 * 16-pixel intervals a ray may open. false = candidate 7's march (ssrQuad, ssrSteps, ssrLane, ssrJitterFrame apply to it only).
+	 */
+	public static final boolean SSR_EXACT = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrExact", "true"));
+	private static final float SSR_EXACT_THICK = Math.clamp(floatProperty("mcopt.shade.water.ssrExactThick", 2f), 0.1f, 64f);
+	private static final int SSR_EXACT_BUDGET = Math.clamp(Integer.getInteger("mcopt.shade.water.ssrExactBudget", 8), 1, 64);
 	public static final float SSR_DIST = Math.clamp(floatProperty("mcopt.shade.ssrDist", 512f), 8f, 1024f);
 	public static final float WAVES = Math.clamp(floatProperty("mcopt.shade.waterWaves", 1f), 0f, 4f);
 	public static final boolean CAUSTICS = Boolean.parseBoolean(System.getProperty("mcopt.shade.caustics", "true"));
@@ -301,6 +311,8 @@ public final class ShadeWater {
 		StringBuilder b = new StringBuilder("#define SHADE_WATER 1\n");
 		if (SSR) b.append("#define SHADE_SSR 1\n");
 		if (SSR_QUAD) b.append("#define SHADE_SSR_QUAD 1\n");
+		if (SSR_EXACT) b.append("#define SHADE_SSR_HIER 1\n#define SHADE_SSRH_THICK ").append(SSR_EXACT_THICK).append("\n#define SHADE_SSRH_BUDGET ").append(SSR_EXACT_BUDGET).append('\n');
+		if (SSR_EXACT && Boolean.getBoolean("mcopt.shade.water.ssrExactDebug")) b.append("#define SHADE_SSRH_DEBUG 1\n"); // (-Dmcopt.shade.debug=7 shows the march's work)
 		b.append("#define SHADE_SSR_STEPS ").append(SSR_STEPS).append('\n');
 		if (CAUSTICS) b.append("#define SHADE_CAUSTICS 1\n");
 		if (FOAM) b.append("#define SHADE_FOAM 1\n");
@@ -352,14 +364,17 @@ public final class ShadeWater {
 			if (SSR) {
 				try {
 					long t0 = mcopt.metal.shade.ShadeCompile.now();
-					WaterNative.setHz(state, mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_hz_fs", mcopt.metal.shade.ShadeRender.R32F,
+					if (SSR_EXACT) WaterNative.setPyr(state, mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_pyr_fs", mcopt.metal.shade.ShadeRender.RGBA32F,
+						mcopt.metal.shade.ShadeRender.BLEND_NONE), mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_pyr2_fs", mcopt.metal.shade.ShadeRender.RGBA32F,
+						mcopt.metal.shade.ShadeRender.BLEND_NONE));
+					else WaterNative.setHz(state, mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_hz_fs", mcopt.metal.shade.ShadeRender.R32F,
 						mcopt.metal.shade.ShadeRender.BLEND_NONE));
 					mcopt.metal.shade.ShadeCompile.setup("water", t0);
 				} catch (Throwable e) {
 					System.out.println("[mcopt] shade: water coarse depth failed, SSR finds nothing: " + e);
 				}
 			}
-			System.out.println("[mcopt] shade: water on (ssr " + SSR + (SSR_QUAD ? " quad" : "") + ", " + SSR_STEPS + " steps, " + SSR_DIST + " blocks; waves " + WAVES
+			System.out.println("[mcopt] shade: water on (ssr " + SSR + (SSR_EXACT ? " exact" : "") + (SSR_QUAD ? " quad" : "") + ", " + SSR_STEPS + " steps, " + SSR_DIST + " blocks; waves " + WAVES
 				+ ", detail " + DETAIL + ", ssr edges " + SSR_EDGE + ", real-time clock " + CLOCK + ", caustics " + CAUSTICS + ", foam " + FOAM + ", glossy " + GLOSSY + ", prev-frame reflections " + SSR_PREV + ", baked waves " + BAKE + ", glint graze " + GLINT_GRAZE + ", edge reflections " + EDGE_REFL + ", reflection history " + RHIST + ", mirror AA " + MIRROR_AA + ", style " + (SMOOTH ? "photon (calm " + CALM + ", ripple " + RIPPLE + ")" : "m21") + ")");
 		} catch (Throwable e) {
 			failed = true;
@@ -494,7 +509,9 @@ public final class ShadeWater {
 		p.putFloat(112, RHIST ? mcopt.metal.shade.Live.f("mcopt.shade.water.reflHistK", 0.85f, 0f, 0.97f) : 0f).putFloat(116, 0f).putFloat(120, 0f)
 			.putFloat(124, RHIST ? Math.max(mcopt.metal.shade.Live.f("mcopt.shade.water.reflHistBox", 1f, 0f, 16f), 0.001f) : 0f);
 		// (2026-11-06) the ripple-aware mirror normal's strength (water.metal SHADE_WATER_MIRROR_AA; 0 = none)
-		p.putFloat(128, MIRROR_AA ? mcopt.metal.shade.Live.f("mcopt.shade.water.mirrorAAStrength", 1f, 0f, 4f) : 0f).putFloat(132, 0f).putFloat(136, 0f).putFloat(140, 0f);
+		p.putFloat(128, MIRROR_AA ? mcopt.metal.shade.Live.f("mcopt.shade.water.mirrorAAStrength", 1f, 0f, 4f) : 0f)
+			// (candidate 8) the mirrored image read over each pixel's footprint (water.metal shadeWaterPrevTaps; 0 = one tap, as before)
+			.putFloat(132, mcopt.metal.shade.Live.f("mcopt.shade.water.reflFilter", 1f, 0f, 2f)).putFloat(136, 0f).putFloat(140, 0f);
 		WaterNative.params(state, MemoryUtil.memAddress(p));
 	}
 }
