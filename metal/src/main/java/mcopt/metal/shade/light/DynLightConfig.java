@@ -129,6 +129,6 @@ public final class DynLightConfig {
 
 	/** dynlight.metal's kernels + dynlight_vis.metal, the module's own library (DynLights.init). */
 	public static String source() {
-		return "#define SHADE_DL_KERNELS\n" + mcopt.metal.shade.ShadeMsl.resource("dynlight.metal") + "\n" + mcopt.metal.shade.ShadeMsl.resource("dynlight_vis.metal");
+		return "#define SHADE_DL_KERNELS\n" + mcopt.metal.shade.ShadeMsl.resource("torch_light.metal") + "\n" + mcopt.metal.shade.ShadeMsl.resource("dynlight.metal") + "\n" + mcopt.metal.shade.ShadeMsl.resource("dynlight_vis.metal");
 	}
 }
