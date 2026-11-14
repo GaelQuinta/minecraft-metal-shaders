@@ -174,6 +174,9 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #if defined(SHADE_UW_CAUSTICS) && !defined(SHADE_OWN_TRANSLUCENT)
 	, constant ShadeWaterHead &wph [[buffer(23)]]
 #endif
+#ifdef SHADE_COLOR_LIGHT
+	, device const uint *clLight [[buffer(20)]], constant ShadeColorLights &clh [[buffer(21)]]
+#endif
 	) {
 #if defined(SHADE_WATER) && defined(SHADE_WATER_RHIST)
 	// (2026-11-06) the reflection history's write is a side effect: the GPU must then run this function even for fragments the depth
@@ -412,6 +415,9 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		if (shadeWaterIsFall(float(n.y), sl.bloom.w, wp)) wi.nFace = shadeWaterFallNormal(wi, sf, waterWaves);
 #endif
 		wi.lit = shadeLit2(half3(1.0h), up, skyLight, blockLight, shadow, false, false, sf, sl);
+#ifdef SHADE_COLOR_LIGHT
+		wi.lit += sf.ambientBlock.xyz * shadeColorLight(clh, clLight, p, float3(up), blockLight, skyLight, sf);
+#endif
 #ifdef SHADE_DYNLIGHT
 		float3 dlSpec = float3(0.0);
 		if (n.y > 0.5h) { // the surface seen from above: torchlight on the water body and its glint on the ripples
@@ -463,6 +469,9 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	if (water) {
 #ifdef SHADE_OWN_TRANSLUCENT
 		float3 lit = shadeLit2(half3(1.0h), n, skyLight, blockLight, shadow, false, false, sf, sl);
+#ifdef SHADE_COLOR_LIGHT
+		lit += sf.ambientBlock.xyz * shadeColorLight(clh, clLight, p, float3(n), blockLight, skyLight, sf);
+#endif
 #ifdef SHADE_DYNLIGHT
 		lit += sf.ambientBlock.xyz * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(n), false, blockLight);
 #endif
@@ -497,6 +506,10 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		// Nether/End (dims module): shadeLit2 without sky light and sun, plus the dimension's own light (shadeLitDimsExtra)
 		radiance = shadeLit2(wetAlbedo, materialN, dims ? half(0.0) : skyLight, blockLight, dims ? half(0.0) : shadow, thin, foliage, sf, sl);
 		if (dims) radiance += shadeLitDimsExtra(wetAlbedo, materialN, shadow, thin, foliage, p, sf, sl);
+#ifdef SHADE_COLOR_LIGHT
+		// (1.2.8) placed lights of a colour of their own light in it (colorlight.metal)
+		radiance += float3(wetAlbedo) * sf.ambientBlock.xyz * shadeColorLight(clh, clLight, p, float3(materialN), blockLight, dims ? half(0.0) : skyLight, sf);
+#endif
 #if defined(SHADE_UW_CAUSTICS) && !defined(SHADE_OWN_TRANSLUCENT)
 		// (1.2.8, issue #61: "caustics don't render underwater") the camera under water: the sunlit bottom and walls below the
 		// surface get the caustics the water's surface draws on them when seen from above (water.metal), on the sun's term only

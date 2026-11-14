@@ -190,8 +190,11 @@ void mc_dl_slot(DlState *s, int slot) {
 }
 
 // Binds this frame's lights and the visibility volumes into enc's open render encoder (vertex and fragment stages).
+static void mc_cl_bind_render(id<MTLRenderCommandEncoder> r);
+
 void mc_dl_bind(Enc *enc) {
 	id<MTLRenderCommandEncoder> r = enc->render;
+	if (r) mc_cl_bind_render(r); // (1.2.8) the coloured light volume: fragment buffers 20 and 21
 	DlState *s = dl ? dl : fb;
 	if (!r || !s) return;
 	id<MTLBuffer> b = s->ring[s->slot];
@@ -256,6 +259,139 @@ void mc_dl_irr(Enc *enc, DlState *s, int x0, int y0, int z0, int w, int h, int d
 		uint32_t box[4] = {(uint32_t) x0, (uint32_t) y0, (uint32_t) z0, 0};
 		[c setBytes:box length:sizeof(box) atIndex:1];
 		[c dispatchThreads:MTLSizeMake(w, h, d) threadsPerThreadgroup:MTLSizeMake(8, 8, 4)];
+		[c endEncoding];
+	}
+}
+
+// ---- (1.2.8) coloured block light: the flood-filled colour volume (colorlight.metal; Java side ColorLights) ----------------
+// One private buffer of cells (10 bits a channel, fine slots then coarse ones), one shared buffer of the cells' block ids the CPU
+// writes in place (a section's 4096 bytes at a time), a ring of shared buffers with each frame's slot lists, and the header the
+// CPU fills every frame (bound by value: fragment bytes 21, compute bytes 0). With the module off or failed, a 4-byte stand-in
+// and an "off" header are bound instead (the shaders built with it still declare the slots).
+#define CL_RING_MAX 8
+#define CL_HEADER 80
+typedef struct {
+	id<MTLComputePipelineState> floodPso, clearPso;
+	id<MTLBuffer> light, ids;
+	id<MTLBuffer> lists[CL_RING_MAX];
+	int ring, listCap;
+	uint8_t header[CL_HEADER];
+} ClState;
+static ClState *cl, *clFb;
+
+static void mc_cl_bind_render(id<MTLRenderCommandEncoder> r) {
+	ClState *s = cl ? cl : clFb;
+	if (!s) return;
+	[r setFragmentBuffer:s->light offset:0 atIndex:20];
+	[r setFragmentBytes:s->header length:CL_HEADER atIndex:21];
+}
+
+// cells: the cells of every slot (x 4 bytes light, x 1 byte ids); listCap: entries per frame list. NULL with the reason in err.
+ClState *mc_cl_new(Ctx *ctx, const char *source, long cells, int listCap, int ring, char *err, int errCap) {
+	@autoreleasepool {
+		MTLCompileOptions *o = [[MTLCompileOptions new] autorelease];
+		o.languageVersion = MTLLanguageVersion3_0;
+		o.mathMode = mc_math();
+		NSError *e = nil;
+		id<MTLLibrary> lib = [[ctx->device newLibraryWithSource:[NSString stringWithUTF8String:source] options:o error:&e] autorelease];
+		if (!lib) {
+			snprintf(err, errCap, "%s", e.localizedDescription.UTF8String);
+			return NULL;
+		}
+		id<MTLFunction> ff = [[lib newFunctionWithName:@"shade_cl_flood"] autorelease];
+		id<MTLFunction> fc = [[lib newFunctionWithName:@"shade_cl_clear"] autorelease];
+		id<MTLComputePipelineState> fp = ff ? [ctx->device newComputePipelineStateWithFunction:ff error:&e] : nil;
+		id<MTLComputePipelineState> cp = fp && fc ? [ctx->device newComputePipelineStateWithFunction:fc error:&e] : nil;
+		if (!fp || !cp || fp.maxTotalThreadsPerThreadgroup < 512 || cp.maxTotalThreadsPerThreadgroup < 512) {
+			snprintf(err, errCap, "colour volume kernels: %s", e ? e.localizedDescription.UTF8String : "missing or under 512 threads");
+			[fp release];
+			[cp release];
+			return NULL;
+		}
+		ClState *s = calloc(1, sizeof(ClState));
+		s->floodPso = fp;
+		s->clearPso = cp;
+		s->light = [ctx->device newBufferWithLength:(NSUInteger) cells * 4 options:MTLResourceStorageModePrivate];
+		s->ids = [ctx->device newBufferWithLength:(NSUInteger) cells options:MTLResourceStorageModeShared];
+		s->ring = ring < 2 ? 2 : ring > CL_RING_MAX ? CL_RING_MAX : ring;
+		s->listCap = listCap;
+		for (int i = 0; i < s->ring; i++) s->lists[i] = [ctx->device newBufferWithLength:(NSUInteger) listCap * 4 options:MTLResourceStorageModeShared];
+		if (!s->light || !s->ids || !s->lists[s->ring - 1]) {
+			snprintf(err, errCap, "colour volume buffers (%ld cells) could not be allocated", cells);
+			[s->light release];
+			[s->ids release];
+			for (int i = 0; i < s->ring; i++) [s->lists[i] release];
+			[fp release];
+			[cp release];
+			free(s);
+			return NULL;
+		}
+		s->light.label = @"mcopt shade: colour volume";
+		s->ids.label = @"mcopt shade: colour volume blocks";
+		memset(s->ids.contents, 0, (size_t) cells);
+		// the cells start dark: one blit before anything reads them
+		id<MTLCommandBuffer> cb = [ctx->queue commandBuffer];
+		id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder];
+		[b fillBuffer:s->light range:NSMakeRange(0, (NSUInteger) cells * 4) value:0];
+		[b endEncoding];
+		[cb commit];
+		cl = s;
+		return s;
+	}
+}
+
+// The off stand-in (module off or failed): a 4-byte buffer and a zero header (fineMin.w = 0: the shaders leave at once).
+int mc_cl_fallback(Ctx *ctx) {
+	if (clFb) return 1;
+	ClState *s = calloc(1, sizeof(ClState));
+	s->light = [ctx->device newBufferWithLength:16 options:MTLResourceStorageModeShared];
+	if (!s->light) {
+		free(s);
+		return 0;
+	}
+	memset(s->light.contents, 0, 16);
+	clFb = s;
+	return 1;
+}
+
+void *mc_cl_ids(ClState *s) {
+	return s->ids.contents;
+}
+
+void *mc_cl_list(ClState *s, int slot) {
+	return s->lists[slot % s->ring].contents;
+}
+
+// This frame's header (bound by value from now on: render encoders opened after this call get it).
+void mc_cl_header(ClState *s, const void *bytes) {
+	memcpy(s->header, bytes, CL_HEADER);
+}
+
+// The frame's work, on enc's frame command buffer before the world passes: list slot `slot` holds `clears` slots to empty, then
+// `fine` fine slots and `coarse` coarse ones to spread (fine first); the fine ones get `fineSteps` steps, the coarse ones one.
+void mc_cl_frame(Enc *enc, ClState *s, int slot, int clears, int fine, int coarse, int fineSteps) {
+	if (!s || (clears <= 0 && fine + coarse <= 0)) return;
+	@autoreleasepool {
+		id<MTLBuffer> list = s->lists[slot % s->ring];
+		id<MTLCommandBuffer> cb = mc_frame_cmd(enc);
+		id<MTLComputeCommandEncoder> c = [cb computeCommandEncoder]; // (serial: each dispatch sees the last one's writes)
+		c.label = @"mcopt shade: colour volume";
+		[c setBytes:s->header length:CL_HEADER atIndex:0];
+		[c setBuffer:s->light offset:0 atIndex:1];
+		[c setBuffer:s->ids offset:0 atIndex:2];
+		MTLSize tg = MTLSizeMake(8, 8, 8);
+		if (clears > 0) {
+			[c setComputePipelineState:s->clearPso];
+			[c setBuffer:list offset:0 atIndex:3];
+			[c dispatchThreadgroups:MTLSizeMake((NSUInteger) clears * 8, 1, 1) threadsPerThreadgroup:tg];
+		}
+		if (fine + coarse > 0) {
+			[c setComputePipelineState:s->floodPso];
+			[c setBuffer:list offset:(NSUInteger) clears * 4 atIndex:3];
+			[c dispatchThreadgroups:MTLSizeMake((NSUInteger) (fine + coarse) * 8, 1, 1) threadsPerThreadgroup:tg];
+			for (int i = 1; i < fineSteps && fine > 0; i++)
+				[c dispatchThreadgroups:MTLSizeMake((NSUInteger) fine * 8, 1, 1) threadsPerThreadgroup:tg];
+		}
 		[c endEncoding];
 	}
 }

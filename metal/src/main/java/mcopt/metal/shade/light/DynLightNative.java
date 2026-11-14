@@ -36,6 +36,13 @@ final class DynLightNative {
 	private static final MethodHandle OCCUPANCY = fn("mc_dl_occupancy", null, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle FALLBACK = fn("mc_dl_fallback", JAVA_INT, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle HAS_FLOOD = fn("mc_dl_has_flood", JAVA_INT, JAVA_LONG);
+	// (1.2.8) the coloured light volume (mcdynlight.m mc_cl_*, ColorLights)
+	private static final MethodHandle CL_NEW = fn("mc_cl_new", JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_INT);
+	private static final MethodHandle CL_FALLBACK = fn("mc_cl_fallback", JAVA_INT, JAVA_LONG);
+	private static final MethodHandle CL_IDS = fn("mc_cl_ids", JAVA_LONG, JAVA_LONG);
+	private static final MethodHandle CL_LIST = fn("mc_cl_list", JAVA_LONG, JAVA_LONG, JAVA_INT);
+	private static final MethodHandle CL_HEADER = fn("mc_cl_header", null, JAVA_LONG, JAVA_LONG);
+	private static final MethodHandle CL_FRAME = fn("mc_cl_frame", null, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT);
 
 	private DynLightNative() {
 	}
@@ -63,6 +70,54 @@ final class DynLightNative {
 	static void occupancy(long state, long address) {
 		try {
 			OCCUPANCY.invokeExact(state, address);
+		} catch (Throwable t) {
+			throw rethrow(t);
+		}
+	}
+
+	static long clCreate(long ctx, long source, long cells, int listCap, int ring, long err, int errCap) {
+		try {
+			return (long) CL_NEW.invokeExact(ctx, source, cells, listCap, ring, err, errCap);
+		} catch (Throwable t) {
+			throw rethrow(t);
+		}
+	}
+
+	static boolean clFallback(long ctx) {
+		try {
+			return (int) CL_FALLBACK.invokeExact(ctx) != 0;
+		} catch (Throwable t) {
+			throw rethrow(t);
+		}
+	}
+
+	static long clIds(long state) {
+		try {
+			return (long) CL_IDS.invokeExact(state);
+		} catch (Throwable t) {
+			throw rethrow(t);
+		}
+	}
+
+	static long clList(long state, int slot) {
+		try {
+			return (long) CL_LIST.invokeExact(state, slot);
+		} catch (Throwable t) {
+			throw rethrow(t);
+		}
+	}
+
+	static void clHeader(long state, long bytes) {
+		try {
+			CL_HEADER.invokeExact(state, bytes);
+		} catch (Throwable t) {
+			throw rethrow(t);
+		}
+	}
+
+	static void clFrame(long enc, long state, int slot, int clears, int fine, int coarse, int fineSteps) {
+		try {
+			CL_FRAME.invokeExact(enc, state, slot, clears, fine, coarse, fineSteps);
 		} catch (Throwable t) {
 			throw rethrow(t);
 		}

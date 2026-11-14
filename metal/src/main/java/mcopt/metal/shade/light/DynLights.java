@@ -179,6 +179,7 @@ public final class DynLights {
 			occupancy = new Occupancy(MemoryUtil.memByteBuffer(occAddress, Occupancy.BYTES).order(ByteOrder.LITTLE_ENDIAN).asIntBuffer());
 			visParams = MemoryUtil.nmemCalloc(1, VIS_PARAMS);
 			System.out.println("[mcopt] shade: dynamic lights on (" + DynLightConfig.describe() + ")");
+			ColorLights.init(ctx); // (1.2.8)
 			return true;
 		} catch (Throwable e) {
 			failed = true;
@@ -188,6 +189,7 @@ public final class DynLights {
 			// the shaders still declare the module's slots: bind zeroed stand-ins (no lights) rather than nothing
 			try {
 				fallback = DynLightNative.fallback(ctx, BYTES);
+				ColorLights.fallback(ctx);
 			} catch (Throwable f) {
 				System.out.println("[mcopt] shade: dynamic lights fallback bindings failed too: " + f);
 			}
@@ -390,6 +392,7 @@ public final class DynLights {
 			irrVoxels = ux1 >= ux0 ? (ux1 - ux0 + 1) * (uy1 - uy0 + 1) * (uz1 - uz0 + 1) : 0;
 		}
 		cpuNanos = System.nanoTime() - t0;
+		ColorLights.frame(enc, level, camX, camY, camZ); // (1.2.8) the coloured light volume, same command buffer, before the world
 		if (DynLightConfig.LOG && t0 - lastLog > 2_000_000_000L) {
 			lastLog = t0;
 			System.out.println(String.format(java.util.Locale.ROOT, "[mcopt] shade: dynamic lights %d (of %d sources), %d volumes (%d computed), %d irradiance voxels, cpu %.3f ms (occupancy %.3f ms, %d sections filled, %d waiting)",
@@ -661,16 +664,20 @@ public final class DynLights {
 	/** Block changes from the client level (ShadeLightClientLevelMixin). */
 	public static void blockChanged(BlockPos pos, net.minecraft.world.level.block.state.BlockState now) {
 		if (occupancy != null) occupancy.block(pos.getX(), pos.getY(), pos.getZ(), now);
+		ColorLights.sectionChanged(pos.getX() >> 4, pos.getY() >> 4, pos.getZ() >> 4);
 	}
 
 	public static void sectionChanged(int sx, int sy, int sz) {
 		if (occupancy != null) occupancy.section(sx, sy, sz);
+		ColorLights.sectionChanged(sx, sy, sz);
 	}
 
 	public static void sectionsChanged(int x0, int y0, int z0, int x1, int y1, int z1) {
-		if (occupancy == null) return;
 		if ((long) (x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1) > 4096) return;
-		for (int y = y0; y <= y1; y++) for (int z = z0; z <= z1; z++) for (int x = x0; x <= x1; x++) occupancy.section(x, y, z);
+		for (int y = y0; y <= y1; y++) for (int z = z0; z <= z1; z++) for (int x = x0; x <= x1; x++) {
+			if (occupancy != null) occupancy.section(x, y, z);
+			ColorLights.sectionChanged(x, y, z);
+		}
 	}
 
 	static boolean shadeOn() {
