@@ -130,6 +130,61 @@ static float3 shadeLit2(half3 albedo, half3 n, half sky, half block, half shadow
 	return float3(albedo) * float3((direct + ambient + fill + torch + minimum) * face);
 }
 
+// (1.2.8, issue #61) shadeLit2's sun term alone (the same terms: keep the two in step): what the caustics under water modulate.
+static half3 shadeLit2Direct(half3 n, half sky, half shadow, bool thin, bool foliage, constant ShadeFrame &f, constant ShadeLook &L) {
+	if (!shadeFeature(L, SHADE_FEATURE_LIGHT_V2)) return half3(0.0h);
+	half nl = half(dot(float3(n), f.lightDirWorld.xyz));
+	half ndl = thin ? half(0.3) + half(0.5) * abs(nl)
+		: foliage ? half(0.25) + half(0.75) * saturate(nl) + half(0.5 * L.user0.z) * saturate(-nl)
+		: (nl > half(0.0) ? (nl + half(0.08)) / half(1.08) : half(0.0));
+	half gate = f.flags.z != 0 ? smoothstep(half(0.3), half(0.8), sky) : sky * sky * sky * sky;
+	half3 direct = half3(f.sunColor.xyz) * (ndl * shadow * gate);
+	if (SHADE_CAMERA_UNDERWATER(f)) direct *= half3(0.22h, 0.5h, 0.62h);
+	return direct * (half(1.0) - half(0.06) * abs(n.x) * (half(1.0) - abs(n.y)));
+}
+
+// Caustic focusing (1 = none) at world xz x (wrapped, as water.metal's shadeWaterXZ) under kk = depth x wave strength: the sun's
+// rays bent by the waves' curvature bunch together or spread apart; the light per area is the inverse Jacobian of the refraction
+// mapping, 1 / |det(I + kk Hessian(h))|, on a set of short waves of its own (well spread directions, each warping the next:
+// irregular cells, not a lattice). t: the water clock (ShadeFrame.sunPath.w). Shared by the bottom seen through the surface
+// (water.metal shadeWaterCaustics) and, from 1.2.8, the bottom seen from under water (terrain_own.metal).
+#define SHADE_CAUSTIC_COUNT 6
+constant float4 SHADE_CAUSTIC_WAVES[SHADE_CAUSTIC_COUNT] = {
+	//   dir x,  dir z, wavelength, amplitude
+	float4( 0.940,  0.342, 2.60, 0.018),
+	float4(-0.276,  0.961, 2.10, 0.015),
+	float4( 0.454, -0.891, 1.70, 0.012),
+	float4(-0.866, -0.500, 1.37, 0.0095),
+	float4( 0.643,  0.766, 1.11, 0.0075),
+	float4(-0.985,  0.174, 0.89, 0.006),
+};
+
+static float shadeCausticFocus(float2 x, float t, float kk) {
+	float3 hs = 0.0; // Hessian: xx, zz, xz
+	for (int i = 0; i < SHADE_CAUSTIC_COUNT; i++) {
+		float4 w = SHADE_CAUSTIC_WAVES[i];
+		float k = 6.2831853 / w.z;
+		// (the angular speed rounded to whole turns per 4096 s, the clock's wrap: water.metal shadeWaterOmega)
+		float om = rint(sqrt(9.81 * k) * 0.55 * (4096.0 / 6.2831853)) * (6.2831853 / 4096.0);
+		float th = k * dot(w.xy, x) + om * t + float(i) * 1.9;
+		float c;
+		float s = sincos(th, c);
+		float e = exp(s - 1.0);
+		float q = w.w * k * k * (c * c - s) * e;
+		hs += q * float3(w.x * w.x, w.y * w.y, w.x * w.y);
+		x -= w.xy * (c * e * w.w * 14.0); // strong mutual warping: irregular cells
+	}
+	float det = (1.0 + kk * hs.x) * (1.0 + kk * hs.y) - kk * kk * hs.z * hs.z;
+	return min(1.0 / max(abs(det), 0.18), 4.0);
+}
+
+// (1.2.8) The head of water.metal's ShadeWaterParams (fragment buffer 23 on every shaded encoder while the water module runs,
+// mcwater.m mc_water_bind), for stages built without the water module: state.y the water surface above the eye (camera-relative,
+// under water), state.z wetness, tune.x wave strength, tune.w caustics strength.
+struct ShadeWaterHead {
+	float4 still, flow, state, tune;
+};
+
 // ---- PCSS-lite shadows (E08) ---------------------------------------------------------------------------------------------
 // Near cascade: blocker search (2 gathers = 8 depths within the sun's angular radius scaled to 16 blocks), penumbra from the
 // mean blocker distance, a Vogel disc of hardware 2x2 PCF taps rotated per pixel (interleaved gradient noise), and contact

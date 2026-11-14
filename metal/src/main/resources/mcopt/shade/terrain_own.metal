@@ -171,6 +171,9 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #ifdef MCOPT_HDR
 	, constant ShadeResources &sr [[buffer(19)]]
 #endif
+#if defined(SHADE_UW_CAUSTICS) && !defined(SHADE_OWN_TRANSLUCENT)
+	, constant ShadeWaterHead &wph [[buffer(23)]]
+#endif
 	) {
 #if defined(SHADE_WATER) && defined(SHADE_WATER_RHIST)
 	// (2026-11-06) the reflection history's write is a side effect: the GPU must then run this function even for fragments the depth
@@ -494,6 +497,25 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		// Nether/End (dims module): shadeLit2 without sky light and sun, plus the dimension's own light (shadeLitDimsExtra)
 		radiance = shadeLit2(wetAlbedo, materialN, dims ? half(0.0) : skyLight, blockLight, dims ? half(0.0) : shadow, thin, foliage, sf, sl);
 		if (dims) radiance += shadeLitDimsExtra(wetAlbedo, materialN, shadow, thin, foliage, p, sf, sl);
+#if defined(SHADE_UW_CAUSTICS) && !defined(SHADE_OWN_TRANSLUCENT)
+		// (1.2.8, issue #61: "caustics don't render underwater") the camera under water: the sunlit bottom and walls below the
+		// surface get the caustics the water's surface draws on them when seen from above (water.metal), on the sun's term only
+		if (SHADE_CAMERA_UNDERWATER(sf) && !dims && wph.tune.w > 0.0) {
+			float dy = wph.state.y - p.y; // depth under the surface above the eye
+			if (dy > 0.05 && dy < 18.0) {
+				float footprint = max(length(dpx), length(dpy));
+				float fade = exp(-dy * 0.2) * saturate(dy * 3.0) * (1.0 - smoothstep(0.04, 0.12, footprint)); // fine lines alias far away
+				half3 direct = shadeLit2Direct(materialN, skyLight, shadow, thin, foliage, sf, sl);
+				if (fade > 0.02 && max3(direct.r, direct.g, direct.b) > 1e-4h) {
+					float3 l = sf.lightDirWorld.xyz;
+					float2 x = p.xz + l.xz / max(l.y, 0.25) * dy + sf.cameraFract.xz + fmod(sf.cameraBlock.xz, 2048.0);
+					float kk = min(dy, 5.0) * 0.25 * 3.2 * wph.tune.x * (1.0 + 0.8 * wph.state.z);
+					float c = shadeCausticFocus(x, sf.sunPath.w, kk);
+					radiance += float3(wetAlbedo) * float3(direct) * ((c * 0.8 - 1.0) * min(0.75 * fade * wph.tune.w, 1.0));
+				}
+			}
+		}
+#endif
 #ifdef SHADE_DYNLIGHT
 		radiance += float3(wetAlbedo) * sf.ambientBlock.xyz * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(materialN), thin, blockLight);
 #endif

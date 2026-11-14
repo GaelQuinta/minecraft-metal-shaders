@@ -133,7 +133,10 @@ public final class ShadeMsl {
 		return (ShadeConfig.HDR ? "#define MCOPT_HDR\n" : "") + (OWN_NONCE != null ? "#define SHADE_OWN_NONCE " + OWN_NONCE + "\n" : "")
 			+ ((leanBits & PBR_MATERIALS) != 0 ? "#define SHADE_PBR\n" : "")
 			+ leanDefines((leanBits & ~PBR_MATERIALS) << LEAN_SHIFT) + LEAN_TEST
-			+ (translucent ? "#define SHADE_OWN_TRANSLUCENT\n" : "") + prelude() + ShadeWeather.prelude(translucent)
+			+ (translucent ? "#define SHADE_OWN_TRANSLUCENT\n" : "")
+			// (1.2.8) the opaque layers' caustics seen from under water (the water module's parameters are bound to every encoder)
+			+ (!translucent && ShadeWater.MODULE && ShadeWater.CAUSTICS ? "#define SHADE_UW_CAUSTICS\n" : "")
+			+ prelude() + ShadeWeather.prelude(translucent)
 			+ (translucent && ShadeWater.MODULE ? ShadeWater.prelude() : "") + resource("terrain_own.metal");
 	}
 

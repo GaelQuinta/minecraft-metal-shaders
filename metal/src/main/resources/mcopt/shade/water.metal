@@ -2148,40 +2148,12 @@ static float shadeWaterFallFoam(float3 p, float3 nf, float footprint, float mv, 
 }
 #endif
 
-// Caustic focusing (1 = none) on a bottom at camera-relative pf, depth dy under the surface. The sun's rays that reach pf
-// crossed the surface up-sun of it; there the waves' curvature bends them together or apart, and the light per area is the
-// inverse Jacobian of the refraction mapping x -> x + dy (1 - 1/n) grad h: 1 / |det(I + k Hessian(h))|. Where the
-// determinant crosses zero (focal curves) the light bunches into the bright cell network of real caustics. Evaluated on
-// a set of short waves of their own (well spread directions, so cells and not a lattice), each warping the next.
-#define SHADE_CAUSTIC_COUNT 6
-constant float4 SHADE_CAUSTIC_WAVES[SHADE_CAUSTIC_COUNT] = {
-	//   dir x,  dir z, wavelength, amplitude
-	float4( 0.940,  0.342, 2.60, 0.018),
-	float4(-0.276,  0.961, 2.10, 0.015),
-	float4( 0.454, -0.891, 1.70, 0.012),
-	float4(-0.866, -0.500, 1.37, 0.0095),
-	float4( 0.643,  0.766, 1.11, 0.0075),
-	float4(-0.985,  0.174, 0.89, 0.006),
-};
-
+// Caustic focusing (1 = none) on a bottom at camera-relative pf, depth dy under the surface: the waves where the sun's rays
+// that reach pf crossed the surface, up-sun of it (shade_m2.metal shadeCausticFocus).
 static float shadeWaterCaustics(float3 pf, float dy, constant ShadeFrame &f, constant ShadeWaterParams &wp, float3 l) {
 	float2 x = shadeWaterXZ(pf.xz + l.xz / max(l.y, 0.25) * dy, f);
-	float t = shadeWaterTime(f);
-	float3 hs = 0.0; // Hessian: xx, zz, xz
-	for (int i = 0; i < SHADE_CAUSTIC_COUNT; i++) {
-		float4 w = SHADE_CAUSTIC_WAVES[i];
-		float k = 6.2831853 / w.z;
-		float th = k * dot(w.xy, x) + shadeWaterOmega(sqrt(9.81 * k) * 0.55) * t + float(i) * 1.9;
-		float c;
-		float s = sincos(th, c);
-		float e = exp(s - 1.0);
-		float q = w.w * k * k * (c * c - s) * e;
-		hs += q * float3(w.x * w.x, w.y * w.y, w.x * w.y);
-		x -= w.xy * (c * e * w.w * 14.0); // strong mutual warping: irregular cells
-	}
 	float kk = min(dy, 5.0) * 0.25 * 3.2 * wp.tune.x * (1.0 + 0.8 * wp.state.z);
-	float det = (1.0 + kk * hs.x) * (1.0 + kk * hs.y) - kk * kk * hs.z * hs.z;
-	return min(1.0 / max(abs(det), 0.18), 4.0);
+	return shadeCausticFocus(x, shadeWaterTime(f), kk);
 }
 
 // The shore foam's patches (shadeWaterAbove): the edge's foam cut into drifting patches, only over a floor that faces up, fading
