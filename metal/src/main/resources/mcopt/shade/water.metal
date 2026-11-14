@@ -2641,8 +2641,24 @@ static float3 shadeWaterBelow(ShadeWaterIn w, constant ShadeFrame &f, constant S
 		// the sun seen through the rippled window: a small hot core and a soft glare around the refracted direction, so
 		// the ripples break it into dancing sparkles
 		float ct = dot(t, f.lightDirWorld.xyz);
+		// (1.2.8, issue #61: "clouds don't render in Snell's window") the volumetric clouds toward the refracted direction, from
+		// their reflection dome: the window showed the bare sky gradient. They also hide the sun's glare behind them.
+		float cloudT = 1.0;
+		if (w.look != nullptr && w.res != nullptr && w.look->clouds0.w > 0.5) {
+			float4 cd = shadeCloudsDome(t, *w.look, w.res->cloudDome);
+			// where that direction is on screen, this frame's own clouds (the dome's texels meet at the zenith: straight up, the
+			// middle of the window from below, they drew a star of streaks), fading into the dome over the screen's last tenth
+			float4 cc = w.look->viewProjNoJitter * float4(t, 0.0);
+			if (cc.w > 1e-4) {
+				float2 cuv = cc.xy / cc.w * 0.5 + 0.5;
+				float ws = saturate(min(cuv.x, 1.0 - cuv.x) * 10.0) * saturate(min(cuv.y, 1.0 - cuv.y) * 10.0);
+				if (ws > 0.0) cd = mix(cd, shadeCloudsScreen(t, *w.look, w.res->cloudScreen), ws);
+			}
+			sky = sky * cd.a + cd.rgb;
+			cloudT = cd.a;
+		}
 		// (a tight glare: the wide one read as a flat white disc once bloom spread it)
-		if (f.lightDirWorld.w > 0.5) sky += f.sunColor.rgb * (exp((ct - 1.0) * 6000.0) * 30.0 + exp((ct - 1.0) * 400.0) * 0.35) * float(w.shadow);
+		if (f.lightDirWorld.w > 0.5) sky += f.sunColor.rgb * (exp((ct - 1.0) * 6000.0) * 30.0 + exp((ct - 1.0) * 400.0) * 0.35) * float(w.shadow) * cloudT;
 		above = wR < SHADE_WATER_SKY_W ? shadeWaterSceneRadiance(scene.sample(shadeWaterLinear, uvR * size / tex).rgb, w.exposure) : sky;
 		above *= float(shadeSkyCurve(w.sky)) * 0.6 + 0.4;
 	}
