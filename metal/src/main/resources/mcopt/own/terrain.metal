@@ -1825,9 +1825,16 @@ static float3 ownSway(uint vi, int3 origin, float3 cam, device const void *arena
 	float dy = p.y - float(o.pos.y);
 	// (1.2.7, audit D9) a plant that doesn't stand on a block's floor stays still: a flower or a sapling in a pot (4/16 up), which
 	// the wind tilted through the rim and passers-by bent out of the pot. Ground plants start at 0, crops on farmland at 15/16.
-	float base = fract(min(p.y, float(o.pos.y)));
-	if (base > 0.06 && base < 0.9) return float3(0);
-	float h = abs(dy) < 0.01 ? 0.0 : saturate(dy / abs(dy) * 0.5 + 0.5);  // (1 at the quad's top corners, 0 at its bottom ones)
+	// (1.2.8, issue #61) "some short grass never moves, always the same ones": short grass and ferns are drawn up to 0.2 of a block
+	// lower by their position (vanilla's XYZ offset), so their feet sit at 0.8..1 of the block below, and from 0.8 to 0.9 this test
+	// took them for raised plants: about half of them stood still and ignored passers-by. Only a tall quad counts as raised now,
+	// and only up to 0.78.
+	float yq = min(p.y, float(o.pos.y)), base = fract(yq);
+	bool tall = abs(dy) >= 0.7;
+	if (tall && base > 0.06 && base < 0.78) return float3(0);
+	// (1 at a tall quad's top corners, 0 at its bottom ones. 1.2.8: a model made of smaller pieces, a resource pack's 3D flower or a
+	// sunflower's head, by each corner's height over its block's floor, so its pieces move together instead of each shearing alone)
+	float h = tall ? (dy > 0.0 ? 1.0 : 0.0) : saturate(p.y - (yq - base + (base >= 0.78 ? 1.0 : 0.0)));
 	float hw = k == 3 ? 0.5 * h : k == 4 ? 0.5 + 0.5 * h : h;
 	float w = hw * hw;
 	if (w <= 0.0) return float3(0);

@@ -17,10 +17,25 @@ package mcopt.metal.shade;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.renderer.block.BlockStateModelSet;
+import net.minecraft.client.renderer.block.dispatch.BlockStateModelPart;
+import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
+import net.minecraft.client.renderer.texture.TextureAtlas;
+import net.minecraft.client.renderer.texture.TextureAtlasSprite;
+import net.minecraft.client.resources.model.geometry.BakedQuad;
+import net.minecraft.core.Direction;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.util.RandomSource;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.DoublePlantBlock;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.DoubleBlockHalf;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.phys.Vec3;
@@ -89,13 +104,77 @@ public final class ShadeFoliage {
 			int k = classOf(s.path);
 			if (k == 0) continue;
 			n++;
-			// every texel whose centre is inside the sprite, and always the one holding its centre (where the shader looks)
-			for (int ty = Math.max(0, (s.y + cell / 2) / cell); ty < h && ty * cell + cell / 2 < s.y + s.h; ty++)
-				for (int tx = Math.max(0, (s.x + cell / 2) / cell); tx < w && tx * cell + cell / 2 < s.x + s.w; tx++) map[ty * w + tx] = (byte) k;
-			int cx = Math.min(w - 1, (s.x + s.w / 2) / cell), cy = Math.min(h - 1, (s.y + s.h / 2) / cell);
-			map[cy * w + cx] = (byte) k;
+			mark(map, w, h, cell, s.x, s.y, s.w, s.h, k);
 		}
 		pending = new Pending(w, h, cell, map, n);
+	}
+
+	/** Class k for every map texel whose centre is inside the sprite's pixels, and always the one holding its centre (where the shader looks). */
+	private static void mark(byte[] map, int w, int h, int cell, int sx, int sy, int sw, int sh, int k) {
+		for (int ty = Math.max(0, (sy + cell / 2) / cell); ty < h && ty * cell + cell / 2 < sy + sh; ty++)
+			for (int tx = Math.max(0, (sx + cell / 2) / cell); tx < w && tx * cell + cell / 2 < sx + sw; tx++) map[ty * w + tx] = (byte) k;
+		int cx = Math.min(w - 1, (sx + sw / 2) / cell), cy = Math.min(h - 1, (sy + sh / 2) / cell);
+		map[cy * w + cx] = (byte) k;
+	}
+
+	/** A block's foliage class by its id's path (0: none); a double plant's by its half. */
+	private static int classOfBlock(String id, BlockState state) {
+		if (isDouble(id)) {
+			if (!state.hasProperty(DoublePlantBlock.HALF)) return 0;
+			return state.getValue(DoublePlantBlock.HALF) == DoubleBlockHalf.UPPER ? DOUBLE_UPPER : DOUBLE_LOWER;
+		}
+		if (id.equals("wheat") || id.equals("carrots") || id.equals("potatoes") || id.equals("beetroots") || id.equals("torchflower_crop")) return CROP;
+		if (id.equals("sweet_berry_bush")) return PLANT;
+		if (id.equals("pale_hanging_moss")) return VINE;
+		return classOf(id); // (leaves, vines, saplings and the small plants: the block's id is its vanilla sprite's name)
+	}
+
+	/**
+	 * (1.2.8, issue #61) The sprites that the foliage blocks' models really draw with, whatever they are called: a resource pack that
+	 * gives short grass or a flower its own models and textures ("block/grasses/short_3") left them out of the name list above, so
+	 * its plants stood still. Every state of every foliage block, a few random seeds each (a pack's weighted variants), cutout quads
+	 * only (a pack's 3D leaves may add a twig with the log's solid sprite, which never moves: F_SWAY is on the cutout stages alone).
+	 * A sprite the name list already knows keeps that class. Render thread, once per atlas, models baked.
+	 */
+	private static int markByModels(Pending p) {
+		Minecraft mc = Minecraft.getInstance();
+		BlockStateModelSet models = mc.getModelManager().getBlockStateModelSet();
+		if (models == null) return 0;
+		IdentityHashMap<TextureAtlasSprite, Boolean> seen = new IdentityHashMap<>();
+		List<BlockStateModelPart> parts = new ArrayList<>();
+		RandomSource random = RandomSource.create(0L);
+		Direction[] dirs = Direction.values();
+		int added = 0;
+		for (Block block : BuiltInRegistries.BLOCK) {
+			String id = BuiltInRegistries.BLOCK.getKey(block).getPath();
+			for (BlockState state : block.getStateDefinition().getPossibleStates()) {
+				int k = classOfBlock(id, state);
+				if (k == 0) break; // (the class is the block's, but for a double plant's halves: both are > 0)
+				var model = models.get(state);
+				for (long seed = 0; seed < 24; seed++) {
+					random.setSeed(seed * 0x9E3779B97F4A7C15L + 1);
+					parts.clear();
+					model.collectParts(random, parts);
+					for (BlockStateModelPart part : parts) {
+						for (int d = 0; d <= dirs.length; d++) {
+							for (BakedQuad quad : part.getQuads(d < dirs.length ? dirs[d] : null)) {
+								var info = quad.materialInfo();
+								TextureAtlasSprite sprite = info.sprite();
+								if (info.layer() != ChunkSectionLayer.CUTOUT || seen.put(sprite, Boolean.TRUE) != null) continue;
+								if (!sprite.atlasLocation().equals(TextureAtlas.LOCATION_BLOCKS)) continue;
+								int pad = ((mcopt.metal.mixin.AtlasDoubleSpriteAccess) sprite).mcopt$adPadding();
+								int sx = sprite.getX() + pad, sy = sprite.getY() + pad, sw = sprite.contents().width(), sh = sprite.contents().height();
+								int cx = Math.min(p.w - 1, (sx + sw / 2) / p.cell), cy = Math.min(p.h - 1, (sy + sh / 2) / p.cell);
+								if (p.classes[cy * p.w + cx] != 0) continue; // (known by name)
+								mark(p.classes, p.w, p.h, p.cell, sx, sy, sw, sh, k);
+								added++;
+							}
+						}
+					}
+				}
+			}
+		}
+		return added;
 	}
 
 	/** A sprite's foliage class by its name (0: it doesn't move). Vanilla's names; resource packs keep them. */
@@ -205,6 +284,14 @@ public final class ShadeFoliage {
 
 	private static void upload(Pending p) {
 		pending = null;
+		int byModel = 0;
+		if (Live.b("mcopt.shade.foliage.byModel", true)) {
+			try {
+				byModel = markByModels(p);
+			} catch (RuntimeException e) {
+				System.out.println("[mcopt] shade: foliage: the models' sprites could not be read (" + e + "); the name list alone");
+			}
+		}
 		long tex;
 		try (MemoryStack stack = MemoryStack.stackPush()) {
 			tex = ShadeNative.textureCpu(ShadeBindings.ctx(), p.w, p.h, 1, MemoryUtil.memAddress(stack.UTF8("mcopt foliage classes")));
@@ -225,6 +312,7 @@ public final class ShadeFoliage {
 		haveMap = true;
 		mapW = p.w;
 		mapH = p.h;
-		System.out.println(String.format(Locale.ROOT, "[mcopt] shade: foliage: %d moving sprites, class map %dx%d (%d px a texel)", p.sprites, p.w, p.h, p.cell));
+		System.out.println(String.format(Locale.ROOT, "[mcopt] shade: foliage: %d moving sprites (+ %d from the blocks' models), class map %dx%d (%d px a texel)",
+			p.sprites, byModel, p.w, p.h, p.cell));
 	}
 }
