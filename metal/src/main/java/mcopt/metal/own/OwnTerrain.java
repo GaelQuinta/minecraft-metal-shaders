@@ -420,6 +420,8 @@ public final class OwnTerrain {
 	}
 
 	static final int RUN_INTS = 6;
+	/** -Dmcopt.own.int.posTableStaleTest (test only): renewArena leaves the position table unwritten, as issue #63's address reuse did. */
+	private static final boolean POS_TABLE_STALE_TEST = Boolean.getBoolean("mcopt.own.int.posTableStaleTest");
 	/** exactPos: table entries already in the arena at posTableArena. */
 	private int posTableSynced;
 	private long posTableArena;
@@ -1087,6 +1089,21 @@ public final class OwnTerrain {
 			long old = this.arenaBuffer;
 			this.arenaAddress = OwnNative.contents(buffer);  // (a new address: exactPos's table is written again, posTableArena)
 			this.arenaBuffer = buffer;
+			// (mcopt-shade 1.2.8, issue #63) ... and written again whatever the address. The arena is renewed more than once between
+			// two world frames (leaving a world and opening the next: three times; a change of dimension: once; the loading screens
+			// draw no world), so a fresh buffer can get the address an earlier one freed, the one the table was last written at:
+			// the comparison at the next frame then saw nothing new and the table stayed empty. Every off-grid coordinate met before
+			// (plants' random offsets, 45-degree parts: chains, tripwire hooks, corals, big dripleaf stems, end rods) decoded to 0,
+			// the section's corner: stretched, displaced or invisible models until the arena next grew. Forced with
+			// -Dmcopt.own.int.posTableStaleTest (notes/2026-11-14/repro63.sh): lilacs in strips, chains and hooks gone.
+			if (OwnPosTable.ON) System.out.println("mcopt-own: arena renewed" + (this.posTableArena == this.arenaAddress
+				? ", at the address the position table was last written at (" + this.posTableSynced + " entries; written again)" : ""));
+			if (POS_TABLE_STALE_TEST) {
+				this.posTableArena = this.arenaAddress;  // (test only: the failure on purpose, the fresh buffer taken for the written one)
+			} else {
+				this.posTableArena = 0;
+				this.posTableSynced = 0;
+			}
 			OwnNative.release(old);
 			return true;
 		} finally {
