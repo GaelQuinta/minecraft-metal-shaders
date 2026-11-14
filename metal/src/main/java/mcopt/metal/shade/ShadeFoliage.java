@@ -129,11 +129,32 @@ public final class ShadeFoliage {
 		return classOf(id); // (leaves, vines, saplings and the small plants: the block's id is its vanilla sprite's name)
 	}
 
+	private static volatile IdentityHashMap<Block, Boolean> rooted;
+
+	/**
+	 * (1.2.8, issue #61) A plant that sways from its foot (small plants, double plants, crops; not leaves or vines), for the mesher
+	 * (any thread): its quads that vanilla would put in the solid layer go to the cutout layer, where the foliage moves. Vanilla
+	 * decides a quad's layer from the texels inside its own UV rectangle, so a resource pack's flower built of small pieces has
+	 * solid petals beside a cutout stem: half of it would sway and half stand still.
+	 */
+	public static boolean rootedPlant(BlockState state) {
+		IdentityHashMap<Block, Boolean> r = rooted;
+		if (r == null) {
+			r = new IdentityHashMap<>();
+			for (Block block : BuiltInRegistries.BLOCK) {
+				int k = classOfBlock(BuiltInRegistries.BLOCK.getKey(block).getPath(), block.defaultBlockState());
+				if (k == PLANT || k == DOUBLE_LOWER || k == DOUBLE_UPPER || k == CROP) r.put(block, Boolean.TRUE);
+			}
+			rooted = r; // (built whole, then published: read-only afterwards)
+		}
+		return r.containsKey(state.getBlock());
+	}
+
 	/**
 	 * (1.2.8, issue #61) The sprites that the foliage blocks' models really draw with, whatever they are called: a resource pack that
 	 * gives short grass or a flower its own models and textures ("block/grasses/short_3") left them out of the name list above, so
-	 * its plants stood still. Every state of every foliage block, a few random seeds each (a pack's weighted variants), cutout quads
-	 * only (a pack's 3D leaves may add a twig with the log's solid sprite, which never moves: F_SWAY is on the cutout stages alone).
+	 * its plants stood still. Every state of every foliage block, a few random seeds each (a pack's weighted variants). Leaves and
+	 * vines: cutout quads only (a pack's 3D leaves may add a twig with the log's solid sprite, which stays in the solid layer).
 	 * A sprite the name list already knows keeps that class. Render thread, once per atlas, models baked.
 	 */
 	private static int markByModels(Pending p) {
@@ -160,7 +181,10 @@ public final class ShadeFoliage {
 							for (BakedQuad quad : part.getQuads(d < dirs.length ? dirs[d] : null)) {
 								var info = quad.materialInfo();
 								TextureAtlasSprite sprite = info.sprite();
-								if (info.layer() != ChunkSectionLayer.CUTOUT || seen.put(sprite, Boolean.TRUE) != null) continue;
+								// (a rooted plant's solid quads are meshed as cutout, rootedPlant below: its solid sprites count too)
+								ChunkSectionLayer layer = info.layer();
+								if (layer == ChunkSectionLayer.TRANSLUCENT || layer == ChunkSectionLayer.SOLID && (k == LEAVES || k == VINE)) continue;
+								if (seen.put(sprite, Boolean.TRUE) != null) continue;
 								if (!sprite.atlasLocation().equals(TextureAtlas.LOCATION_BLOCKS)) continue;
 								int pad = ((mcopt.metal.mixin.AtlasDoubleSpriteAccess) sprite).mcopt$adPadding();
 								int sx = sprite.getX() + pad, sy = sprite.getY() + pad, sw = sprite.contents().width(), sh = sprite.contents().height();

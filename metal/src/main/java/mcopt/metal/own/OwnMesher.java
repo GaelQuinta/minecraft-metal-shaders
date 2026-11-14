@@ -93,6 +93,9 @@ public final class OwnMesher {
 	}
 
 	/** Vanilla's compile, our outputs for solid and cutout. Null when our terrain isn't up (vanilla's compile runs then). */
+	/** mcopt-shade (1.2.8): rooted plants' solid quads go to the cutout layer (see mesh); -Dmcopt.shade.foliage.cutoutPlants=false: vanilla's layers. */
+	private static final boolean PLANT_CUTOUT = mcopt.metal.shade.Shade.ENABLED && !"false".equals(System.getProperty("mcopt.shade.foliage.cutoutPlants"));
+
 	public static SectionCompiler.@Nullable Results compile(boolean ambientOcclusion, boolean cutoutLeaves, BlockStateModelSet blockModelSet,
 		FluidStateModelSet fluidModelSet, BlockColors blockColors, SectionPos sectionPos, RenderSectionRegion region, VertexSorting vertexSorting,
 		SectionBufferBuilderPack builders) {
@@ -152,9 +155,11 @@ public final class OwnMesher {
 		OwnBlockRenderer ownRenderer = own != null && OwnBlockRenderer.ON ? OwnBlockRenderer.get(ambientOcclusion, blockColors) : null;
 		if (ownRenderer != null) ownRenderer.qrecSink = OwnQrec.ON ? quads : null;
 		VertexConsumer[] translucent = new VertexConsumer[1];
+		// mcopt-shade (1.2.8, issue #61): a rooted plant's solid quads in the cutout layer, where the foliage sways (ShadeFoliage.rootedPlant)
+		boolean[] plant = new boolean[1];
 		BlockQuadOutput quadOutput = (x, y, z, quad, instance) -> {
 			ChunkSectionLayer layer = quad.materialInfo().layer();
-			if (layer == ChunkSectionLayer.SOLID) quads.put(0, x, y, z, quad, instance);
+			if (layer == ChunkSectionLayer.SOLID) quads.put(plant[0] ? 1 : 0, x, y, z, quad, instance);
 			else if (layer == ChunkSectionLayer.CUTOUT) quads.put(1, x, y, z, quad, instance);
 			else if (startedLayers != null) translucent(startedLayers, builders, translucent).putBlockBakedQuad(x, y, z, quad, instance);
 		};
@@ -190,6 +195,7 @@ public final class OwnMesher {
 						if (fluidLight[0] != null) fluidLight[0].water = fluidState.is(net.minecraft.tags.FluidTags.WATER);
 						fluidRenderer.tesselate(level, pos, fluidOutput, blockState, fluidState);
 					}
+					plant[0] = PLANT_CUTOUT && startedLayers != null && mcopt.metal.shade.ShadeFoliage.rootedPlant(blockState);
 					if (blockState.getRenderShape() == RenderShape.MODEL && api != null) {
 						// vanilla's region, not OwnRegion: Fabric API extends RenderSectionRegion (block entity render data, biomes) for FRAPI models
 						api.block(SectionPos.sectionRelative(pos.getX()), SectionPos.sectionRelative(pos.getY()), SectionPos.sectionRelative(pos.getZ()), region, pos,
