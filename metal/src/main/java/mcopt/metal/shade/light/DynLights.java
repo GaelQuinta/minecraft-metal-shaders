@@ -130,8 +130,6 @@ public final class DynLights {
 		/** (FT2.9) core radius (blocks) and omnidirectional (the player's own light): dynlight.metal ShadeDynLight.shape. */
 		float core = 0.75f;
 		boolean omni;
-		/** (1.2.8) a placed coloured light (PlacedLights): r, g, b = its tint less one; it tints its block's light, adds none (shape.w). */
-		boolean tint;
 		boolean fire, seen, hand, selected;
 		float cur, target, seed, score;
 		int slab = -1, volGen;
@@ -268,7 +266,7 @@ public final class DynLights {
 				Src s = ACTIVE.get(i);
 				boolean want = false;
 				// lightning and other wide flashes: open sky anyway
-				if (i < count && volumes < DynLightConfig.VOLUMES && s.reach <= 16f && (playerShadows || !s.omni || s.tint)) {
+				if (i < count && volumes < DynLightConfig.VOLUMES && s.reach <= 16f && (playerShadows || !s.omni)) {
 					double dx = s.x - camX, dy = s.y - camY, dz = s.z - camZ;
 					want = Math.abs(dx) <= DynLightConfig.VOLUME_RANGE && Math.abs(dy) <= DynLightConfig.VOLUME_RANGE && Math.abs(dz) <= DynLightConfig.VOLUME_RANGE;
 				}
@@ -318,9 +316,7 @@ public final class DynLights {
 		int gx0 = Math.floorDiv((int) Math.floor(camX) + 4, CELL) * CELL - GRID_X * CELL / 2;
 		int gy0 = Math.floorDiv((int) Math.floor(camY) + 4, CELL) * CELL - GRID_Y * CELL / 2;
 		int gz0 = Math.floorDiv((int) Math.floor(camZ) + 4, CELL) * CELL - GRID_Z * CELL / 2;
-		int tints = 0;
-		for (int i = 0; i < count; i++) if (ACTIVE.get(i).tint) tints++;
-		b.putInt(0, count).putInt(4, volumes).putInt(8, frame).putInt(12, tints); // (1.2.8) info.w: placed coloured lights among them
+		b.putInt(0, count).putInt(4, volumes).putInt(8, frame).putInt(12, 0);
 		b.putFloat(16, (float) (gx0 - camX)).putFloat(20, (float) (gy0 - camY)).putFloat(24, (float) (gz0 - camZ)).putFloat(28, 1f / CELL);
 		// (1.1) strength, spec and entity live
 		b.putFloat(32, Math.max(1, DynLightConfig.VOLUMES)).putFloat(36, DynLightConfig.strength()).putFloat(40, DynLightConfig.spec()).putFloat(44, DynLightConfig.entity());
@@ -334,7 +330,7 @@ public final class DynLights {
 			float flick = s.fire && flickers ? flicker(s.seed) : 1f;
 			float k = s.cur * flick;
 			int at = LIGHTS_OFFSET + i * LIGHT_BYTES;
-			b.putFloat(at + 48, s.core).putFloat(at + 52, s.omni ? 1f : 0f).putFloat(at + 56, s.slab >= 0 && s.volSoft ? 1f : 0f).putFloat(at + 60, s.tint ? 1f : 0f);
+			b.putFloat(at + 48, s.core).putFloat(at + 52, s.omni ? 1f : 0f).putFloat(at + 56, s.slab >= 0 && s.volSoft ? 1f : 0f).putFloat(at + 60, 0f);
 			float rx = (float) (s.x - camX), ry = (float) (s.y - camY), rz = (float) (s.z - camZ);
 			b.putFloat(at, rx).putFloat(at + 4, ry).putFloat(at + 8, rz).putFloat(at + 12, s.reach);
 			b.putFloat(at + 16, s.r * k).putFloat(at + 20, s.g * k).putFloat(at + 24, s.b * k).putFloat(at + 28, s.spec);
@@ -347,7 +343,7 @@ public final class DynLights {
 				b.putFloat(at + 32, 0f).putFloat(at + 36, 0f).putFloat(at + 40, 0f).putFloat(at + 44, -1f);
 			}
 			// cells the light's sphere reaches (radius: the reach less the shader's cut, SHADE_DL_CUT), corners of its box dropped
-			double rr = Math.max(s.tint ? s.reach : s.reach - CUT, 0.5), rr2 = rr * rr; // (1.2.8: a placed light out to its last block)
+			double rr = Math.max(s.reach - CUT, 0.5), rr2 = rr * rr;
 			int x0 = clamp((int) Math.floor((s.x - rr - gx0) / CELL), GRID_X), x1 = clamp((int) Math.floor((s.x + rr - gx0) / CELL), GRID_X);
 			int y0 = clamp((int) Math.floor((s.y - rr - gy0) / CELL), GRID_Y), y1 = clamp((int) Math.floor((s.y + rr - gy0) / CELL), GRID_Y);
 			int z0 = clamp((int) Math.floor((s.z - rr - gz0) / CELL), GRID_Z), z1 = clamp((int) Math.floor((s.z + rr - gz0) / CELL), GRID_Z);
@@ -379,7 +375,7 @@ public final class DynLights {
 			int bx0 = IRR_X, by0 = IRR_Y, bz0 = IRR_Z, bx1 = -1, by1 = -1, bz1 = -1;
 			for (int i = 0; i < count; i++) {
 				Src s = ACTIVE.get(i);
-				double rr = (s.tint ? s.reach : s.reach - CUT) + 1.0, lx = s.x - ix0 - 0.5, ly = s.y - iy0 - 0.5, lz = s.z - iz0 - 0.5;
+				double rr = s.reach - CUT + 1.0, lx = s.x - ix0 - 0.5, ly = s.y - iy0 - 0.5, lz = s.z - iz0 - 0.5;
 				if (rr <= 0) continue;
 				int ax = Math.max(0, (int) Math.floor(lx - rr)), ay = Math.max(0, (int) Math.floor(ly - rr)), az = Math.max(0, (int) Math.floor(lz - rr));
 				int cx = Math.min(IRR_X - 1, (int) Math.ceil(lx + rr)), cy = Math.min(IRR_Y - 1, (int) Math.ceil(ly + rr)), cz = Math.min(IRR_Z - 1, (int) Math.ceil(lz + rr));
@@ -480,7 +476,6 @@ public final class DynLights {
 		LocalPlayer player = mc.player;
 		boolean firstPerson = camera.isFirstPerson && player != null && mc.getCameraEntity() == player;
 		double range = DynLightConfig.range(), range2 = range * range; // (1.1) range, hand and others live
-		placed(level, range);
 		if (player != null && DynLightConfig.hand() && !player.isSpectator()) {
 			hands(player, partial, firstPerson ? camera : null);
 		}
@@ -535,42 +530,6 @@ public final class DynLights {
 			// anything burning (mobs, players, arrows on fire, minecarts in lava...): fire light at its centre
 			if (e.displayFireAnimation() && !(e instanceof Blaze)) fire(e, partial);
 		}
-	}
-
-	/** (1.2.8) mcopt.shade.dynLights.placed (live, true): placed lights of a colour of their own tint their block light (PlacedLights). */
-	private static final ArrayList<PlacedLights.Light> PLACED = new ArrayList<>();
-	/** The most of them listed at once, nearest first: the rest of the 64 stay for what moves. */
-	private static final int PLACED_MAX = 40;
-
-	private static void placed(ClientLevel level, double range) {
-		if (!mcopt.metal.shade.Live.b("mcopt.shade.dynLights.placed", true)) return;
-		PlacedLights.collect(level, camX, camY, camZ, Math.min(range, 48.0), PLACED);
-		if (PLACED.size() > PLACED_MAX) {
-			PLACED.sort((p, q) -> Double.compare(dist2(p), dist2(q)));
-			PLACED.subList(PLACED_MAX, PLACED.size()).clear();
-		}
-		for (PlacedLights.Light l : PLACED) {
-			long bx = (long) Math.floor(l.x()), by = (long) Math.floor(l.y()), bz = (long) Math.floor(l.z());
-			Src s = source(1L << 62 | (bx & 0x1FFFFFFL) << 37 | (bz & 0x1FFFFFFL) << 12 | (by & 0xFFFL)); // (entities' keys stay under 2^35)
-			s.x = l.x();
-			s.y = l.y();
-			s.z = l.z();
-			s.reach = l.level();
-			float[] t = l.tint();
-			s.r = t[0] - 1f;
-			s.g = t[1] - 1f;
-			s.b = t[2] - 1f;
-			s.fire = false;
-			s.spec = 0f;
-			s.core = 0.75f;
-			s.omni = true; // (vanilla's flood has no direction: every face its light reaches takes the colour)
-			s.tint = true;
-		}
-	}
-
-	private static double dist2(PlacedLights.Light l) {
-		double dx = l.x() - camX, dy = l.y() - camY, dz = l.z() - camZ;
-		return dx * dx + dy * dy + dz * dz;
 	}
 
 	private static void fire(Entity e, float partial) {
@@ -688,7 +647,6 @@ public final class DynLights {
 		float best = 0f, strength = DynLightConfig.strength(); // (1.1) live, as the frame's
 		for (int i = 0, n = Math.min(ACTIVE.size(), DynLightConfig.max()); i < n; i++) {
 			Src s = ACTIVE.get(i);
-			if (s.tint) continue; // (1.2.8) a placed light: vanilla's own block light already holds it
 			double dx = s.x - x, dy = s.y - y, dz = s.z - z;
 			double d = Math.sqrt(dx * dx + dy * dy + dz * dz);
 			if (d >= s.reach - CUT) continue;
@@ -703,20 +661,16 @@ public final class DynLights {
 	/** Block changes from the client level (ShadeLightClientLevelMixin). */
 	public static void blockChanged(BlockPos pos, net.minecraft.world.level.block.state.BlockState now) {
 		if (occupancy != null) occupancy.block(pos.getX(), pos.getY(), pos.getZ(), now);
-		PlacedLights.blockChanged(pos.getX(), pos.getY(), pos.getZ());
 	}
 
 	public static void sectionChanged(int sx, int sy, int sz) {
 		if (occupancy != null) occupancy.section(sx, sy, sz);
-		PlacedLights.sectionChanged(sx, sy, sz);
 	}
 
 	public static void sectionsChanged(int x0, int y0, int z0, int x1, int y1, int z1) {
+		if (occupancy == null) return;
 		if ((long) (x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1) > 4096) return;
-		for (int y = y0; y <= y1; y++) for (int z = z0; z <= z1; z++) for (int x = x0; x <= x1; x++) {
-			if (occupancy != null) occupancy.section(x, y, z);
-			PlacedLights.sectionChanged(x, y, z);
-		}
+		for (int y = y0; y <= y1; y++) for (int z = z0; z <= z1; z++) for (int x = x0; x <= x1; x++) occupancy.section(x, y, z);
 	}
 
 	static boolean shadeOn() {

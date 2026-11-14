@@ -154,7 +154,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	texture2d<half> skyLut [[texture(17)]], sampler skyLutSmplr [[sampler(13)]]
 #ifdef SHADE_DYNLIGHT
 	, constant ShadeDynLights &dl [[buffer(24)]], texture3d<half> dlVis [[texture(23)]], texture3d<half> dlIrr [[texture(24)]]
-	, texture3d<half> dlDir [[texture(25)]], texture3d<half> dlTint [[texture(28)]]
+	, texture3d<half> dlDir [[texture(25)]]
 #endif
 #ifdef SHADE_WATER
 	, texture2d<half> sceneCopy [[texture(18)]], depth2d<float> depthCopy [[texture(19)]], constant ShadeWaterParams &wp [[buffer(23)]]
@@ -418,7 +418,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 			float fres = 0.02 + 0.98 * pow(1.0 - saturate(dot(dlN, V)), 5.0);
 			dlSpec *= sf.ambientBlock.xyz * (0.25 + 3.0 * fres);
 		} else {
-			wi.lit += sf.ambientBlock.xyz * (shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(n), false, blockLight) + shadeBlockTintVol(dl, dlTint, p, float3(n), blockLight));
+			wi.lit += sf.ambientBlock.xyz * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(n), false, blockLight);
 		}
 #endif
 		wi.exposure = ex;
@@ -461,7 +461,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #ifdef SHADE_OWN_TRANSLUCENT
 		float3 lit = shadeLit2(half3(1.0h), n, skyLight, blockLight, shadow, false, false, sf, sl);
 #ifdef SHADE_DYNLIGHT
-		lit += sf.ambientBlock.xyz * (shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(n), false, blockLight) + shadeBlockTintVol(dl, dlTint, p, float3(n), blockLight));
+		lit += sf.ambientBlock.xyz * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(n), false, blockLight);
 #endif
 		float4 w = shadeWater(lit, tint, shadeLumaH(half3(texel.rgb)), alpha, p, skyLight, shadow, skyLut, skyLutSmplr, sf);
 		radiance = w.rgb;
@@ -495,8 +495,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		radiance = shadeLit2(wetAlbedo, materialN, dims ? half(0.0) : skyLight, blockLight, dims ? half(0.0) : shadow, thin, foliage, sf, sl);
 		if (dims) radiance += shadeLitDimsExtra(wetAlbedo, materialN, shadow, thin, foliage, p, sf, sl);
 #ifdef SHADE_DYNLIGHT
-		radiance += float3(wetAlbedo) * sf.ambientBlock.xyz * (shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(materialN), thin, blockLight)
-			+ shadeBlockTintVol(dl, dlTint, p, float3(materialN), blockLight));
+		radiance += float3(wetAlbedo) * sf.ambientBlock.xyz * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(materialN), thin, blockLight);
 #endif
 #if defined(MCOPT_HDR) && defined(SHADE_PBR)
 		if (pbr) {

@@ -17,7 +17,6 @@
 //   texture(23)  texture3d<half>           visibility volumes: per occluded light a 32^3 R8 block around it, 1 where the
 //                                          light's centre sees the voxel's centre through air (computed every frame from the
 //                                          CPU's block occupancy, dynlight_vis.metal); slab s = z slices [32 s, 32 s + 32)
-//   texture(28)  texture3d<half>           (1.2.8, fragment only) placed coloured lights: the tint of the block light (shadeBlockTintVol)
 // Both slots are free in every pipeline that binds the shade globals (vanilla's own use buffers 0-7, textures 0-7; Sodium
 // 20-22, 26, 27-30; water 18-22, 23).
 //
@@ -61,13 +60,12 @@ struct ShadeDynLight {
 	float4 vol;    // xyz camera-relative world position of its visibility volume's min corner (block aligned), w slab (< 0: none)
 	float4 shape;  // (FT2.9) x core radius (blocks: the light is as bright as there everywhere nearer; 0.75 = FT2.8.1), y 1 = omnidirectional
 	               // (no N.L: the player's own light), z (FT2.11) 1 = the visibility slab holds the detour (shade_dl_flood), 0 = rays
-	               // (0 or 1 per voxel, shade_dl_vis), w (1.2.8) 1 = a placed coloured light: it adds nothing, it only tints the block
-	               // light its block already gives (color.rgb = tint - 1; shade_dl_irr's tint volume, shadeBlockTintVol)
+	               // (0 or 1 per voxel, shade_dl_vis), w 0
 };
 
 // Byte layout = mcopt.metal.shade.light.DynLights (Java packer). 28736 bytes.
 struct ShadeDynLights {
-	uint4 info;      //    0  x light count, y lights with a visibility volume, z frame, w (1.2.8) placed coloured lights among them
+	uint4 info;      //    0  x light count, y lights with a visibility volume, z frame, w 0
 	float4 grid;     //   16  xyz camera-relative min corner of the light grid, w 1 / cell size (blocks)
 	float4 params;   //   32  x visibility slabs in texture(23), y global strength, z specular strength, w entity strength
 	float4 irr;      //   48  xyz camera-relative min corner of the irradiance volume (textures 24/25), w 1 when it was computed
@@ -107,7 +105,6 @@ static inline float2 shadeDlReach(constant ShadeDynLights &D, constant ShadeDynL
 // distance. 0 outside its reach.
 static inline float3 shadeDlOne(constant ShadeDynLights &D, constant ShadeDynLight &L, float3 p, float3 n, bool thin, texture3d<half> vis,
                                 thread float3 &l, thread float &d) {
-	if (L.shape.w > 0.5) return float3(0.0); // (1.2.8) a placed coloured light: the tint volume's, not a light of its own
 	float3 v = L.pos.xyz - p;
 	float d2 = dot(v, v), reach = L.pos.w, cut = reach - SHADE_DL_CUT;
 	if (d2 >= cut * cut) return float3(0.0);
@@ -177,36 +174,6 @@ static float3 shadeDynamicLightsVol(constant ShadeDynLights &D, texture3d<half> 
 	return e * (w * D.params.y * (1.0 - 0.5 * shadeDlCurve(float(block))));
 }
 
-// (1.2.8, issue #61: "soul torches and in general blue lighting is a bit too orange, and so is purple") Placed lights of a
-// colour of their own (soul fire, redstone torches, copper torches, portals, amethyst, the green and pink froglights...: mcopt.metal.shade.light
-// .PlacedLights finds them around the camera) tint the block light their block already gives. Vanilla's block light is one number,
-// so the terrain lit everything in the torch's colour. The tint volume (shade_dl_irr) holds per block voxel the light those
-// sources bring there (a: as shadeDlOne without the N.L, through their visibility slabs) and that light's tint less one (rgb,
-// summed). The surface's own block light F(block) is at least that where they are alone, more where other lights reach too:
-// the tint applies where the level they bring is about the surface's own. Returns what to add to the block-light term in its
-// units (times albedo x ambientBlock, like shadeDynamicLightsVol): between -F and (tint - 1) F per channel, 0 away from them.
-static float3 shadeBlockTintVol(constant ShadeDynLights &D, texture3d<half> tintVol, float3 p, float3 n, half block) {
-	if (D.info.w == 0u || D.irr.w <= 0.0 || block <= 0.0h) return float3(0.0);
-	const float3 size = float3(SHADE_DL_IRR_X, SHADE_DL_IRR_Y, SHADE_DL_IRR_Z);
-	float3 q = p + n * 0.5 - D.irr.xyz; // voxel units
-	float3 edge = min(q, size - q);
-	float fade = saturate((min(min(edge.x, edge.y), edge.z) - 0.5) * (1.0 / (SHADE_DL_IRR_FADE - 0.5)));
-	if (fade <= 0.0) return float3(0.0);
-	constexpr sampler s(filter::linear, address::clamp_to_edge, coord::normalized);
-	float4 t = float4(tintVol.sample(s, q / size, level(0.0)));
-	if (t.a <= 1e-6) return float3(0.0);
-	// the level those lights bring here: the curve inverted (two Newton steps from above; F is convex, they stay above)
-	float e = min(t.a, 1.0), bl = min(1.0, pow(5.0 * e, 1.0 / 2.4));
-	for (int i = 0; i < 2; i++) {
-		float b6 = bl * bl * bl; b6 *= b6;
-		bl -= ((2.2 * b6 * bl + 0.55 * pow(bl, 2.4)) * (1.0 / 2.75) - e) / max((15.4 * b6 + 1.32 * pow(bl, 1.4)) * (1.0 / 2.75), 1e-6);
-	}
-	// theirs where that level is the surface's own (within one: the volume's blocks and the flood's detours are coarse), fading to
-	// none where another light is five levels brighter: a torch beside a soul lantern keeps its warm pool, with a soft border
-	float w = saturate(1.0 + (15.0 * (bl - float(block)) + 1.0) * 0.25);
-	return t.rgb * (shadeDlCurve(float(block)) * w * fade / t.a);
-}
-
 // The irradiance volume (compute, mcdynlight.m, after the visibility slabs): per block voxel around the camera, every light
 // of its grid cell as shadeDlOne computes it at the voxel centre without the N.L term (that waits for the surface normal),
 // its visibility read exactly from the light's slab; rgb into irr, the luminance-weighted mean direction into dirs (of the
@@ -214,13 +181,13 @@ static float3 shadeBlockTintVol(constant ShadeDynLights &D, texture3d<half> tint
 #ifdef SHADE_DL_KERNELS
 kernel void shade_dl_irr(uint3 t0 [[thread_position_in_grid]], constant ShadeDynLights &D [[buffer(0)]], constant uint4 &box [[buffer(1)]],
                          texture3d<half> vis [[texture(0)]], texture3d<half, access::write> irr [[texture(1)]],
-                         texture3d<half, access::write> dirs [[texture(2)]], texture3d<half, access::write> tintOut [[texture(3)]]) {
+                         texture3d<half, access::write> dirs [[texture(2)]]) {
 	uint3 t = t0 + box.xyz; // only the box the lights can reach (and last frame's, to clear it) is dispatched
 	if (any(t >= uint3(SHADE_DL_IRR_X, SHADE_DL_IRR_Y, SHADE_DL_IRR_Z))) return;
 	float3 c = D.irr.xyz + float3(t) + 0.5;
 	uint2 m = shadeDlMask(D, c);
-	float3 e = float3(0.0), ds = float3(0.0), ts = float3(0.0);
-	float ls = 0.0, lo = 0.0, tw = 0.0;
+	float3 e = float3(0.0), ds = float3(0.0);
+	float ls = 0.0, lo = 0.0;
 	for (uint k = 0u; k < 2u; k++) {
 		uint bits = k == 0u ? m.x : m.y;
 		while (bits != 0u) {
@@ -229,9 +196,7 @@ kernel void shade_dl_irr(uint3 t0 [[thread_position_in_grid]], constant ShadeDyn
 			constant ShadeDynLight &L = D.lights[i];
 			float3 v = L.pos.xyz - c;
 			float d2 = dot(v, v), reach = L.pos.w, cut = reach - SHADE_DL_CUT;
-			// (1.2.8) a placed coloured light counts out to its last block: the terrain compares it with vanilla's own level there
-			bool placed = L.shape.w > 0.5;
-			if (d2 >= (placed ? reach * reach : cut * cut)) continue;
+			if (d2 >= cut * cut) continue;
 			float d = sqrt(d2), de = d, k = 1.0;
 			if (L.vol.w >= 0.0) {
 				int3 q = int3(floor(c - L.vol.xyz));
@@ -241,14 +206,6 @@ kernel void shade_dl_irr(uint3 t0 [[thread_position_in_grid]], constant ShadeDyn
 				else k = r;
 			}
 			float b = saturate((reach - max(de, L.shape.x)) * (1.0 / 15.0));
-			if (placed) { // its light here (tw) and that light's tint (ts), no light added
-				float fp = shadeDlCurve(b) * k;
-				if (fp > 1e-7) {
-					ts += L.color.rgb * fp;
-					tw += fp;
-				}
-				continue;
-			}
 			float f = shadeDlCurve(b) * saturate(cut - de) * k;
 			if (f <= 1e-5) continue;
 			float3 ci = L.color.rgb * f;
@@ -264,7 +221,6 @@ kernel void shade_dl_irr(uint3 t0 [[thread_position_in_grid]], constant ShadeDyn
 	}
 	irr.write(half4(half3(min(e, 60000.0)), 0.0h), t);
 	dirs.write(half4(half3(ls > 0.0 ? ds / ls : float3(0.0)), half(lo > 0.0 ? lo / (lo + ls) : 0.0)), t);
-	tintOut.write(half4(half3(ts), half(tw)), t);
 }
 #endif
 
@@ -331,7 +287,6 @@ static float4 shadeDynLightmap(float4 lm, int2 uv2, float3 p, float3 n, texture2
 			uint i = ctz(bits) + 32u * k;
 			bits &= bits - 1u;
 			constant ShadeDynLight &L = D.lights[i];
-			if (L.shape.w > 0.5) continue; // (1.2.8) a placed coloured light: the vertex's own block light already holds it
 			float3 v = L.pos.xyz - p;
 			float d2 = dot(v, v), reach = L.pos.w, cut = reach - SHADE_DL_CUT;
 			if (d2 >= cut * cut) continue;
