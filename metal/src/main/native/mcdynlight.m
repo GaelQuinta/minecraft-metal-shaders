@@ -17,6 +17,7 @@
 // bound on every render encoder native shading binds (ShadeBindings.bind), vertex and fragment stages:
 //   buffer(24)  this frame's ShadeDynLights      texture(23)  the visibility volumes
 //   texture(24), texture(25) (fragment only): the irradiance volume (rgb light, mean light direction) the terrain samples
+//   texture(28) (fragment only; 1.2.8): the placed coloured lights' tint volume (rgb their tint of the block light, a their light)
 // Both slots are unused by the game's pipelines (uniforms and samplers from 0, Sodium's 20-22/26, vertex buffers 27-30,
 // water's 18-23); far terrain's own pipelines use 24 but rebind shade after drawing.
 // Manual retain/release (the dylib builds with -fno-objc-arc), like the other files.
@@ -37,6 +38,7 @@ typedef struct {
 	id<MTLComputePipelineState> floodPso, floodOutPso; // (FT2.11) shade_dl_flood(_out): the volumes as light spreads through air; nil = rays only
 	id<MTLBuffer> ways;                               // (FT2.11) the flood's ways, DL_FLOOD_WORDS per slab
 	id<MTLTexture> irr, dir;  // the irradiance volume: rgb light, mean light direction (one voxel per block)
+	id<MTLTexture> tint;      // (1.2.8) placed coloured lights: rgb their tint of the block light, a their light (dynlight.metal)
 } DlState;
 
 // The one state mc_dl_bind binds from (set by mc_dl_new), or the fallback: when the module failed to start, the shaders
@@ -119,6 +121,8 @@ DlState *mc_dl_new(Ctx *ctx, const char *source, int bytes, int ring, int slabs,
 		s->irr.label = @"mcopt shade: dynamic light irradiance";
 		s->dir = [ctx->device newTextureWithDescriptor:td];
 		s->dir.label = @"mcopt shade: dynamic light direction";
+		s->tint = [ctx->device newTextureWithDescriptor:td];
+		s->tint.label = @"mcopt shade: placed coloured lights";
 		dl = s;
 		return s;
 	}
@@ -139,6 +143,7 @@ void mc_dl_free(DlState *s) {
 	[s->ways release];
 	[s->irr release];
 	[s->dir release];
+	[s->tint release];
 	free(s);
 }
 
@@ -179,6 +184,7 @@ int mc_dl_fallback(Ctx *ctx, int bytes) {
 		td.pixelFormat = MTLPixelFormatRGBA16Float;
 		s->irr = [ctx->device newTextureWithDescriptor:td];
 		s->dir = [ctx->device newTextureWithDescriptor:td];
+		s->tint = [ctx->device newTextureWithDescriptor:td];
 		fb = s;
 		return 1;
 	}
@@ -201,6 +207,7 @@ void mc_dl_bind(Enc *enc) {
 	[r setFragmentTexture:s->vis atIndex:23];
 	[r setFragmentTexture:s->irr atIndex:24];
 	[r setFragmentTexture:s->dir atIndex:25];
+	[r setFragmentTexture:s->tint atIndex:28];  // (1.2.8: fragment slot 28 is free in every pipeline that declares the module)
 }
 
 // (FT2.11) 1 when the flood fill's pipeline exists (DlVisParams.info.y = 1 is honoured), else 0.
@@ -253,6 +260,7 @@ void mc_dl_irr(Enc *enc, DlState *s, int x0, int y0, int z0, int w, int h, int d
 		[c setTexture:s->vis atIndex:0];
 		[c setTexture:s->irr atIndex:1];
 		[c setTexture:s->dir atIndex:2];
+		[c setTexture:s->tint atIndex:3];
 		uint32_t box[4] = {(uint32_t) x0, (uint32_t) y0, (uint32_t) z0, 0};
 		[c setBytes:box length:sizeof(box) atIndex:1];
 		[c dispatchThreads:MTLSizeMake(w, h, d) threadsPerThreadgroup:MTLSizeMake(8, 8, 4)];
