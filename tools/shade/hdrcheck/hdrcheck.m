@@ -130,6 +130,38 @@ static void compositor(void) {
     }
     printf("OK native HDR compositor: world, opaque/translucent HUD, UI brightness, reduced output, resize, stale/skipped frames\n");
 }
+// The HUD vignette uses ZERO / ONE_MINUS_SRC_COLOR and preserves destination alpha.
+// Those alpha-zero darkening edits must be independent of the UI paper-white control.
+static void attenuationUiBrightness(void) {
+    float values[4][4][3];
+    for(int effect=0;effect<4;effect++) for(int level=0;level<4;level++) {
+        float ui=(float[]){.25f,.5f,1.f,2.f}[level];
+        id<MTLTexture> main=texture(MTLPixelFormatRGBA8Unorm,8,8), hdr=texture(MTLPixelFormatRGBA16Float,8,8), out=texture(MTLPixelFormatRGBA16Float,8,8);
+        fill(main,128/255.f,128/255.f,128/255.f,0); fill(hdr,.3,.3,.3,1);
+        Enc enc={0}; enc.cmd=[queue commandBuffer]; mc_xdr_full_frame(&enc,hdr,main,ui,4);
+        // No edit, neutral vignette, coloured world-border attenuation, additive overlay.
+        float m=(float[]){128/255.f,102/255.f,102/255.f,153/255.f}[effect];
+        MTLRenderPassDescriptor *rp=[MTLRenderPassDescriptor renderPassDescriptor];
+        rp.colorAttachments[0].texture=main;rp.colorAttachments[0].loadAction=MTLLoadActionClear;rp.colorAttachments[0].storeAction=MTLStoreActionStore;
+        rp.colorAttachments[0].clearColor=MTLClearColorMake(effect==2?115/255.f:m,m,m,0);
+        [[enc.cmd renderCommandEncoderWithDescriptor:rp] endEncoding];
+        check(mc_xdr_compose(enc.cmd,main,out,0),"attenuation compose");complete(enc.cmd);
+        _Float16 pixels[8*8*4];[out getBytes:pixels bytesPerRow:8*8 fromRegion:MTLRegionMake2D(0,0,8,8) mipmapLevel:0];
+        for(int k=0;k<3;k++) values[effect][level][k]=pixels[k];
+        for(int i=0;i<64;i++)for(int k=0;k<3;k++)check(isfinite((float)pixels[i*4+k])&&fabsf(pixels[i*4+k]-values[effect][level][k])<.001,"uniform overlay pixels");
+        [main release];[hdr release];[out release];
+    }
+    for(int effect=0;effect<3;effect++)for(int level=0;level<4;level++)for(int k=0;k<3;k++)
+        check(fabsf(values[effect][level][k]-values[effect][2][k])<.001,"UI brightness must not change world/vignette/border attenuation");
+    for(int k=0;k<3;k++) {
+        check(values[1][2][k]<values[0][2][k]-.05,"vignette remains visible");
+        for(int level=1;level<4;level++)check(values[3][level][k]>values[3][level-1][k],"additive UI still follows brightness");
+    }
+    float baseline=.3f+linear(102/255.f)-linear(128/255.f);
+    check(fabsf(values[1][2][0]-baseline)<.001,"vignette at default UI white unchanged");
+    printf("OK 16 native overlay cases: world/vignette/border independent of UI white, additive brightness preserved, default vignette unchanged\n");
+}
+
 static void orientationAndLegacy(void) {
     id<MTLTexture> main=texture(MTLPixelFormatRGBA8Unorm,8,6);
     id<MTLTexture> hdr=texture(MTLPixelFormatRGBA16Float,4,3);
@@ -257,7 +289,7 @@ int main(int argc,const char **argv) {
     @autoreleasepool {
         check(argc>=2,"usage: hdrcheck fixture-directory [perf]");
         device=MTLCreateSystemDefaultDevice(); queue=[device newCommandQueue];
-        curves([NSString stringWithUTF8String:argv[1]]); compositor(); orientationAndLegacy();
+        curves([NSString stringWithUTF8String:argv[1]]); compositor(); attenuationUiBrightness(); orientationAndLegacy();
         if(argc>2 && !strcmp(argv[2],"perf")) benchmark([NSString stringWithUTF8String:argv[1]]);
         printf("HDR checks passed on %s\n",device.name.UTF8String);
     }
