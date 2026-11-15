@@ -115,7 +115,7 @@ struct ShadeWaterParams {
 	float4 mirror; // (2026-11-06, SHADE_WATER_MIRROR_AA) x the ripple-aware mirror normal's strength (mcopt.shade.water.mirrorAAStrength,
 	               // 0 = none), y (candidate 8, SHADE_SSR_HIER) the mirrored image's footprint filter (mcopt.shade.water.reflFilter, 1; 0 = one
 	               // tap per pixel), z (candidate 8, SHADE_WATER_PANO) the panorama's share off screen (mcopt.shade.water.reflPano, 1; 0 = none),
-	               // w reserved
+	               // w (1.2.8) the gain of the caustics' bright lines seen from above (mcopt.shade.water.causticGain; 1 = 1.2.7's)
 };
 
 // (2026-11-06) the reflection history's textures (SHADE_WATER_RHIST; mcwater.m binds them, ping-pong): texture(29) last frame's,
@@ -2150,9 +2150,9 @@ static float shadeWaterFallFoam(float3 p, float3 nf, float footprint, float mv, 
 
 // Caustic focusing (1 = none) on a bottom at camera-relative pf, depth dy under the surface: the waves where the sun's rays
 // that reach pf crossed the surface, up-sun of it (shade_m2.metal shadeCausticFocus).
-static float shadeWaterCaustics(float3 pf, float dy, constant ShadeFrame &f, constant ShadeWaterParams &wp, float3 l) {
+static float shadeWaterCaustics(float3 pf, float dy, constant ShadeFrame &f, constant ShadeWaterParams &wp, float3 l, float soft) {
 	float2 x = shadeWaterXZ(pf.xz + l.xz / max(l.y, 0.25) * dy, f);
-	float kk = min(dy, 5.0) * 0.25 * 3.2 * wp.tune.x * (1.0 + 0.8 * wp.state.z);
+	float kk = min(dy, 5.0) * 0.25 * 3.2 * wp.tune.x * (1.0 + 0.8 * wp.state.z) * soft;
 	return shadeCausticFocus(x, shadeWaterTime(f), kk);
 }
 
@@ -2330,18 +2330,29 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 #endif
 #if defined(SHADE_CAUSTICS) && !defined(SHADE_PRICE_NOCAUSTICS)
 	if (top && wp.tune.w > 0.0 && dy > 0.05 && dy < 18.0) {
-		float sunL = f.lightDirWorld.w > 0.5 ? smoothstep(0.1, 0.8, float(w.shadow)) * saturate(f.lightDirWorld.y * 4.0) * smoothstep(0.55, 0.9, float(w.sky)) : 0.0;
+		// (1.2.8) the sun's share of the bottom's light relative to full sun, s x 4 / (3 s + 1) for visibility s (the direct ~3x the sky's
+		// light): the caustics follow the sun's light as they do seen from under water (terrain_own.metal, linear in it, against the
+		// sky's light there). 1.2.7's smoothstep(0.1, 0.8, s) dropped them to 5 % under a cloud's shadow (s ~0.2; under water ~40 %):
+		// Gael saw them under water and not from the shore
+		float sv = saturate(float(w.shadow));
+		float sunL = f.lightDirWorld.w > 0.5 ? sv * 4.0 / (3.0 * sv + 1.0) * saturate(f.lightDirWorld.y * 4.0) * smoothstep(0.55, 0.9, float(w.sky)) : 0.0;
 		// (FT2.10, w.cave.x) torchlight is bent by the ripples too: where it lights the bottom (block light; caves, a strip of water in
 		// a base, a pool at night) its caustics play there like the sun's in a lake, the waves' texture under water the sky can't
 		// show it by (Gael 2026-10-10: a strip of water in his base looked like flat glass next to the lakes)
 		float torchL = float(w.cave.x) * (1.0 - sunL);
 		float light = sunL + torchL;
-		float fade = light * exp(-dy * 0.2) * saturate(dy * 3.0) * (1.0 - smoothstep(0.04, 0.12, w.footprint)); // fine lines alias far away
+		float2 lod = shadeCausticLod(w.footprint); // fine lines alias far away: softened, then faded
+		float fade = light * exp(-dy * 0.2) * saturate(dy * 3.0) * lod.y;
 		if (fade > 0.02) { // deep, shaded or far bottoms: not worth the waves
 			// (the torch's light comes from above and around: its focus straight down)
 			float3 cl = sunL >= torchL ? f.lightDirWorld.xyz : float3(0.0, 1.0, 0.0);
-			float c = shadeWaterCaustics(w.p + v * lView, dy, f, wp, cl);
-			bottom *= mix(1.0, c * 0.8, min(0.75 * fade * wp.tune.w, 1.0)); // ~energy neutral: the focus averages a bit over 1 ((1.1) tune.w: user.caustics)
+			float c = shadeWaterCaustics(w.p + v * lView, dy, f, wp, cl, lod.x);
+			// ~energy neutral: the focus averages a bit over 1 ((1.1) tune.w: user.caustics). (1.2.8, Gael: "only seen from under
+			// water") wp.mirror.w the gain from above (mcopt.shade.water.causticGain): the bottom here is all its light (sky and sun,
+			// not the sun's term alone as under water) and reaches the eye through the water's haze and the mirrored sky, so its
+			// bright lines take the gain; the dark between them keeps the old depth (they'd darken the sky's share too)
+			float g = 0.75 * fade * wp.tune.w, e = c * 0.8 - 1.0;
+			bottom *= 1.0 + e * (e > 0.0 ? min(g * wp.mirror.w, 3.0) : min(g, 1.0));
 		}
 	}
 #endif

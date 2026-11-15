@@ -59,6 +59,8 @@ public final class ColorLights {
 	private static final int HEADER = 80, LIST_CAP = 3 * (FINE + COARSE) + 64, RING = 6;
 	/** Frames a slot keeps spreading after it was last near a coloured light (its light fades out in about 32 steps), then emptied. */
 	private static final int LINGER = 48;
+	/** Frames between the log lines (mcopt.shade.coloredLights.logEvery; 600 while measuring, ~1 min at 120 fps by default). */
+	static final int LOG_EVERY = Math.max(Integer.getInteger("mcopt.shade.coloredLights.logEvery", 7200), 60);
 	private static final long NONE = Long.MIN_VALUE;
 	private static final long BUDGET_NS = Long.getLong("mcopt.shade.coloredLights.budgetUs", 1200L) * 1000L;
 
@@ -516,10 +518,10 @@ public final class ColorLights {
 		lastFine = nFine;
 		lastCoarse = nCoarse;
 		statCpu += cpuNanos;
-		if (frame % 600 == 0) {
+		if (frame % LOG_EVERY == 0) {
 			System.out.println(String.format(java.util.Locale.ROOT,
-				"[mcopt] shade: coloured lights: %d fine and %d coarse slots spreading, last 600 frames: cpu %.3f ms a frame (reads %.3f), %d fine and %d coarse reads, near sets %d",
-				nFine, nCoarse, statCpu / 600e6, statRead / 600e6, statFine, statCoarse, statNear));
+				"[mcopt] shade: coloured lights: %d fine and %d coarse slots spreading, last %d frames: cpu %.3f ms a frame (reads %.3f), %d fine and %d coarse reads, near sets %d",
+				nFine, nCoarse, LOG_EVERY, statCpu / (LOG_EVERY * 1e6), statRead / (LOG_EVERY * 1e6), statFine, statCoarse, statNear));
 			statCpu = statRead = 0;
 			statFine = statCoarse = statNear = 0;
 		}

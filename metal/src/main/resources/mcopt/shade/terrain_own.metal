@@ -516,13 +516,13 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		if (SHADE_CAMERA_UNDERWATER(sf) && !dims && wph.tune.w > 0.0) {
 			float dy = wph.state.y - p.y; // depth under the surface above the eye
 			if (dy > 0.05 && dy < 18.0) {
-				float footprint = max(length(dpx), length(dpy));
-				float fade = exp(-dy * 0.2) * saturate(dy * 3.0) * (1.0 - smoothstep(0.04, 0.12, footprint)); // fine lines alias far away
+				float2 lod = shadeCausticLod(max(length(dpx), length(dpy))); // fine lines alias far away: softened, then faded
+				float fade = exp(-dy * 0.2) * saturate(dy * 3.0) * lod.y;
 				half3 direct = shadeLit2Direct(materialN, skyLight, shadow, thin, foliage, sf, sl);
 				if (fade > 0.02 && max3(direct.r, direct.g, direct.b) > 1e-4h) {
 					float3 l = sf.lightDirWorld.xyz;
 					float2 x = p.xz + l.xz / max(l.y, 0.25) * dy + sf.cameraFract.xz + fmod(sf.cameraBlock.xz, 2048.0);
-					float kk = min(dy, 5.0) * 0.25 * 3.2 * wph.tune.x * (1.0 + 0.8 * wph.state.z);
+					float kk = min(dy, 5.0) * 0.25 * 3.2 * wph.tune.x * (1.0 + 0.8 * wph.state.z) * lod.x;
 					float c = shadeCausticFocus(x, sf.sunPath.w, kk);
 					radiance += float3(wetAlbedo) * float3(direct) * ((c * 0.8 - 1.0) * min(0.75 * fade * wph.tune.w, 1.0));
 				}

@@ -178,6 +178,14 @@ static float shadeCausticFocus(float2 x, float t, float kk) {
 	return min(1.0 / max(abs(det), 0.18), 4.0);
 }
 
+// (1.2.8, Gael at 1080p: "caustics only show from under water") How the caustics thin out with the pixel's footprint (blocks per
+// pixel): their bright lines (~0.15 block) under ~2 pixels would alias, so first the focus softens (x: the scale of kk, broader and
+// dimmer cells, as the pattern blurred), and only much further it fades (y). 1.2.7 faded them out at 0.04-0.12 blocks a pixel: at
+// 1080p from ~8 blocks, so from above the water they hardly showed.
+static inline float2 shadeCausticLod(float footprint) {
+	return float2(1.0 - 0.7 * smoothstep(0.04, 0.16, footprint), 1.0 - smoothstep(0.16, 0.32, footprint));
+}
+
 // (1.2.8) The head of water.metal's ShadeWaterParams (fragment buffer 23 on every shaded encoder while the water module runs,
 // mcwater.m mc_water_bind), for stages built without the water module: state.y the water surface above the eye (camera-relative,
 // under water), state.z wetness, tune.x wave strength, tune.w caustics strength.
