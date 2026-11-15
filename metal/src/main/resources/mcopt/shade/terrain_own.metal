@@ -64,6 +64,9 @@ struct ShadeOwnIn {
 	float chunkVisibility [[function_constant(SO_RICH)]];
 	float3 shadePos [[function_constant(SO_VARY)]];   // camera-relative world position
 	half2 shadeLight [[function_constant(SO_VARY)]];  // block, sky light 0..1
+#ifdef SHADE_COLOR_LIGHT
+	half3 shadeColor [[function_constant(SO_VARY)]];  // (1.2.8) the coloured block light's addition (own/terrain.metal own_vs)
+#endif
 };
 
 // vanilla's std140 uniform blocks as own binds them (own/terrain.metal Globals, Terrain, Fog)
@@ -173,9 +176,6 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #endif
 #if defined(SHADE_UW_CAUSTICS) && !defined(SHADE_OWN_TRANSLUCENT)
 	, constant ShadeWaterHead &wph [[buffer(23)]]
-#endif
-#ifdef SHADE_COLOR_LIGHT
-	, device const uint *clLight [[buffer(20)]], constant ShadeColorLights &clh [[buffer(21)]]
 #endif
 	) {
 #if defined(SHADE_WATER) && defined(SHADE_WATER_RHIST)
@@ -416,7 +416,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #endif
 		wi.lit = shadeLit2(half3(1.0h), up, skyLight, blockLight, shadow, false, false, sf, sl);
 #ifdef SHADE_COLOR_LIGHT
-		wi.lit += sf.ambientBlock.xyz * shadeColorLight(clh, clLight, p, float3(up), blockLight, skyLight, sf);
+		wi.lit += sf.ambientBlock.xyz * float3(in.shadeColor);
 #endif
 #ifdef SHADE_DYNLIGHT
 		float3 dlSpec = float3(0.0);
@@ -470,7 +470,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #ifdef SHADE_OWN_TRANSLUCENT
 		float3 lit = shadeLit2(half3(1.0h), n, skyLight, blockLight, shadow, false, false, sf, sl);
 #ifdef SHADE_COLOR_LIGHT
-		lit += sf.ambientBlock.xyz * shadeColorLight(clh, clLight, p, float3(n), blockLight, skyLight, sf);
+		lit += sf.ambientBlock.xyz * float3(in.shadeColor);
 #endif
 #ifdef SHADE_DYNLIGHT
 		lit += sf.ambientBlock.xyz * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(n), false, blockLight);
@@ -507,8 +507,8 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		radiance = shadeLit2(wetAlbedo, materialN, dims ? half(0.0) : skyLight, blockLight, dims ? half(0.0) : shadow, thin, foliage, sf, sl);
 		if (dims) radiance += shadeLitDimsExtra(wetAlbedo, materialN, shadow, thin, foliage, p, sf, sl);
 #ifdef SHADE_COLOR_LIGHT
-		// (1.2.8) placed lights of a colour of their own light in it (colorlight.metal)
-		radiance += float3(wetAlbedo) * sf.ambientBlock.xyz * shadeColorLight(clh, clLight, p, float3(materialN), blockLight, dims ? half(0.0) : skyLight, sf);
+		// (1.2.8) placed lights of a colour of their own light in it (colorlight.metal, per vertex)
+		radiance += float3(wetAlbedo) * sf.ambientBlock.xyz * float3(in.shadeColor);
 #endif
 #if defined(SHADE_UW_CAUSTICS) && !defined(SHADE_OWN_TRANSLUCENT)
 		// (1.2.8, issue #61: "caustics don't render underwater") the camera under water: the sunlit bottom and walls below the

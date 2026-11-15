@@ -56,7 +56,7 @@ public final class ColorLights {
 	static final int FX = 16, FY = 8, FZ = 16, CX = 12, CY = 4, CZ = 12;
 	static final int FINE = FX * FY * FZ, COARSE = CX * CY * CZ, CELLS = 4096;
 	static final long TOTAL = (long) (FINE + COARSE) * CELLS;
-	private static final int HEADER = 80, LIST_CAP = 2 * (FINE + COARSE) + 64, RING = 6;
+	private static final int HEADER = 80, LIST_CAP = 3 * (FINE + COARSE) + 64, RING = 6;
 	/** Frames a slot keeps spreading after it was last near a coloured light (its light fades out in about 32 steps), then emptied. */
 	private static final int LINGER = 48;
 	private static final long NONE = Long.MIN_VALUE;
@@ -130,7 +130,7 @@ public final class ColorLights {
 			try {
 				long err = stack.nmalloc(1, 4096);
 				MemoryUtil.memPutByte(err, (byte) 0);
-				state = DynLightNative.clCreate(ctx, MemoryUtil.memAddress(src), TOTAL, LIST_CAP, RING, err, 4096);
+				state = DynLightNative.clCreate(ctx, MemoryUtil.memAddress(src), FX * 16, FY * 16, FZ * 16, CX * 16, CY * 16, CZ * 16, TOTAL, LIST_CAP, RING, err, 4096);
 				if (state == 0) throw new IllegalStateException(MemoryUtil.memUTF8(err));
 			} finally {
 				MemoryUtil.memFree(src);
@@ -140,8 +140,11 @@ public final class ColorLights {
 			DynLightNative.clHeader(state, header);
 			Arrays.fill(fineKey, NONE);
 			Arrays.fill(coarseKey, NONE);
+			// the textures start undefined: every slot emptied with the first frame's work
+			for (int s = 0; s < FINE; s++) clear(s, false);
+			for (int s = 0; s < COARSE; s++) clear(s, true);
 			System.out.println(String.format(java.util.Locale.ROOT, "[mcopt] shade: coloured lights on (%d x %d x %d blocks fine, %d x %d x %d coarse; %.0f MB)",
-				FX * 16, FY * 16, FZ * 16, CX * 64, CY * 64, CZ * 64, TOTAL * 5 / 1048576.0));
+				FX * 16, FY * 16, FZ * 16, CX * 64, CY * 64, CZ * 64, TOTAL * 5 / 1048576.0)); // (4 bytes a cell of texture, 1 of block id)
 		} catch (Throwable e) {
 			failed = true;
 			state = 0;
@@ -505,14 +508,17 @@ public final class ColorLights {
 		h.putFloat(64, Live.f("mcopt.shade.coloredLights.strength", 1f, 0f, 1f)).putFloat(68, Live.f("mcopt.shade.coloredLights.glow", 1f, 0f, 3f))
 			.putFloat(72, 16f).putFloat(76, 0f);
 		DynLightNative.clHeader(state, header);
-		DynLightNative.clFrame(enc, state, slot, nClear, nFine, nCoarse, 2);
+		// one step a frame for the fine slots (a light's 15 levels in ~0.2 s at 80 fps), the coarse ones every other frame (4 cells)
+		// (-Dmcopt.shade.coloredLights.spread=false, live, dev: no spread, to price it apart from the shading's reads)
+		boolean spread = Live.b("mcopt.shade.coloredLights.spread", true);
+		DynLightNative.clFrame(enc, state, slot, nClear, spread ? nFine : 0, spread && (frame & 1) == 0 ? nCoarse : 0, 1);
 		cpuNanos = System.nanoTime() - t0;
 		lastFine = nFine;
 		lastCoarse = nCoarse;
 		statCpu += cpuNanos;
 		if (frame % 600 == 0) {
 			System.out.println(String.format(java.util.Locale.ROOT,
-				"[mcopt] shade: coloured lights: %d fine and %d coarse slots spreading; last 600 frames: cpu %.3f ms a frame (reads %.3f), %d fine and %d coarse reads, near sets %d",
+				"[mcopt] shade: coloured lights: %d fine and %d coarse slots spreading, last 600 frames: cpu %.3f ms a frame (reads %.3f), %d fine and %d coarse reads, near sets %d",
 				nFine, nCoarse, statCpu / 600e6, statRead / 600e6, statFine, statCoarse, statNear));
 			statCpu = statRead = 0;
 			statFine = statCoarse = statNear = 0;

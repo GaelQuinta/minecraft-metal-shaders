@@ -19,11 +19,12 @@
 // colour all the way out, two lights mix where they meet, and the brightest channel is vanilla's level, which the shading
 // compares with the surface's own block light (mcopt.metal.shade.light.ColorLights has the CPU side).
 //
-// Two cascades of 16^3 cells per "section" slot, one buffer (fine slots, then coarse ones): fine, a cell per block over 16 x 8 x 16
-// sections around the camera (256 x 128 x 256 blocks); coarse, a cell per 4^3 blocks over 12 x 4 x 12 coarse sections (768 x 256 x
-// 768 blocks), for what is past the fine one up to the render distance. Toroidal: a world section's slot is its coordinates
-// modulo the window, so the windows follow the camera without moving data. Only the slots near a coloured light are spread
-// (ColorLights: the rest hold no colour); a cell is 10 bits a channel: (level + 16) x 16, 0 = no light.
+// Two cascades, each a toroidal 3D texture (RGBA8: a channel's level as (level + 16) x 8, 0 = no light; a cell's texel is its world
+// coordinates modulo the texture's size, so the windows follow the camera without moving data): fine, a cell per block over 16 x 8 x
+// 16 sections around the camera (256 x 128 x 256 blocks); coarse, a cell per 4^3 blocks over 12 x 4 x 12 coarse sections of 64 blocks
+// (768 x 256 x 768), for what is past the fine one up to the render distance. The shading reads each with one hardware-filtered
+// sample. Only the 16^3-cell slots near a coloured light are spread (ColorLights: the rest hold no colour). An opaque cell holds the
+// light on its faces (its brightest open neighbour's, less one) but passes none on, so the filtering next to a wall keeps the light.
 #ifndef MCOPT_SHADE_COLORLIGHT
 #define MCOPT_SHADE_COLORLIGHT
 #include <metal_stdlib>
@@ -39,7 +40,7 @@ struct ShadeColorLights {
 };
 
 #define SHADE_CL_BIAS 16.0
-#define SHADE_CL_DARK_BELOW ((SHADE_CL_BIAS - 3.0) * 16.0) // a cell whose brightest channel is under level -3 holds no light
+#define SHADE_CL_DARK_BELOW ((SHADE_CL_BIAS - 3.0) * 8.0) // a cell whose brightest channel is under level -3 holds no light
 
 // Per class (ColorLights.CLASSES): xyz the channels' offsets below the brightest (log2 of the light's colour relative to a torch's,
 // over its brightest channel), w the least level it spreads at (a redstone torch is level 7 in vanilla: in this shading's block
@@ -58,8 +59,6 @@ constant float4 SHADE_CL_CLASS[8] = {
 // torch, so a coloured light is as bright as a torch of its level, only its colour differs.
 constant float3 SHADE_CL_LUMW = float3(0.3636, 0.6117, 0.0247);
 
-static inline uint3 shadeClUnpack(uint v) { return uint3(v & 1023u, (v >> 10) & 1023u, (v >> 20) & 1023u); }
-static inline uint shadeClPack(uint3 c) { return c.x | (c.y << 10) | (c.z << 20); }
 
 static inline int3 shadeClMod(int3 a, int3 m) {
 	int3 r = a % m;
@@ -82,88 +81,82 @@ static inline uint shadeClCell(int3 v) { // within its section: the palette's or
 #ifdef SHADE_CL_KERNELS
 // One step of the spread for the cells of the listed slots (threadgroups of 8^3: eight a slot). list: per entry the slot, bit 31
 // set for a coarse one. A cell reads its six neighbours as they are now (other threads may have written theirs this step: either
-// value is a valid one, and the spread only converges faster), across slots, nothing from outside the window.
+// value is a valid one, and the spread only converges faster), across slots, nothing from outside the window or from an opaque cell.
 kernel void shade_cl_flood(uint3 tg3 [[threadgroup_position_in_grid]], uint3 tid [[thread_position_in_threadgroup]],
-                           constant ShadeColorLights &H [[buffer(0)]], device atomic_uint *light [[buffer(1)]],
-                           device const uchar *ids [[buffer(2)]], device const uint *list [[buffer(3)]]) {
+                           constant ShadeColorLights &H [[buffer(0)]], device const uchar *ids [[buffer(2)]], device const uint *list [[buffer(3)]],
+                           texture3d<float, access::read_write> fineTex [[texture(0)]], texture3d<float, access::read_write> coarseTex [[texture(1)]]) {
 	uint tg = tg3.x, entry = list[tg >> 3], brick = tg & 7u;
 	bool coarse = (entry >> 31) != 0u;
 	int slot = int(entry & 0x7FFFFFFFu);
 	int4 mn = coarse ? H.coarseMin : H.fineMin, dm = coarse ? H.coarseDim : H.fineDim;
 	uint base = coarse ? uint(H.coarseMin.w) : 0u;
+	int3 size = dm.xyz * 16;
 	int3 sc = int3(slot % dm.x, slot / (dm.x * dm.z), (slot / dm.x) % dm.z);
 	int3 ws = mn.xyz + shadeClMod(sc - mn.xyz, dm.xyz); // the world section this slot holds
-	int3 v = ws * 16 + int3(brick & 1u, (brick >> 1) & 1u, brick >> 2) * 8 + int3(tid);
-	uint idx = base + uint(slot) * 4096u + shadeClCell(v);
-	uint id = ids[idx];
-	if (id == 15u) { // opaque: no light in it
-		atomic_store_explicit(&light[idx], 0u, memory_order_relaxed);
-		return;
-	}
+	int3 l = int3(brick & 1u, (brick >> 1) & 1u, brick >> 2) * 8 + int3(tid);
+	int3 v = ws * 16 + l;
+	uint id = ids[base + uint(slot) * 4096u + shadeClCell(v)];
 	uint3 m = uint3(0u);
 	const int3 dirs[6] = {int3(1, 0, 0), int3(-1, 0, 0), int3(0, 1, 0), int3(0, -1, 0), int3(0, 0, 1), int3(0, 0, -1)};
+	uint own = base + uint(slot) * 4096u;
+	int3 tex0 = sc * 16;
 	for (int k = 0; k < 6; k++) {
-		int3 nv = v + dirs[k];
-		int ns = shadeClSlot(nv >> 4, mn, dm);
-		if (ns < 0) continue;
-		uint val = atomic_load_explicit(&light[base + uint(ns) * 4096u + shadeClCell(nv)], memory_order_relaxed);
-		m = max(m, shadeClUnpack(val));
+		int3 nl = l + dirs[k];
+		uint3 t;
+		uint nid;
+		if (all(nl >= 0) && all(nl < 16)) { // the same slot (most neighbours): no division
+			nid = ids[own + uint((nl.y * 16 + nl.z) * 16 + nl.x)];
+			t = uint3(tex0 + nl);
+		} else {
+			int3 nv = v + dirs[k];
+			int ns = shadeClSlot(nv >> 4, mn, dm);
+			if (ns < 0) continue;
+			nid = ids[base + uint(ns) * 4096u + shadeClCell(nv)];
+			t = uint3(shadeClMod(nv, size));
+		}
+		if (nid == 15u) continue;
+		float4 c = coarse ? coarseTex.read(t) : fineTex.read(t);
+		m = max(m, uint3(rint(c.rgb * 255.0)));
 	}
-	uint step = (id >= 1u && id <= 14u ? id : 1u) * (coarse ? 4u : 1u) * 16u;
+	uint step = (id >= 1u && id <= 14u ? id : 1u) * (coarse ? 4u : 1u) * 8u;
 	uint3 r = select(m - step, uint3(0u), m < step);
 	if (id >= 16u) {
 		float4 c = SHADE_CL_CLASS[min((id - 16u) >> 4, 7u)];
 		float lv = max(float((id - 16u) & 15u), c.w);
-		r = max(r, uint3(clamp((lv + SHADE_CL_BIAS + c.xyz) * 16.0, 0.0, 1023.0)));
+		r = max(r, uint3(clamp((lv + SHADE_CL_BIAS + c.xyz) * 8.0, 0.0, 255.0)));
 	}
 	if (float(max(r.x, max(r.y, r.z))) < SHADE_CL_DARK_BELOW) r = uint3(0u);
-	atomic_store_explicit(&light[idx], shadeClPack(r), memory_order_relaxed);
+	uint3 t = uint3(sc * 16 + l);
+	float4 o = float4(float3(r) * (1.0 / 255.0), 0.0);
+	if (coarse) coarseTex.write(o, t);
+	else fineTex.write(o, t);
 }
 
 // The listed slots emptied (a slot that now holds another world section, or no longer near a coloured light).
 kernel void shade_cl_clear(uint3 tg3 [[threadgroup_position_in_grid]], uint3 tid [[thread_position_in_threadgroup]],
-                           constant ShadeColorLights &H [[buffer(0)]], device atomic_uint *light [[buffer(1)]],
-                           device const uint *list [[buffer(3)]]) {
+                           constant ShadeColorLights &H [[buffer(0)]], device const uint *list [[buffer(3)]],
+                           texture3d<float, access::read_write> fineTex [[texture(0)]], texture3d<float, access::read_write> coarseTex [[texture(1)]]) {
 	uint tg = tg3.x, entry = list[tg >> 3], brick = tg & 7u;
-	uint base = (entry >> 31) != 0u ? uint(H.coarseMin.w) : 0u;
-	int3 l = int3(brick & 1u, (brick >> 1) & 1u, brick >> 2) * 8 + int3(tid);
-	atomic_store_explicit(&light[base + (entry & 0x7FFFFFFFu) * 4096u + uint((l.y * 16 + l.z) * 16 + l.x)], 0u, memory_order_relaxed);
+	bool coarse = (entry >> 31) != 0u;
+	int slot = int(entry & 0x7FFFFFFFu);
+	int4 dm = coarse ? H.coarseDim : H.fineDim;
+	int3 sc = int3(slot % dm.x, slot / (dm.x * dm.z), (slot / dm.x) % dm.z);
+	uint3 t = uint3(sc * 16 + int3(brick & 1u, (brick >> 1) & 1u, brick >> 2) * 8 + int3(tid));
+	if (coarse) coarseTex.write(float4(0.0), t);
+	else fineTex.write(float4(0.0), t);
 }
 #else
 
-// The cascade's light around one point, trilinear over the cell centres: xyz the light per channel (2^(level - 15), so 1 at level
-// 15; averaged in that linear form), w the weight of the cells that held any (cells without light, walls among them, are left
-// out and the rest renormalised, so a surface next to a wall keeps its light's colour). qi + qf: the point in blocks (qi integer).
-static float4 shadeClTaps(constant ShadeColorLights &H, device const uint *light, int3 qi, float3 qf, bool coarse) {
-	int3 b;
-	float3 fr;
-	if (coarse) {
-		int3 u = qi - 2;
-		b = u >> 2;
-		fr = (float3(u & 3) + qf) * 0.25;
-	} else {
-		float3 u = qf - 0.5;
-		float3 fl = floor(u);
-		b = qi + int3(fl);
-		fr = u - fl;
-	}
-	int4 mn = coarse ? H.coarseMin : H.fineMin, dm = coarse ? H.coarseDim : H.fineDim;
-	uint base = coarse ? uint(H.coarseMin.w) : 0u;
-	float3 sum = 0.0;
-	float ws = 0.0;
-	for (int c = 0; c < 8; c++) {
-		int3 o = int3(c & 1, (c >> 1) & 1, c >> 2);
-		int3 v = b + o;
-		int s = shadeClSlot(v >> 4, mn, dm);
-		if (s < 0) continue;
-		uint val = light[base + uint(s) * 4096u + shadeClCell(v)];
-		if (val == 0u) continue;
-		float3 w3 = select(1.0 - fr, fr, o != 0);
-		float w = w3.x * w3.y * w3.z;
-		sum += exp2(float3(shadeClUnpack(val)) * (1.0 / 16.0) - (SHADE_CL_BIAS + 15.0)) * w;
-		ws += w;
-	}
-	return float4(sum, ws);
+// The cascade's light at a point, one hardware-filtered sample: xyz the light per channel (2^(level - 15): 1 at level 15), 0 where
+// none. qi + qf: the point in blocks (qi integer); the texel is the cell's world coordinates modulo the texture (toroidal: the
+// sampler repeats).
+static float3 shadeClSample(constant ShadeColorLights &H, texture3d<float> tex, int3 qi, float3 qf, bool coarse) {
+	int4 dm = coarse ? H.coarseDim : H.fineDim;
+	float3 size = float3(dm.xyz * 16);
+	float3 c = coarse ? float3(shadeClMod(qi >> 2, dm.xyz * 16)) + (float3(qi & 3) + qf) * 0.25 : float3(shadeClMod(qi, dm.xyz * 16)) + qf;
+	constexpr sampler s(filter::linear, address::repeat, coord::normalized);
+	float3 lv = tex.sample(s, c / size).rgb * (255.0 / 8.0) - SHADE_CL_BIAS;
+	return max(lv.x, max(lv.y, lv.z)) < -2.5 ? float3(0.0) : exp2(lv - 15.0);
 }
 
 // How far point qi (blocks) is inside a window (blocks per section unit u), in blocks: < 0 outside.
@@ -173,48 +166,38 @@ static inline float shadeClInside(int3 qi, int4 mn, int4 dm, int u) {
 }
 
 // What the coloured light adds to a surface's block-light term, in the units shadeLit2's torch term uses (times albedo x
-// ShadeFrame.ambientBlock): p camera-relative, n its normal, block / sky its vanilla light 0..1. Where the light reaching it is a
-// torch's, nothing; where it is a coloured light's, the torch term turned into that colour at the same brightness, and for the
-// lights that spread brighter than vanilla (SHADE_CL_CLASS w) the extra light in their colour. Away from such lights, or where
-// vanilla's light is clearly brighter than the volume's (a light it doesn't know yet), nothing.
-static float3 shadeColorLight(constant ShadeColorLights &H, device const uint *light, float3 p, float3 n, half block, half sky,
-                              constant ShadeFrame &f) {
-	if (H.fineMin.w == 0 || H.tune.x <= 0.0 || block < 0.02h) return float3(0.0);
-	float3 q = p + n * 0.5 + f.cameraFract.xyz;
-	float3 fq = floor(q);
-	int3 qi = int3(fq) + int3(f.cameraBlock.xyz);
-	float3 qf = q - fq;
+// ShadeFrame.ambientBlock), at point qi + qf (blocks, qi integer: own terrain's vertex stage evaluates it at each vertex, as vanilla
+// lights its vertices; shade_own_fs adds it per pixel), block its vanilla block light 0..1. Where the light reaching it is a torch's,
+// nothing; where it is a coloured light's, the torch term turned into that colour at the same brightness, and for the lights that
+// spread brighter than vanilla (SHADE_CL_CLASS w) the extra light in their colour. Away from such lights, or where vanilla's light
+// is clearly brighter than the volume's (a light it doesn't know yet), nothing.
+static float3 shadeColorLightAt(constant ShadeColorLights &H, texture3d<float> fineTex, texture3d<float> coarseTex, int3 qi, float3 qf,
+                                float block) {
+	if (H.fineMin.w == 0 || H.tune.x <= 0.0 || block < 0.02) return float3(0.0);
 	float band = max(H.tune.z, 1.0);
 	float wFine = saturate(shadeClInside(qi, H.fineMin, H.fineDim, 16) / band);
 	float wCoarse = saturate(shadeClInside(qi, H.coarseMin, H.coarseDim, 64) / (2.0 * band));
 	float3 L = 0.0;
-	if (wFine > 0.0) {
-		float4 t = shadeClTaps(H, light, qi, qf, false);
-		if (t.w > 1e-4) L = t.xyz / t.w * wFine;
-	}
-	if (wFine < 1.0 && wCoarse > 0.0) {
-		float4 t = shadeClTaps(H, light, qi, qf, true);
-		if (t.w > 1e-4) L += t.xyz / t.w * (wCoarse * (1.0 - wFine));
-	}
+	if (wFine > 0.0) L = shadeClSample(H, fineTex, qi, qf, false) * wFine;
+	if (wFine < 1.0 && wCoarse > 0.0) L += shadeClSample(H, coarseTex, qi, qf, true) * (wCoarse * (1.0 - wFine));
 	float lmax = max(L.x, max(L.y, L.z));
 	if (lmax <= 1e-6) return float3(0.0);
 	float level = 15.0 + log2(lmax);
 	float3 hue = L / lmax;
 	float3 tint = hue / max(dot(hue, SHADE_CL_LUMW), 1e-3);
-	float bl = float(block) * 15.0;
+	float bl = block * 15.0;
 	// how surely the surface's own block light is these lights': full while their level is within one of it, none once vanilla's is
 	// three brighter (a torch the volume doesn't hold yet: a section not read, past the window)
 	float w = saturate(1.0 - (bl - level - 1.0) * 0.5) * H.tune.x;
-	float day = 1.0 - 0.25 * smoothstep(0.5, 1.0, float(sky)) * saturate(f.sunDirWorld.w * 4.0 + 0.2);
-	float b = float(block), b7 = b * b * b;
-	b7 = b7 * b7 * b;
-	float F = (2.2 * b7 + 0.55 * pow(max(b, 1e-3), 2.4)) * (1.0 / 2.75) * day;
+	float b7 = block * block * block;
+	b7 = b7 * b7 * block;
+	float F = (2.2 * b7 + 0.55 * pow(max(block, 1e-3), 2.4)) * (1.0 / 2.75);
 	float3 add = F * w * (tint - 1.0);
 	if (level > bl + 0.25 && H.tune.y > 0.0) {
 		// the boosted lights' own light past vanilla's (only a coloured one: a torch-coloured light has no saturation)
 		float c = saturate(level / 15.0), c7 = c * c * c;
 		c7 = c7 * c7 * c;
-		float Fc = (2.2 * c7 + 0.55 * pow(max(c, 1e-3), 2.4)) * (1.0 / 2.75) * day;
+		float Fc = (2.2 * c7 + 0.55 * pow(max(c, 1e-3), 2.4)) * (1.0 / 2.75);
 		float sat = saturate((1.0 - min(hue.x, min(hue.y, hue.z))) * 2.0);
 		add += max(Fc - F, 0.0) * sat * H.tune.y * H.tune.x * tint;
 	}

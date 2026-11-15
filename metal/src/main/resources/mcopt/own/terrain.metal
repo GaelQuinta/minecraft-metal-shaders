@@ -1635,6 +1635,10 @@ struct VOut {
 	// camera-relative position and the block / sky light 0..1; vertexColor then leaves the lightmap out
 	float3 shadePos [[function_constant(F_VARY)]];
 	half2 shadeLight [[function_constant(F_VARY)]];
+#ifdef SHADE_COLOR_LIGHT
+	// (mcopt-shade 1.2.8) the coloured block light's addition per vertex (colorlight.metal shadeColorLightAt; own_vs fills it)
+	half3 shadeColor [[function_constant(F_VARY)]];
+#endif
 #endif
 };
 
@@ -1882,6 +1886,9 @@ vertex VOut own_vs(uint vid [[vertex_id]], uint iid [[instance_id]], constant Dr
 	device uint *oracleKept [[buffer(26), function_constant(F_ORACLE)]], constant uint &oracleFrame [[buffer(27), function_constant(F_ORACLE)]],
 	constant Fog &fogV [[buffer(24), function_constant(F_FOGVERT_ANY)]], constant uint4 &grp [[buffer(29), function_constant(F_GROUP)]],
 	constant ShadeSway &sway [[buffer(30), function_constant(F_SWAY)]], texture2d<float> swayCls [[texture(28), function_constant(F_SWAY)]]
+#if defined(MCOPT_SHADE) && defined(SHADE_COLOR_LIGHT)
+	, texture3d<float> clFine [[texture(33)]], texture3d<float> clCoarse [[texture(34)]], constant ShadeColorLights &clh [[buffer(15)]]
+#endif
 #ifdef OWN_VCOUNT
 	, device atomic_uint *vcount [[buffer(28)]]
 #endif
@@ -2011,6 +2018,14 @@ vertex VOut own_vs(uint vid [[vertex_id]], uint iid [[instance_id]], constant Dr
 		return ov;
 	}
 	VOut ov = ownVertex(vi, origin, uploadMs, df, arenaRaw, proj, g, t, lightmap, lightSampler, rel, disp);
+#if defined(MCOPT_SHADE) && defined(SHADE_COLOR_LIGHT)
+	// (mcopt-shade 1.2.8) the coloured block light at this vertex (only where vanilla's block light reaches)
+	if (F_VARY && ov.shadeLight.x >= 0.02h) {
+		float3 w = ov.shadePos - float3(g.CameraOffset);
+		float3 fw = floor(w);
+		ov.shadeColor = half3(clamp(shadeColorLightAt(clh, clFine, clCoarse, int3(fw) + int3(g.CameraBlockPos), w - fw, float(ov.shadeLight.x)), -8.0, 8.0));
+	}
+#endif
 	// (mcopt-shade 1.2.7 candidate 7) a waving leaf's amplitude rides above 1 in the colour's alpha: shade_own_fs takes it back out
 	// and hands it to the TAA, which then follows the leaf from last frame (swaying canopies shimmered: the resolve only knew the camera)
 	if (F_SWAY && swA > 0.0) {
@@ -2073,6 +2088,12 @@ static VOut ownVertex(uint vi, int3 origin, int uploadMs, constant DrawFrame &df
 static VOut ownShade(Vtx v, int3 origin, int uploadMs, constant DrawFrame &df, constant Projection &proj, constant Globals &g,
 	constant Terrain &t, texture2d<float> lightmap, sampler lightSampler, thread float3 &rel, float3 disp) {
 	VOut o;
+#if defined(MCOPT_SHADE) && defined(SHADE_COLOR_LIGHT)
+	if (F_VARY) {
+		o.shadeColor = half3(0.0h);
+		o.shadeLight = half2(0.0h);
+	}
+#endif
 	rel = float3(v.pos);
 	int3 cbp = int3(g.CameraBlockPos);
 	float3 pos = float3(v.pos) + float3(origin - cbp) + float3(g.CameraOffset) + disp;  // (disp: mcopt-shade's waving foliage, else 0)

@@ -264,15 +264,16 @@ void mc_dl_irr(Enc *enc, DlState *s, int x0, int y0, int z0, int w, int h, int d
 }
 
 // ---- (1.2.8) coloured block light: the flood-filled colour volume (colorlight.metal; Java side ColorLights) ----------------
-// One private buffer of cells (10 bits a channel, fine slots then coarse ones), one shared buffer of the cells' block ids the CPU
-// writes in place (a section's 4096 bytes at a time), a ring of shared buffers with each frame's slot lists, and the header the
-// CPU fills every frame (bound by value: fragment bytes 21, compute bytes 0). With the module off or failed, a 4-byte stand-in
-// and an "off" header are bound instead (the shaders built with it still declare the slots).
+// Two toroidal RGBA8 3D textures (fine, coarse; read-write in the kernels, one filtered sample each in own terrain's vertex stage:
+// vertex textures 33 and 34), one shared buffer of the cells' block ids the CPU writes in place (a section's 4096 bytes at a time), a ring of shared
+// buffers with each frame's slot lists, and the header the CPU fills every frame (bound by value: vertex bytes 15, compute bytes
+// 0). With the module off or failed, 1-texel stand-ins and an "off" header are bound instead (the shaders still declare the slots).
 #define CL_RING_MAX 8
 #define CL_HEADER 80
 typedef struct {
 	id<MTLComputePipelineState> floodPso, clearPso;
-	id<MTLBuffer> light, ids;
+	id<MTLTexture> fine, coarse;
+	id<MTLBuffer> ids;
 	id<MTLBuffer> lists[CL_RING_MAX];
 	int ring, listCap;
 	uint8_t header[CL_HEADER];
@@ -282,13 +283,32 @@ static ClState *cl, *clFb;
 static void mc_cl_bind_render(id<MTLRenderCommandEncoder> r) {
 	ClState *s = cl ? cl : clFb;
 	if (!s) return;
-	[r setFragmentBuffer:s->light offset:0 atIndex:20];
-	[r setFragmentBytes:s->header length:CL_HEADER atIndex:21];
+	[r setVertexTexture:s->fine atIndex:33];
+	[r setVertexTexture:s->coarse atIndex:34];
+	[r setVertexBytes:s->header length:CL_HEADER atIndex:15];
 }
 
-// cells: the cells of every slot (x 4 bytes light, x 1 byte ids); listCap: entries per frame list. NULL with the reason in err.
-ClState *mc_cl_new(Ctx *ctx, const char *source, long cells, int listCap, int ring, char *err, int errCap) {
+static id<MTLTexture> mc_cl_texture(Ctx *ctx, int w, int h, int d, bool write) {
+	MTLTextureDescriptor *td = [[MTLTextureDescriptor new] autorelease];
+	td.textureType = MTLTextureType3D;
+	td.pixelFormat = MTLPixelFormatRGBA8Unorm;
+	td.width = (NSUInteger) w;
+	td.height = (NSUInteger) h;
+	td.depth = (NSUInteger) d;
+	td.storageMode = MTLStorageModePrivate;
+	td.usage = MTLTextureUsageShaderRead | (write ? MTLTextureUsageShaderWrite : 0);
+	return [ctx->device newTextureWithDescriptor:td];
+}
+
+// fw x fh x fd / cw x ch x cd: the two textures (cells); cells: every slot's cells (the ids buffer's bytes); listCap: entries per
+// frame list. NULL with the reason in err. The textures start undefined: the caller's first frame empties every slot.
+ClState *mc_cl_new(Ctx *ctx, const char *source, int fw, int fh, int fd, int cw, int ch, int cd, long cells, int listCap, int ring,
+                   char *err, int errCap) {
 	@autoreleasepool {
+		if (ctx->device.readWriteTextureSupport < MTLReadWriteTextureTier2) {
+			snprintf(err, errCap, "the GPU has no tier 2 read-write textures");
+			return NULL;
+		}
 		MTLCompileOptions *o = [[MTLCompileOptions new] autorelease];
 		o.languageVersion = MTLLanguageVersion3_0;
 		o.mathMode = mc_math();
@@ -311,14 +331,16 @@ ClState *mc_cl_new(Ctx *ctx, const char *source, long cells, int listCap, int ri
 		ClState *s = calloc(1, sizeof(ClState));
 		s->floodPso = fp;
 		s->clearPso = cp;
-		s->light = [ctx->device newBufferWithLength:(NSUInteger) cells * 4 options:MTLResourceStorageModePrivate];
+		s->fine = mc_cl_texture(ctx, fw, fh, fd, true);
+		s->coarse = mc_cl_texture(ctx, cw, ch, cd, true);
 		s->ids = [ctx->device newBufferWithLength:(NSUInteger) cells options:MTLResourceStorageModeShared];
 		s->ring = ring < 2 ? 2 : ring > CL_RING_MAX ? CL_RING_MAX : ring;
 		s->listCap = listCap;
 		for (int i = 0; i < s->ring; i++) s->lists[i] = [ctx->device newBufferWithLength:(NSUInteger) listCap * 4 options:MTLResourceStorageModeShared];
-		if (!s->light || !s->ids || !s->lists[s->ring - 1]) {
-			snprintf(err, errCap, "colour volume buffers (%ld cells) could not be allocated", cells);
-			[s->light release];
+		if (!s->fine || !s->coarse || !s->ids || !s->lists[s->ring - 1]) {
+			snprintf(err, errCap, "colour volume textures / buffers (%ld cells) could not be allocated", cells);
+			[s->fine release];
+			[s->coarse release];
 			[s->ids release];
 			for (int i = 0; i < s->ring; i++) [s->lists[i] release];
 			[fp release];
@@ -326,30 +348,25 @@ ClState *mc_cl_new(Ctx *ctx, const char *source, long cells, int listCap, int ri
 			free(s);
 			return NULL;
 		}
-		s->light.label = @"mcopt shade: colour volume";
+		s->fine.label = @"mcopt shade: colour volume (fine)";
+		s->coarse.label = @"mcopt shade: colour volume (coarse)";
 		s->ids.label = @"mcopt shade: colour volume blocks";
 		memset(s->ids.contents, 0, (size_t) cells);
-		// the cells start dark: one blit before anything reads them
-		id<MTLCommandBuffer> cb = [ctx->queue commandBuffer];
-		id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder];
-		[b fillBuffer:s->light range:NSMakeRange(0, (NSUInteger) cells * 4) value:0];
-		[b endEncoding];
-		[cb commit];
 		cl = s;
 		return s;
 	}
 }
 
-// The off stand-in (module off or failed): a 4-byte buffer and a zero header (fineMin.w = 0: the shaders leave at once).
+// The off stand-in (module off or failed): 1-texel textures and a zero header (fineMin.w = 0: the shaders leave at once).
 int mc_cl_fallback(Ctx *ctx) {
 	if (clFb) return 1;
 	ClState *s = calloc(1, sizeof(ClState));
-	s->light = [ctx->device newBufferWithLength:16 options:MTLResourceStorageModeShared];
-	if (!s->light) {
+	s->fine = mc_cl_texture(ctx, 1, 1, 1, false);
+	s->coarse = mc_cl_texture(ctx, 1, 1, 1, false);
+	if (!s->fine || !s->coarse) {
 		free(s);
 		return 0;
 	}
-	memset(s->light.contents, 0, 16);
 	clFb = s;
 	return 1;
 }
@@ -377,8 +394,9 @@ void mc_cl_frame(Enc *enc, ClState *s, int slot, int clears, int fine, int coars
 		id<MTLComputeCommandEncoder> c = [cb computeCommandEncoder]; // (serial: each dispatch sees the last one's writes)
 		c.label = @"mcopt shade: colour volume";
 		[c setBytes:s->header length:CL_HEADER atIndex:0];
-		[c setBuffer:s->light offset:0 atIndex:1];
 		[c setBuffer:s->ids offset:0 atIndex:2];
+		[c setTexture:s->fine atIndex:0];
+		[c setTexture:s->coarse atIndex:1];
 		MTLSize tg = MTLSizeMake(8, 8, 8);
 		if (clears > 0) {
 			[c setComputePipelineState:s->clearPso];

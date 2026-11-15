@@ -116,7 +116,9 @@ public final class ShadeMsl {
 	 * own per variant: {@link #ownFragmentSource}.
 	 */
 	public static String ownPrefix() {
-		return "#define MCOPT_SHADE\n" + look();
+		// (1.2.8) the coloured light module: own_vs evaluates it per vertex (colorlight.metal)
+		return "#define MCOPT_SHADE\n" + look()
+			+ (mcopt.metal.shade.light.DynLightMsl.COLOR ? "#define SHADE_COLOR_LIGHT\n" + resource("colorlight.metal") + "\n" : "");
 	}
 
 	/**

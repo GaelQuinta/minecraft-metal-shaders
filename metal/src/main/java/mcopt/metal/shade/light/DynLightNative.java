@@ -37,7 +37,8 @@ final class DynLightNative {
 	private static final MethodHandle FALLBACK = fn("mc_dl_fallback", JAVA_INT, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle HAS_FLOOD = fn("mc_dl_has_flood", JAVA_INT, JAVA_LONG);
 	// (1.2.8) the coloured light volume (mcdynlight.m mc_cl_*, ColorLights)
-	private static final MethodHandle CL_NEW = fn("mc_cl_new", JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_INT);
+	private static final MethodHandle CL_NEW = fn("mc_cl_new", JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT,
+		JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_LONG, JAVA_INT);
 	private static final MethodHandle CL_FALLBACK = fn("mc_cl_fallback", JAVA_INT, JAVA_LONG);
 	private static final MethodHandle CL_IDS = fn("mc_cl_ids", JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle CL_LIST = fn("mc_cl_list", JAVA_LONG, JAVA_LONG, JAVA_INT);
@@ -75,9 +76,9 @@ final class DynLightNative {
 		}
 	}
 
-	static long clCreate(long ctx, long source, long cells, int listCap, int ring, long err, int errCap) {
+	static long clCreate(long ctx, long source, int fw, int fh, int fd, int cw, int ch, int cd, long cells, int listCap, int ring, long err, int errCap) {
 		try {
-			return (long) CL_NEW.invokeExact(ctx, source, cells, listCap, ring, err, errCap);
+			return (long) CL_NEW.invokeExact(ctx, source, fw, fh, fd, cw, ch, cd, cells, listCap, ring, err, errCap);
 		} catch (Throwable t) {
 			throw rethrow(t);
 		}
