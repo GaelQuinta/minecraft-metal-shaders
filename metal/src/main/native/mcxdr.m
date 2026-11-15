@@ -79,7 +79,13 @@ static const char *xdrSource =
 	"      if (a > 0.0) {\n"
 	"        float3 ui = saturate((m.rgb - b * (1.0 - a)) / a);\n"
 	"        lin = hdr * (1.0 - a) + srgbToLinear(ui) * (a * p.uiWhite);\n"
-	"      } else lin = hdr + (lin - srgbToLinear(b)) * p.uiWhite;\n"
+	"      } else {\n"
+	// A multiplicative world overlay (vignette/world-border warning) leaves alpha zero. Its negative colour delta is
+	// world attenuation, not emitted UI light: changing UI white must not amplify it. Preserve the existing result at
+	// uiWhite=1; positive additive/inverted-overlay contributions continue to follow the UI brightness control.
+	"        float3 delta = lin - srgbToLinear(b);\n"
+	"        lin = hdr + min(delta, 0.0) + max(delta, 0.0) * p.uiWhite;\n"
+	"      }\n"
 	"      lin = max(lin, 0.0);\n"
 	"      lin /= max(1.0, max(max(lin.r, lin.g), lin.b) / p.peak);\n"
 	"    } else lin += hdr * saturate(1.0 - m.a);\n"

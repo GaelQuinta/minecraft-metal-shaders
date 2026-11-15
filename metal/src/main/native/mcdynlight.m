@@ -190,8 +190,11 @@ void mc_dl_slot(DlState *s, int slot) {
 }
 
 // Binds this frame's lights and the visibility volumes into enc's open render encoder (vertex and fragment stages).
+static void mc_cl_bind_render(id<MTLRenderCommandEncoder> r);
+
 void mc_dl_bind(Enc *enc) {
 	id<MTLRenderCommandEncoder> r = enc->render;
+	if (r) mc_cl_bind_render(r); // (1.2.8) the coloured light volume: fragment buffers 20 and 21
 	DlState *s = dl ? dl : fb;
 	if (!r || !s) return;
 	id<MTLBuffer> b = s->ring[s->slot];
@@ -256,6 +259,157 @@ void mc_dl_irr(Enc *enc, DlState *s, int x0, int y0, int z0, int w, int h, int d
 		uint32_t box[4] = {(uint32_t) x0, (uint32_t) y0, (uint32_t) z0, 0};
 		[c setBytes:box length:sizeof(box) atIndex:1];
 		[c dispatchThreads:MTLSizeMake(w, h, d) threadsPerThreadgroup:MTLSizeMake(8, 8, 4)];
+		[c endEncoding];
+	}
+}
+
+// ---- (1.2.8) coloured block light: the flood-filled colour volume (colorlight.metal; Java side ColorLights) ----------------
+// Two toroidal RGBA8 3D textures (fine, coarse; read-write in the kernels, one filtered sample each in own terrain's vertex stage:
+// vertex textures 33 and 34), one shared buffer of the cells' block ids the CPU writes in place (a section's 4096 bytes at a time), a ring of shared
+// buffers with each frame's slot lists, and the header the CPU fills every frame (bound by value: vertex bytes 15, compute bytes
+// 0). With the module off or failed, 1-texel stand-ins and an "off" header are bound instead (the shaders still declare the slots).
+#define CL_RING_MAX 8
+#define CL_HEADER 80
+typedef struct {
+	id<MTLComputePipelineState> floodPso, clearPso;
+	id<MTLTexture> fine, coarse;
+	id<MTLBuffer> ids;
+	id<MTLBuffer> lists[CL_RING_MAX];
+	int ring, listCap;
+	uint8_t header[CL_HEADER];
+} ClState;
+static ClState *cl, *clFb;
+
+static void mc_cl_bind_render(id<MTLRenderCommandEncoder> r) {
+	ClState *s = cl ? cl : clFb;
+	if (!s) return;
+	[r setVertexTexture:s->fine atIndex:33];
+	[r setVertexTexture:s->coarse atIndex:34];
+	[r setVertexBytes:s->header length:CL_HEADER atIndex:15];
+}
+
+static id<MTLTexture> mc_cl_texture(Ctx *ctx, int w, int h, int d, bool write) {
+	MTLTextureDescriptor *td = [[MTLTextureDescriptor new] autorelease];
+	td.textureType = MTLTextureType3D;
+	td.pixelFormat = MTLPixelFormatRGBA8Unorm;
+	td.width = (NSUInteger) w;
+	td.height = (NSUInteger) h;
+	td.depth = (NSUInteger) d;
+	td.storageMode = MTLStorageModePrivate;
+	td.usage = MTLTextureUsageShaderRead | (write ? MTLTextureUsageShaderWrite : 0);
+	return [ctx->device newTextureWithDescriptor:td];
+}
+
+// fw x fh x fd / cw x ch x cd: the two textures (cells); cells: every slot's cells (the ids buffer's bytes); listCap: entries per
+// frame list. NULL with the reason in err. The textures start undefined: the caller's first frame empties every slot.
+ClState *mc_cl_new(Ctx *ctx, const char *source, int fw, int fh, int fd, int cw, int ch, int cd, long cells, int listCap, int ring,
+                   char *err, int errCap) {
+	@autoreleasepool {
+		if (ctx->device.readWriteTextureSupport < MTLReadWriteTextureTier2) {
+			snprintf(err, errCap, "the GPU has no tier 2 read-write textures");
+			return NULL;
+		}
+		MTLCompileOptions *o = [[MTLCompileOptions new] autorelease];
+		o.languageVersion = MTLLanguageVersion3_0;
+		o.mathMode = mc_math();
+		NSError *e = nil;
+		id<MTLLibrary> lib = [[ctx->device newLibraryWithSource:[NSString stringWithUTF8String:source] options:o error:&e] autorelease];
+		if (!lib) {
+			snprintf(err, errCap, "%s", e.localizedDescription.UTF8String);
+			return NULL;
+		}
+		id<MTLFunction> ff = [[lib newFunctionWithName:@"shade_cl_flood"] autorelease];
+		id<MTLFunction> fc = [[lib newFunctionWithName:@"shade_cl_clear"] autorelease];
+		id<MTLComputePipelineState> fp = ff ? [ctx->device newComputePipelineStateWithFunction:ff error:&e] : nil;
+		id<MTLComputePipelineState> cp = fp && fc ? [ctx->device newComputePipelineStateWithFunction:fc error:&e] : nil;
+		if (!fp || !cp || fp.maxTotalThreadsPerThreadgroup < 512 || cp.maxTotalThreadsPerThreadgroup < 512) {
+			snprintf(err, errCap, "colour volume kernels: %s", e ? e.localizedDescription.UTF8String : "missing or under 512 threads");
+			[fp release];
+			[cp release];
+			return NULL;
+		}
+		ClState *s = calloc(1, sizeof(ClState));
+		s->floodPso = fp;
+		s->clearPso = cp;
+		s->fine = mc_cl_texture(ctx, fw, fh, fd, true);
+		s->coarse = mc_cl_texture(ctx, cw, ch, cd, true);
+		s->ids = [ctx->device newBufferWithLength:(NSUInteger) cells options:MTLResourceStorageModeShared];
+		s->ring = ring < 2 ? 2 : ring > CL_RING_MAX ? CL_RING_MAX : ring;
+		s->listCap = listCap;
+		for (int i = 0; i < s->ring; i++) s->lists[i] = [ctx->device newBufferWithLength:(NSUInteger) listCap * 4 options:MTLResourceStorageModeShared];
+		if (!s->fine || !s->coarse || !s->ids || !s->lists[s->ring - 1]) {
+			snprintf(err, errCap, "colour volume textures / buffers (%ld cells) could not be allocated", cells);
+			[s->fine release];
+			[s->coarse release];
+			[s->ids release];
+			for (int i = 0; i < s->ring; i++) [s->lists[i] release];
+			[fp release];
+			[cp release];
+			free(s);
+			return NULL;
+		}
+		s->fine.label = @"mcopt shade: colour volume (fine)";
+		s->coarse.label = @"mcopt shade: colour volume (coarse)";
+		s->ids.label = @"mcopt shade: colour volume blocks";
+		memset(s->ids.contents, 0, (size_t) cells);
+		cl = s;
+		return s;
+	}
+}
+
+// The off stand-in (module off or failed): 1-texel textures and a zero header (fineMin.w = 0: the shaders leave at once).
+int mc_cl_fallback(Ctx *ctx) {
+	if (clFb) return 1;
+	ClState *s = calloc(1, sizeof(ClState));
+	s->fine = mc_cl_texture(ctx, 1, 1, 1, false);
+	s->coarse = mc_cl_texture(ctx, 1, 1, 1, false);
+	if (!s->fine || !s->coarse) {
+		free(s);
+		return 0;
+	}
+	clFb = s;
+	return 1;
+}
+
+void *mc_cl_ids(ClState *s) {
+	return s->ids.contents;
+}
+
+void *mc_cl_list(ClState *s, int slot) {
+	return s->lists[slot % s->ring].contents;
+}
+
+// This frame's header (bound by value from now on: render encoders opened after this call get it).
+void mc_cl_header(ClState *s, const void *bytes) {
+	memcpy(s->header, bytes, CL_HEADER);
+}
+
+// The frame's work, on enc's frame command buffer before the world passes: list slot `slot` holds `clears` slots to empty, then
+// `fine` fine slots and `coarse` coarse ones to spread (fine first); the fine ones get `fineSteps` steps, the coarse ones one.
+void mc_cl_frame(Enc *enc, ClState *s, int slot, int clears, int fine, int coarse, int fineSteps) {
+	if (!s || (clears <= 0 && fine + coarse <= 0)) return;
+	@autoreleasepool {
+		id<MTLBuffer> list = s->lists[slot % s->ring];
+		id<MTLCommandBuffer> cb = mc_frame_cmd(enc);
+		id<MTLComputeCommandEncoder> c = [cb computeCommandEncoder]; // (serial: each dispatch sees the last one's writes)
+		c.label = @"mcopt shade: colour volume";
+		[c setBytes:s->header length:CL_HEADER atIndex:0];
+		[c setBuffer:s->ids offset:0 atIndex:2];
+		[c setTexture:s->fine atIndex:0];
+		[c setTexture:s->coarse atIndex:1];
+		MTLSize tg = MTLSizeMake(8, 8, 8);
+		if (clears > 0) {
+			[c setComputePipelineState:s->clearPso];
+			[c setBuffer:list offset:0 atIndex:3];
+			[c dispatchThreadgroups:MTLSizeMake((NSUInteger) clears * 8, 1, 1) threadsPerThreadgroup:tg];
+		}
+		if (fine + coarse > 0) {
+			[c setComputePipelineState:s->floodPso];
+			[c setBuffer:list offset:(NSUInteger) clears * 4 atIndex:3];
+			[c dispatchThreadgroups:MTLSizeMake((NSUInteger) (fine + coarse) * 8, 1, 1) threadsPerThreadgroup:tg];
+			for (int i = 1; i < fineSteps && fine > 0; i++)
+				[c dispatchThreadgroups:MTLSizeMake((NSUInteger) fine * 8, 1, 1) threadsPerThreadgroup:tg];
+		}
 		[c endEncoding];
 	}
 }

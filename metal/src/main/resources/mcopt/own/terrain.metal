@@ -1635,6 +1635,10 @@ struct VOut {
 	// camera-relative position and the block / sky light 0..1; vertexColor then leaves the lightmap out
 	float3 shadePos [[function_constant(F_VARY)]];
 	half2 shadeLight [[function_constant(F_VARY)]];
+#ifdef SHADE_COLOR_LIGHT
+	// (mcopt-shade 1.2.8) the coloured block light's addition per vertex (colorlight.metal shadeColorLightAt; own_vs fills it)
+	half3 shadeColor [[function_constant(F_VARY)]];
+#endif
 #endif
 };
 
@@ -1825,9 +1829,16 @@ static float3 ownSway(uint vi, int3 origin, float3 cam, device const void *arena
 	float dy = p.y - float(o.pos.y);
 	// (1.2.7, audit D9) a plant that doesn't stand on a block's floor stays still: a flower or a sapling in a pot (4/16 up), which
 	// the wind tilted through the rim and passers-by bent out of the pot. Ground plants start at 0, crops on farmland at 15/16.
-	float base = fract(min(p.y, float(o.pos.y)));
-	if (base > 0.06 && base < 0.9) return float3(0);
-	float h = abs(dy) < 0.01 ? 0.0 : saturate(dy / abs(dy) * 0.5 + 0.5);  // (1 at the quad's top corners, 0 at its bottom ones)
+	// (1.2.8, issue #61) "some short grass never moves, always the same ones": short grass and ferns are drawn up to 0.2 of a block
+	// lower by their position (vanilla's XYZ offset), so their feet sit at 0.8..1 of the block below, and from 0.8 to 0.9 this test
+	// took them for raised plants: about half of them stood still and ignored passers-by. Only a tall quad counts as raised now,
+	// and only up to 0.78.
+	float yq = min(p.y, float(o.pos.y)), base = fract(yq);
+	bool tall = abs(dy) >= 0.7;
+	if (tall && base > 0.06 && base < 0.78) return float3(0);
+	// (1 at a tall quad's top corners, 0 at its bottom ones. 1.2.8: a model made of smaller pieces, a resource pack's 3D flower or a
+	// sunflower's head, by each corner's height over its block's floor, so its pieces move together instead of each shearing alone)
+	float h = tall ? (dy > 0.0 ? 1.0 : 0.0) : saturate(p.y - (yq - base + (base >= 0.78 ? 1.0 : 0.0)));
 	float hw = k == 3 ? 0.5 * h : k == 4 ? 0.5 + 0.5 * h : h;
 	float w = hw * hw;
 	if (w <= 0.0) return float3(0);
@@ -1875,6 +1886,9 @@ vertex VOut own_vs(uint vid [[vertex_id]], uint iid [[instance_id]], constant Dr
 	device uint *oracleKept [[buffer(26), function_constant(F_ORACLE)]], constant uint &oracleFrame [[buffer(27), function_constant(F_ORACLE)]],
 	constant Fog &fogV [[buffer(24), function_constant(F_FOGVERT_ANY)]], constant uint4 &grp [[buffer(29), function_constant(F_GROUP)]],
 	constant ShadeSway &sway [[buffer(30), function_constant(F_SWAY)]], texture2d<float> swayCls [[texture(28), function_constant(F_SWAY)]]
+#if defined(MCOPT_SHADE) && defined(SHADE_COLOR_LIGHT)
+	, texture3d<float> clFine [[texture(33)]], texture3d<float> clCoarse [[texture(34)]], constant ShadeColorLights &clh [[buffer(15)]]
+#endif
 #ifdef OWN_VCOUNT
 	, device atomic_uint *vcount [[buffer(28)]]
 #endif
@@ -2004,6 +2018,14 @@ vertex VOut own_vs(uint vid [[vertex_id]], uint iid [[instance_id]], constant Dr
 		return ov;
 	}
 	VOut ov = ownVertex(vi, origin, uploadMs, df, arenaRaw, proj, g, t, lightmap, lightSampler, rel, disp);
+#if defined(MCOPT_SHADE) && defined(SHADE_COLOR_LIGHT)
+	// (mcopt-shade 1.2.8) the coloured block light at this vertex (only where vanilla's block light reaches)
+	if (F_VARY && ov.shadeLight.x >= 0.02h) {
+		float3 w = ov.shadePos - float3(g.CameraOffset);
+		float3 fw = floor(w);
+		ov.shadeColor = half3(clamp(shadeColorLightAt(clh, clFine, clCoarse, int3(fw) + int3(g.CameraBlockPos), w - fw, float(ov.shadeLight.x)), -8.0, 8.0));
+	}
+#endif
 	// (mcopt-shade 1.2.7 candidate 7) a waving leaf's amplitude rides above 1 in the colour's alpha: shade_own_fs takes it back out
 	// and hands it to the TAA, which then follows the leaf from last frame (swaying canopies shimmered: the resolve only knew the camera)
 	if (F_SWAY && swA > 0.0) {
@@ -2066,6 +2088,12 @@ static VOut ownVertex(uint vi, int3 origin, int uploadMs, constant DrawFrame &df
 static VOut ownShade(Vtx v, int3 origin, int uploadMs, constant DrawFrame &df, constant Projection &proj, constant Globals &g,
 	constant Terrain &t, texture2d<float> lightmap, sampler lightSampler, thread float3 &rel, float3 disp) {
 	VOut o;
+#if defined(MCOPT_SHADE) && defined(SHADE_COLOR_LIGHT)
+	if (F_VARY) {
+		o.shadeColor = half3(0.0h);
+		o.shadeLight = half2(0.0h);
+	}
+#endif
 	rel = float3(v.pos);
 	int3 cbp = int3(g.CameraBlockPos);
 	float3 pos = float3(v.pos) + float3(origin - cbp) + float3(g.CameraOffset) + disp;  // (disp: mcopt-shade's waving foliage, else 0)

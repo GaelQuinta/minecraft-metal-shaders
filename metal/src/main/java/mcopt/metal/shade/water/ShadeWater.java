@@ -97,6 +97,8 @@ public final class ShadeWater {
 	public static final float SSR_DIST = Math.clamp(floatProperty("mcopt.shade.ssrDist", 512f), 8f, 1024f);
 	public static final float WAVES = Math.clamp(floatProperty("mcopt.shade.waterWaves", 1f), 0f, 4f);
 	public static final boolean CAUSTICS = Boolean.parseBoolean(System.getProperty("mcopt.shade.caustics", "true"));
+	/** (1.2.8) The default gain of the caustics' bright lines seen from above the water (mcopt.shade.water.causticGain, live). */
+	static final float CAUSTIC_GAIN = 2.5f;
 	public static final boolean FOAM = Boolean.parseBoolean(System.getProperty("mcopt.shade.waterFoam", "true"));
 	public static final float REFLECT = Math.clamp(floatProperty("mcopt.shade.waterReflect", 1f), 0f, 2f);
 	public static final boolean GLOSSY = Boolean.parseBoolean(System.getProperty("mcopt.shade.glossy", "false"));
@@ -541,7 +543,9 @@ public final class ShadeWater {
 			// (candidate 8) the mirrored image read over each pixel's footprint (water.metal shadeWaterPrevTaps; 0 = one tap, as before)
 			.putFloat(132, mcopt.metal.shade.Live.f("mcopt.shade.water.reflFilter", 1f, 0f, 2f))
 			// (candidate 8) the panorama's share in what mirrors past the screen's sides (0 while it holds nothing)
-			.putFloat(136, ShadeWaterPano.ready() ? mcopt.metal.shade.Live.f("mcopt.shade.water.reflPano", 1f, 0f, 1f) : 0f).putFloat(140, 0f);
+			.putFloat(136, ShadeWaterPano.ready() ? mcopt.metal.shade.Live.f("mcopt.shade.water.reflPano", 1f, 0f, 1f) : 0f)
+			// (1.2.8) the bright lines' gain in the caustics seen from above the water (water.metal shadeWaterAbove; 1 = 1.2.7's)
+			.putFloat(140, mcopt.metal.shade.Live.f("mcopt.shade.water.causticGain", CAUSTIC_GAIN, 0f, 8f));
 		WaterNative.params(state, MemoryUtil.memAddress(p));
 	}
 }

@@ -42,7 +42,8 @@ At presentation, this reference and main's alpha recover the aggregate overlaid
 SDR colour in the game's sRGB blend space; the result is converted to linear light
 and composited over the HDR world. Uncovered world pixels bypass SDR quantization.
 Opaque UI covers the world completely. Alpha-zero colour edits retain their
-linear difference (e.g. additive overlays). HDR data and reference validity are
+linear difference. Negative deltas (vignette/world-border attenuation) do not scale
+with UI brightness; positive additive deltas still follow it. HDR data and reference validity are
 limited to the same command buffer; stale, skipped or invalid frames use SDR.
 Reduced output sizes are sampled by UV; the reference is captured after upscaling.
 
@@ -69,7 +70,8 @@ The harness uses the production Java curve solver, the production assembled Meta
 shader, and the native presenter source. It checks 90 combinations of contrast,
 headroom and scene brightness: middle-gray anchor, monotonic gradients, finite
 colours, saturated input and peak bounds. Native GPU tests cover opaque and
-translucent HUD, UI brightness, resize, reduced output sizes, orientation, queued
+translucent HUD, UI brightness, vignette/world-border attenuation independent of
+UI brightness, additive-overlay scaling, resize, reduced output sizes, orientation, queued
 and direct output, switching to Highlights/SDR, and stale/skipped frames. This is
 headless validation, not in-game visual approval on every screen or shader preset.
 

@@ -33,6 +33,8 @@ import mcopt.metal.shade.ShadeMsl;
  */
 public final class DynLightMsl {
 	public static final boolean ON = DynLightConfig.ENABLED;
+	/** (1.2.8) The coloured light volume (colorlight.metal, ColorLights): -Dmcopt.shade.coloredLights.module=false leaves it out. */
+	public static final boolean COLOR = ON && !"false".equals(System.getProperty("mcopt.shade.coloredLights.module"));
 	private static final String CALL = "sample_lightmap(Sampler2, Sampler2Smplr, ";
 	private static final String VERTEX_ENTRY = "vertex main0_out main0(";
 	private static volatile String prelude, module;
@@ -43,7 +45,8 @@ public final class DynLightMsl {
 	/** "#define SHADE_DYNLIGHT" + dynlight.metal, or "" with the module off. */
 	public static String prelude() {
 		if (!ON) return "";
-		if (prelude == null) prelude = "#define SHADE_DYNLIGHT\n" + module() + "\n";
+		if (prelude == null) prelude = "#define SHADE_DYNLIGHT\n" + module() + "\n"
+			+ (COLOR ? "#define SHADE_COLOR_LIGHT\n" + ShadeMsl.resource("colorlight.metal") + "\n" : "");
 		return prelude;
 	}
 

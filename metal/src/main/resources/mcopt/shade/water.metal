@@ -115,7 +115,7 @@ struct ShadeWaterParams {
 	float4 mirror; // (2026-11-06, SHADE_WATER_MIRROR_AA) x the ripple-aware mirror normal's strength (mcopt.shade.water.mirrorAAStrength,
 	               // 0 = none), y (candidate 8, SHADE_SSR_HIER) the mirrored image's footprint filter (mcopt.shade.water.reflFilter, 1; 0 = one
 	               // tap per pixel), z (candidate 8, SHADE_WATER_PANO) the panorama's share off screen (mcopt.shade.water.reflPano, 1; 0 = none),
-	               // w reserved
+	               // w (1.2.8) the gain of the caustics' bright lines seen from above (mcopt.shade.water.causticGain; 1 = 1.2.7's)
 };
 
 // (2026-11-06) the reflection history's textures (SHADE_WATER_RHIST; mcwater.m binds them, ping-pong): texture(29) last frame's,
@@ -2148,40 +2148,12 @@ static float shadeWaterFallFoam(float3 p, float3 nf, float footprint, float mv, 
 }
 #endif
 
-// Caustic focusing (1 = none) on a bottom at camera-relative pf, depth dy under the surface. The sun's rays that reach pf
-// crossed the surface up-sun of it; there the waves' curvature bends them together or apart, and the light per area is the
-// inverse Jacobian of the refraction mapping x -> x + dy (1 - 1/n) grad h: 1 / |det(I + k Hessian(h))|. Where the
-// determinant crosses zero (focal curves) the light bunches into the bright cell network of real caustics. Evaluated on
-// a set of short waves of their own (well spread directions, so cells and not a lattice), each warping the next.
-#define SHADE_CAUSTIC_COUNT 6
-constant float4 SHADE_CAUSTIC_WAVES[SHADE_CAUSTIC_COUNT] = {
-	//   dir x,  dir z, wavelength, amplitude
-	float4( 0.940,  0.342, 2.60, 0.018),
-	float4(-0.276,  0.961, 2.10, 0.015),
-	float4( 0.454, -0.891, 1.70, 0.012),
-	float4(-0.866, -0.500, 1.37, 0.0095),
-	float4( 0.643,  0.766, 1.11, 0.0075),
-	float4(-0.985,  0.174, 0.89, 0.006),
-};
-
-static float shadeWaterCaustics(float3 pf, float dy, constant ShadeFrame &f, constant ShadeWaterParams &wp, float3 l) {
+// Caustic focusing (1 = none) on a bottom at camera-relative pf, depth dy under the surface: the waves where the sun's rays
+// that reach pf crossed the surface, up-sun of it (shade_m2.metal shadeCausticFocus).
+static float shadeWaterCaustics(float3 pf, float dy, constant ShadeFrame &f, constant ShadeWaterParams &wp, float3 l, float soft) {
 	float2 x = shadeWaterXZ(pf.xz + l.xz / max(l.y, 0.25) * dy, f);
-	float t = shadeWaterTime(f);
-	float3 hs = 0.0; // Hessian: xx, zz, xz
-	for (int i = 0; i < SHADE_CAUSTIC_COUNT; i++) {
-		float4 w = SHADE_CAUSTIC_WAVES[i];
-		float k = 6.2831853 / w.z;
-		float th = k * dot(w.xy, x) + shadeWaterOmega(sqrt(9.81 * k) * 0.55) * t + float(i) * 1.9;
-		float c;
-		float s = sincos(th, c);
-		float e = exp(s - 1.0);
-		float q = w.w * k * k * (c * c - s) * e;
-		hs += q * float3(w.x * w.x, w.y * w.y, w.x * w.y);
-		x -= w.xy * (c * e * w.w * 14.0); // strong mutual warping: irregular cells
-	}
-	float kk = min(dy, 5.0) * 0.25 * 3.2 * wp.tune.x * (1.0 + 0.8 * wp.state.z);
-	float det = (1.0 + kk * hs.x) * (1.0 + kk * hs.y) - kk * kk * hs.z * hs.z;
-	return min(1.0 / max(abs(det), 0.18), 4.0);
+	float kk = min(dy, 5.0) * 0.25 * 3.2 * wp.tune.x * (1.0 + 0.8 * wp.state.z) * soft;
+	return shadeCausticFocus(x, shadeWaterTime(f), kk);
 }
 
 // The shore foam's patches (shadeWaterAbove): the edge's foam cut into drifting patches, only over a floor that faces up, fading
@@ -2358,18 +2330,29 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 #endif
 #if defined(SHADE_CAUSTICS) && !defined(SHADE_PRICE_NOCAUSTICS)
 	if (top && wp.tune.w > 0.0 && dy > 0.05 && dy < 18.0) {
-		float sunL = f.lightDirWorld.w > 0.5 ? smoothstep(0.1, 0.8, float(w.shadow)) * saturate(f.lightDirWorld.y * 4.0) * smoothstep(0.55, 0.9, float(w.sky)) : 0.0;
+		// (1.2.8) the sun's share of the bottom's light relative to full sun, s x 4 / (3 s + 1) for visibility s (the direct ~3x the sky's
+		// light): the caustics follow the sun's light as they do seen from under water (terrain_own.metal, linear in it, against the
+		// sky's light there). 1.2.7's smoothstep(0.1, 0.8, s) dropped them to 5 % under a cloud's shadow (s ~0.2; under water ~40 %):
+		// Gael saw them under water and not from the shore
+		float sv = saturate(float(w.shadow));
+		float sunL = f.lightDirWorld.w > 0.5 ? sv * 4.0 / (3.0 * sv + 1.0) * saturate(f.lightDirWorld.y * 4.0) * smoothstep(0.55, 0.9, float(w.sky)) : 0.0;
 		// (FT2.10, w.cave.x) torchlight is bent by the ripples too: where it lights the bottom (block light; caves, a strip of water in
 		// a base, a pool at night) its caustics play there like the sun's in a lake, the waves' texture under water the sky can't
 		// show it by (Gael 2026-10-10: a strip of water in his base looked like flat glass next to the lakes)
 		float torchL = float(w.cave.x) * (1.0 - sunL);
 		float light = sunL + torchL;
-		float fade = light * exp(-dy * 0.2) * saturate(dy * 3.0) * (1.0 - smoothstep(0.04, 0.12, w.footprint)); // fine lines alias far away
+		float2 lod = shadeCausticLod(w.footprint); // fine lines alias far away: softened, then faded
+		float fade = light * exp(-dy * 0.2) * saturate(dy * 3.0) * lod.y;
 		if (fade > 0.02) { // deep, shaded or far bottoms: not worth the waves
 			// (the torch's light comes from above and around: its focus straight down)
 			float3 cl = sunL >= torchL ? f.lightDirWorld.xyz : float3(0.0, 1.0, 0.0);
-			float c = shadeWaterCaustics(w.p + v * lView, dy, f, wp, cl);
-			bottom *= mix(1.0, c * 0.8, min(0.75 * fade * wp.tune.w, 1.0)); // ~energy neutral: the focus averages a bit over 1 ((1.1) tune.w: user.caustics)
+			float c = shadeWaterCaustics(w.p + v * lView, dy, f, wp, cl, lod.x);
+			// ~energy neutral: the focus averages a bit over 1 ((1.1) tune.w: user.caustics). (1.2.8, Gael: "only seen from under
+			// water") wp.mirror.w the gain from above (mcopt.shade.water.causticGain): the bottom here is all its light (sky and sun,
+			// not the sun's term alone as under water) and reaches the eye through the water's haze and the mirrored sky, so its
+			// bright lines take the gain; the dark between them keeps the old depth (they'd darken the sky's share too)
+			float g = 0.75 * fade * wp.tune.w, e = c * 0.8 - 1.0;
+			bottom *= 1.0 + e * (e > 0.0 ? min(g * wp.mirror.w, 3.0) : min(g, 1.0));
 		}
 	}
 #endif
@@ -2641,8 +2624,24 @@ static float3 shadeWaterBelow(ShadeWaterIn w, constant ShadeFrame &f, constant S
 		// the sun seen through the rippled window: a small hot core and a soft glare around the refracted direction, so
 		// the ripples break it into dancing sparkles
 		float ct = dot(t, f.lightDirWorld.xyz);
+		// (1.2.8, issue #61: "clouds don't render in Snell's window") the volumetric clouds toward the refracted direction, from
+		// their reflection dome: the window showed the bare sky gradient. They also hide the sun's glare behind them.
+		float cloudT = 1.0;
+		if (w.look != nullptr && w.res != nullptr && w.look->clouds0.w > 0.5) {
+			float4 cd = shadeCloudsDome(t, *w.look, w.res->cloudDome);
+			// where that direction is on screen, this frame's own clouds (the dome's texels meet at the zenith: straight up, the
+			// middle of the window from below, they drew a star of streaks), fading into the dome over the screen's last tenth
+			float4 cc = w.look->viewProjNoJitter * float4(t, 0.0);
+			if (cc.w > 1e-4) {
+				float2 cuv = cc.xy / cc.w * 0.5 + 0.5;
+				float ws = saturate(min(cuv.x, 1.0 - cuv.x) * 10.0) * saturate(min(cuv.y, 1.0 - cuv.y) * 10.0);
+				if (ws > 0.0) cd = mix(cd, shadeCloudsScreen(t, *w.look, w.res->cloudScreen), ws);
+			}
+			sky = sky * cd.a + cd.rgb;
+			cloudT = cd.a;
+		}
 		// (a tight glare: the wide one read as a flat white disc once bloom spread it)
-		if (f.lightDirWorld.w > 0.5) sky += f.sunColor.rgb * (exp((ct - 1.0) * 6000.0) * 30.0 + exp((ct - 1.0) * 400.0) * 0.35) * float(w.shadow);
+		if (f.lightDirWorld.w > 0.5) sky += f.sunColor.rgb * (exp((ct - 1.0) * 6000.0) * 30.0 + exp((ct - 1.0) * 400.0) * 0.35) * float(w.shadow) * cloudT;
 		above = wR < SHADE_WATER_SKY_W ? shadeWaterSceneRadiance(scene.sample(shadeWaterLinear, uvR * size / tex).rgb, w.exposure) : sky;
 		above *= float(shadeSkyCurve(w.sky)) * 0.6 + 0.4;
 	}

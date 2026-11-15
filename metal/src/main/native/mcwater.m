@@ -39,7 +39,7 @@ typedef struct {
 	float swell2[4]; // x open-water map's outer-ring mean (< 0: no map), y reserved, z calm, w ripple
 	float swell3[4]; // x the swell's share in the mirrored images' direction, y the glint's glitter, zw reserved
 	float rhist[4];  // (2026-11-06) the reflection history: x weight (0 = off), y last frame's valid (set here), z this frame's tag (here), w box (> 0: compiled in)
-	float mirror[4]; // (2026-11-06) x the ripple-aware mirror normal's strength, yzw reserved
+	float mirror[4]; // (2026-11-06) x the ripple-aware mirror normal's strength, y the reflection filter, z the panorama, w (1.2.8) the caustics' gain from above
 } WaterParams;
 
 typedef struct {
