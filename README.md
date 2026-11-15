@@ -76,7 +76,10 @@ For reference, on the same Mac: Iris + Complementary Reimagined (OpenGL) at 3024
 - **Shadows** from the sun and the moon (cascaded shadow maps, soft contact-hardening shadows), coloured shadows through
   stained glass, entity shadows.
 - **Lighting**: sky light, block light and bounce, held lights (a torch in your hand lights the world around you, around
-  corners), emissive blocks.
+  corners), emissive blocks. Since 1.2.8: **coloured lights** for placed lights of a clearly different colour (soul torches
+  and lanterns blue, redstone torches and ore red, copper torches green, amethyst, nether portals and crying obsidian purple,
+  froglights, sea lanterns and conduits), the same colour near and far (about 384 blocks around you), stopped by walls
+  (**Lighting → Coloured lights**).
 - **Sky**: physically based atmosphere, sun and moon discs, stars and the Milky Way, **aurora** in cold biomes.
 - **An in-game settings menu** (pause menu → **Shaders...**): about 150 settings on 12 pages (lighting, shadows, colour and
   camera, atmosphere, god rays, clouds, night sky, water, weather, foliage, Nether and End, performance), in English, Spanish, Simplified Chinese and Traditional Chinese, most
@@ -91,9 +94,12 @@ For reference, on the same Mac: Iris + Complementary Reimagined (OpenGL) at 3024
   underwater fog and light shafts. Since 1.2.4, torch light fades smoothly across water (no flat square per block).
   Since 1.2.7: a long **swell** on open water (**Water → Swell**; lakes and rivers stay calm), reflections traced exactly
   for every pixel (mirrored trees and houses no longer flicker), and reflections that carry on past the screen's sides
-  from what you saw a moment ago (**Water → Side reflections**).
+  from what you saw a moment ago (**Water → Side reflections**). Since 1.2.8: caustics on the bottom seen from under water
+  too, stronger and steadier from above (also under a cloud's shadow and at 1080p), and the clouds show in the sky seen from
+  under water.
 - **Waving foliage** (since 1.2.7): leaves, grass, flowers and crops move in the wind, and plants make way when you or
-  an animal walk through them (**Shaders → Foliage**).
+  an animal walk through them (**Shaders → Foliage**). Since 1.2.8 short grass and ferns sway everywhere again, and
+  resource-pack plants sway too.
 - **labPBR resource packs** (since 1.2.6): tangent-space normals, material AO, roughness/specular highlights,
   metal reflections and emissive pixels on near-terrain blocks. Enable a labPBR pack in Minecraft's Resource Packs, then
   **Shaders → Lighting → PBR (resource packs)** controls normals, specular and emission (0–200%). No change without a pack.
@@ -101,7 +107,8 @@ For reference, on the same Mac: Iris + Complementary Reimagined (OpenGL) at 3024
   material maps currently use their first frame. Predefined conductor IDs use an albedo-coloured F0 approximation.
 - **Motion blur** (since 1.2.6): optional camera-motion blur in **Shaders → Colour and camera → Effects** (0–200%, off by default).
   Applied after TAA, before the hand and HUD; moving entities do not have their own blur vectors.
-- **Weather**: wet surfaces and puddles, rain ripples, lightning.
+- **Weather**: wet surfaces and puddles, rain ripples, lightning. Since 1.2.8 (by metalnakls) rain streaks are more
+  translucent and no longer form a white curtain in the distance.
 - **HDR** pipeline with bloom, auto-exposure, a filmic tonemap, and **XDR/EDR** output on Liquid Retina XDR displays.
   Optional **Full scene** HDR is available under **Shaders → Colour and camera → HDR display → HDR mode**
   (`mcopt.shade.hdrMode=scene`); the existing Highlights mode remains the default. Scene and HUD brightness have separate
@@ -239,6 +246,8 @@ Minecraft con volumen, luz y sombras), las normales del juego, o ninguna. **Gene
 **"Salida"** del menú de pausa, y la interna con **"Resolución"** (desde la 1.2.4, en % de la salida: 85, 75, 67, 59 o 50 %, o Auto; también en **Shaders... → Rendimiento**). Compatible con Distant Horizons 3.3.4 + Fabric API (opcional); desde la 1.2.2, en **Shaders... → Rendimiento → Distant Horizons** eliges presets de DH probados con los shaders (Rendimiento, Balanceado, Calidad, Ultra), y el agua lejana de DH siempre tiene los reflejos de los shaders. El preset gráfico **Fabulous** ya funciona (antes el agua se volvía invisible). Desde la 1.2.3, cuando estás alto (a la altura de las nubes o arriba de ellas), los bordes de las nubes ya no se ven a través de las lomas y los árboles que tienes enfrente; con DH, una nube detrás de una montaña lejana de DH, por debajo del horizonte, todavía puede verse encima de ella. Si con DH la mitad de
 abajo de la pantalla se ve oscura (versión 1.0-alpha): en `config/DistantHorizons.toml` pon `vanillaFadeMode = "NONE"` y
 reinicia el juego; desde la 1.0-alpha.2 el mod lo hace solo.
+
+**Novedades de la 1.2.8:** **luces de color** para las luces colocadas de un color muy distinto (antorchas y linternas de almas en azul, antorcha y mena de redstone en rojo, antorchas de cobre en verde, amatista, portal del Nether y obsidiana llorosa en morado, ranaluces, linternas marinas y conductos), del mismo color de cerca y de lejos (unos 384 bloques a tu alrededor) y sin atravesar paredes (**Iluminación → Luces de color**); cáusticas en el fondo vistas también desde dentro del agua, y desde fuera más fuertes y parejas (también bajo la sombra de una nube y a 1080p); nubes en el cielo visto desde dentro del agua; el pasto corto y los helechos vuelven a moverse en todos lados, y las plantas de los resource packs también; lluvia más transparente que ya no forma una cortina blanca a lo lejos (de metalnakls); arreglado: modelos estirados, movidos o invisibles (plantas, cadenas, ganchos, corales) después de cambiar de mundo o entrar a un servidor.
 
 **Novedades de la 1.2.7:** reflejos del agua trazados con exactitud en cada pixel (los árboles y casas reflejados ya no parpadean) y que continúan cuando lo reflejado sale por un lado de la pantalla (**Agua → Reflejo a los lados**); oleaje en mar abierto (**Agua → Oleaje**); rayos de sol nítidos cerca de ti y neblina de la hora dorada; nubes más chicas y definidas con altocúmulos opcionales (**Nubes → Tamaño / Altocúmulos**); hojas, pasto y flores que se mueven con el viento (**Vegetación**); atardecer opuesto ajustable (**Atmósfera → Atardecer opuesto**).
 
