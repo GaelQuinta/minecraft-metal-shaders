@@ -42,6 +42,12 @@ public final class ShadeFluidLight implements VertexConsumer {
 	private VertexConsumer out;
 	/** The fluid being tesselated is water (set by OwnMesher before each FluidRenderer.tesselate). */
 	public boolean water;
+    /** Actual falling-fluid state, not just a vertical face of a source block. */
+    public boolean falling;
+    /** Water composites at alpha one; reserve 254 in the unused vertex alpha for falling water. */
+    public static int materialColor(int color, boolean water, boolean falling) {
+        return water && falling ? (color & 0x00ffffff) | 0xfe000000 : color;
+    }
 	/** The last corners and their light: a top face is sent twice (its back face for the view from below) with the same corners. */
 	private final long[] keys = new long[8];
 	private final int[] values = new int[8];
@@ -74,7 +80,7 @@ public final class ShadeFluidLight implements VertexConsumer {
 
 	@Override
 	public void addVertex(float x, float y, float z, int color, float u, float v, int overlayCoords, int lightCoords, float nx, float ny, float nz) {
-		this.out.addVertex(x, y, z, color, u, v, overlayCoords, this.water ? this.corner(x, y, z, lightCoords) : lightCoords, nx, ny, nz);
+		this.out.addVertex(x, y, z, materialColor(color, this.water, this.falling), u, v, overlayCoords, this.water && ON ? this.corner(x, y, z, lightCoords) : lightCoords, nx, ny, nz);
 	}
 
 	/** The smooth light at the block corner nearest to a vertex (section-relative), or vanilla's when no column has light. */
