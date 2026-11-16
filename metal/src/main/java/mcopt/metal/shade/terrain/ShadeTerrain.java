@@ -78,6 +78,7 @@ public final class ShadeTerrain {
 		return t;
 	});
 	private static long own;
+	private static volatile long compileContext;
 	private static MethodHandle shadeFs, shadeBuilt, shadePrewarm;
 	/**
 	 * -Dmcopt.shade.terrain.prewarmPipelines (true): the pipelines of the layouts own has drawn with so far are built for every
@@ -191,7 +192,8 @@ public final class ShadeTerrain {
 	private static long compile(boolean translucent, int bits) {
 		long t0 = System.nanoTime();
 		try {
-			long lib = ShadeRender.library(ShadeMsl.ownFragmentSource(translucent, bits));
+			String source = ShadeMsl.ownFragmentSource(translucent, bits);
+			long lib = compileContext != 0 ? mcopt.metal.shade.ShadeCompile.library(compileContext, source) : ShadeRender.library(source);
 			if (Boolean.getBoolean("mcopt.shade.terrain.log")) {
 				System.out.println(String.format("[mcopt] shade: own terrain stage %s lean %d built in %.0f ms", translucent ? "translucent" : "opaque", bits,
 					(System.nanoTime() - t0) / 1e6));
@@ -213,8 +215,14 @@ public final class ShadeTerrain {
 	 * up to 1.1, ShadeMsl.prewarm): this frame's first, then the overworld's eight and the Nether's four (opaque, translucent),
 	 * then the translucent layer's water variants (above water, no moving water near, the leanDev ones).
 	 */
-	private static void prewarm() {
-		if (!ShadeRender.ready()) return; // (frame() tries again: no device to build with yet)
+	/** Prepare terrain stages during startup, before a world needs them. */
+	public static void warmUp(long ctx) {
+		compileContext = ctx;
+		prewarm();
+	}
+
+	private static synchronized void prewarm() {
+		if (prewarmed || (compileContext == 0 && !ShadeRender.ready())) return;
 		prewarmed = true;
 		int tag = ShadeLean.tag();
 		List<int[]> sets = new ArrayList<>();
