@@ -491,7 +491,8 @@ public final class ShadeLook {
 		this.l2Sky[0] = this.l2Sky[1] = this.l2Sky[2] = 1f;
 		Look2.blueHour = 0f;
 		Look2.SKY_GAIN[0] = Look2.SKY_GAIN[1] = Look2.SKY_GAIN[2] = 1f;
-		if (!Look2.on()) return;
+		// the new atmosphere is the overworld's only (the Nether and the End keep their own grade)
+		if (!Look2.on() || f.dimension != ShadeFrame.DIM_OVERWORLD) return;
 		float e = this.elevation, sunY = (float) Math.sin(Math.toRadians(e));
 		boolean sun = f.sky.sunLight;
 		// day weight: full above ~6 degrees of sun, none below -6 (nights keep 1.2.8's numbers)
@@ -537,6 +538,8 @@ public final class ShadeLook {
 			// with the meter following less and the fill weaker, open noon scenes would sit below 1.2.8's brightness: the reference up a little
 			// (high sun only: at 25-40 degrees the frames with the lake and the bright sky were already above 1.2.8's)
 			this.l2Ev += Look2.v("dayEv", 0.3f, -1f, 1f) * smooth(25f, 50f, e) * kx;
+			// the meter's changes only under the sky (issue #66: a sealed torch-lit room adapts as in 1.2.8 at any hour)
+			this.l2Lambda = 1f - (1f - this.l2Lambda) * this.outdoor;
 		}
 		// 8. rain: a blue-teal overcast instead of grey-lavender (half the rain's desaturation back, cooler)
 		float kr = Look2.k("rain") * rain * this.outdoor;
