@@ -35,6 +35,9 @@ package mcopt.metal.shade;
  */
 public final class Look2 {
 	public static final String KEY = "mcopt.shade.look2";
+	/** This frame's sky gain (ShadeLook item 6; 1 = none) and blue-hour weight 0..1, for the clouds' sky light (CloudParams). */
+	public static final float[] SKY_GAIN = {1f, 1f, 1f};
+	public static volatile float blueHour;
 
 	private Look2() {
 	}

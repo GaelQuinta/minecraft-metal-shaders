@@ -489,6 +489,8 @@ public final class ShadeLook {
 		this.l2Sheen = 0f;
 		this.l2Face = 0f;
 		this.l2Sky[0] = this.l2Sky[1] = this.l2Sky[2] = 1f;
+		Look2.blueHour = 0f;
+		Look2.SKY_GAIN[0] = Look2.SKY_GAIN[1] = Look2.SKY_GAIN[2] = 1f;
 		if (!Look2.on()) return;
 		float e = this.elevation, sunY = (float) Math.sin(Math.toRadians(e));
 		boolean sun = f.sky.sunLight;
@@ -504,7 +506,7 @@ public final class ShadeLook {
 		float kw = Look2.k("noonWarm");
 		if (sun && kw > 0f) gradeLight(f.sky.light, 1f + Look2.v("noonGamma", 0.10f, 0f, 0.5f) * kw * day * (1f - rain), 1f);
 		// (and a warmer daylight white balance: Photon's noon grass is yellower, a* -20 b* +43 against our -24 / +35, and its zenith warmer)
-		if (kw > 0f) this.whiteBalance += Look2.v("dayWarm", 8f, -30f, 40f) * kw * day * (1f - rain) * this.outdoor;
+		if (kw > 0f) this.whiteBalance += Look2.v("dayWarm", 14f, -30f, 40f) * kw * day * (1f - rain) * this.outdoor;
 		// 2. deeper shade: the sky's fill and the bounce weaker by day (sun / shade luminance on grass 1.9-2.2 -> ~2.8)
 		float ks = Look2.k("shade") * day;
 		if (ks > 0f) {
@@ -520,7 +522,7 @@ public final class ShadeLook {
 		if (kx > 0f) {
 			// (full from 3 degrees down to 2, half at -3 degrees, back to the night's by -8: the blue hour stops half way to Photon's)
 			float w = smooth(Look2.v("eveningFrom", 30f, 5f, 60f), 3f, e) * smooth(-8f, 2f, e) * (this.rising > 0f ? Look2.v("morning", 0f, 0f, 1f) : 1f) * kx;
-			this.l2Ev = -Look2.v("evening", 0.85f, 0f, 3f) * w * (1f - 0.5f * rain);
+			this.l2Ev = -Look2.v("evening", 0.75f, 0f, 3f) * w * (1f - 0.5f * rain);
 			this.l2Lambda = 1f - Look2.v("eveningMeter", 0.5f, 0f, 1f) * Math.min(w, 1f);
 			this.contrast *= 1f + Look2.v("contrast", 0.03f, -0.2f, 0.3f) * kx * day * this.outdoor;
 		}
@@ -542,7 +544,9 @@ public final class ShadeLook {
 			for (int c = 0; c < 6; c++) this.skyGold[c] = 1f + (this.skyGold[c] - 1f) * (1f - Math.min(bh, 1f));
 			// the horizon table the terrain's fog uses gets the same gain as the sky LUT
 			for (float[] h : f.sky.horizon) for (int i = 0; i < 3; i++) h[i] *= this.l2Sky[i];
+			Look2.blueHour = Math.min(bh, 1f);
 		}
+		for (int i = 0; i < 3; i++) Look2.SKY_GAIN[i] = this.l2Sky[i];
 		// 4. foliage sheen: grass, plants and leaves glow against the sun. A Henyey-Greenstein lobe (g 0.5) of the angle between the view
 		// and the light, gated off when the sun is behind the camera; for this frame's view axis (the screen's centre: one value for every
 		// pixel, the lobe is broad), times the sun's colour, shadow and sky gate per pixel in shadeLit2. After Photon Shaders by Benjamin

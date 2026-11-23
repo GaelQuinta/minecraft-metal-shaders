@@ -177,7 +177,11 @@ public final class CloudParams {
 		float kcl = Math.min(mcopt.metal.shade.Look2.k("clouds"), 1f);
 		float amb = 1f + (mcopt.metal.shade.Look2.v("cloudAmb", 0.55f, 0.2f, 1.5f) - 1f) * kcl * (this.sunLit ? smoothstep(0.02f, 0.2f, sunY) : 0f);
 		if (this.sunLit) fill += (1f - fill) * (1f - this.sunFade);
-		put4(b, 256, as[0] * fill * bright * amb, as[1] * fill * bright * amb, as[2] * fill * bright * amb, albedo);
+		// and in the blue hour the sky that lights them is the graded one (Look2 sky gain: blue-violet), stronger: lavender-blue clouds
+		// against the violet sky, as Photon's at sun -3 degrees, not grey silhouettes
+		float[] sg = mcopt.metal.shade.Look2.SKY_GAIN;
+		float bhk = 1f + (mcopt.metal.shade.Look2.v("cloudBlueAmb", 2.2f, 0.5f, 6f) - 1f) * mcopt.metal.shade.Look2.blueHour * kcl;
+		put4(b, 256, as[0] * fill * bright * amb * sg[0] * bhk, as[1] * fill * bright * amb * sg[1] * bhk, as[2] * fill * bright * amb * sg[2] * bhk, albedo);
 		put4(b, 272, ag[0] * bright, ag[1] * bright, ag[2] * bright, 0.9f * amb);
 		// aerial perspective toward the sky behind: lighter while the sun is low (the clouds keep their sunset colour)
 		float lowSun = this.sunLit ? 1f - smoothstep(0.03f, 0.3f, sunY) : 0f;
