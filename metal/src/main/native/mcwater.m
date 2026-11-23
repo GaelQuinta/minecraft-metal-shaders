@@ -214,8 +214,7 @@ int mc_water_capture(Enc *enc, WaterState *s) {
 				[s->pyr release];
 				[s->pyrTop release];
 				[s->pyrFar release];
-				// (1.2.9) RGBA16F: b the blocks' highest camera-relative world y (water.metal shadeSsrhRange*Y)
-				MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float width:bw height:bh + th mipmapped:NO];
+				MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG16Float width:bw height:bh + th mipmapped:NO];
 				td.storageMode = MTLStorageModePrivate;
 				td.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
 				s->pyr = [enc->ctx->device newTextureWithDescriptor:td];
@@ -245,13 +244,7 @@ int mc_water_capture(Enc *enc, WaterState *s) {
 				[r setFragmentTexture:level == 0 ? depth : level == 1 ? s->pyrTop : s->pyr atIndex:0];
 				NSUInteger w = level == 0 ? vw : level == 1 ? mw : pyrFarW, h = level == 0 ? vh : level == 1 ? mh : pyrFarH;
 				// (level 1: a 16-pixel block = 2x2 8-pixel ones and 1 around; level 2: a 128-pixel block = 8x8 16-pixel ones and 4 around)
-				int32_t u[16] = {level == 2 ? 8 : 2, 0, 0, level == 2 ? 4 : 1, (int32_t) (level == 0 ? cw : level == 1 ? vw : mw), (int32_t) (level == 0 ? ch : level == 1 ? vh : mh), 0, 0};
-				// (1.2.9) ShadeSsrPyrBuild.iy / iw: ShadeFrame.invViewProj's y and w rows (offset 192, column-major), for the blocks' height
-				const float *fb = (const float *) mc_shade_frame_bytes();
-				if (fb) for (int c = 0; c < 4; c++) {
-					memcpy(&u[8 + c], &fb[48 + c * 4 + 1], 4);
-					memcpy(&u[12 + c], &fb[48 + c * 4 + 3], 4);
-				}
+				int32_t u[8] = {level == 2 ? 8 : 2, 0, 0, level == 2 ? 4 : 1, (int32_t) (level == 0 ? cw : level == 1 ? vw : mw), (int32_t) (level == 0 ? ch : level == 1 ? vh : mh), 0, 0};
 				[r setViewport:(MTLViewport) {0, 0, (double) w, (double) h, 0, 1}];
 				[r setScissorRect:(MTLScissorRect) {0, 0, w, h}];
 				[r setFragmentBytes:u length:sizeof(u) atIndex:0];
