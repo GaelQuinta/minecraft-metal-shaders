@@ -132,11 +132,18 @@ public final class ShadeTerrain {
 		int tag = ShadeLean.tag();
 		int pbr = mcopt.metal.shade.ShadePbr.active() ? ShadeMsl.PBR_MATERIALS : 0;
 		int opaqueBits = (tag & ShadeMsl.LEAN_TERRAIN) | pbr, translucentBits = (tag & (ShadeMsl.LEAN_TERRAIN | ShadeMsl.LEAN_WATER)) | pbr;
+		// (1.2.9, issue #68) the water settings that are off: their code compiled out, once that variant (library and pipelines) is
+		// ready in the background; until then the variant without (the same image, the settings' uniforms skip that code)
+		int woff = ShadeLean.waterOff();
+		if (woff != 0 && (translucentBits & ShadeMsl.LEAN_ABOVE) != 0) {
+			int want = translucentBits | woff << ShadeMsl.WOFF_SHIFT;
+			if (woffReady(want)) translucentBits = want;
+		}
 		long opaque = library(false, opaqueBits), translucent = library(true, translucentBits);
 		if (opaque == 0 && opaqueBits != 0) opaque = library(false, opaqueBits = 0); // (the variant failed: the full stage)
 		if (translucent == 0 && translucentBits != 0) translucent = library(true, translucentBits = 0);
 		int key = (opaqueBits & 255) | (translucentBits & 255) << 8 | (opaque != 0 ? 1 << 16 : 0)
-			| (translucent != 0 ? 1 << 17 : 0) | (pbr != 0 ? 1 << 18 : 0);
+			| (translucent != 0 ? 1 << 17 : 0) | (pbr != 0 ? 1 << 18 : 0) | (translucentBits >>> ShadeMsl.WOFF_SHIFT & ShadeMsl.WOFF_ALL) << 19;
 		try {
 			shadeFs.invokeExact(own, opaque, translucent, key, ShadeConfig.HDR ? 1 : 0);
 		} catch (Throwable t) {
@@ -171,6 +178,59 @@ public final class ShadeTerrain {
 			builtSeen = n;
 			builtLogAt = now;
 		}
+	}
+
+	/**
+	 * (1.2.9, water phase 2) Own's kind bit for the far water draw (OwnTerrain: the translucent list's farthest run of sections, all
+	 * wholly beyond waterFar()): mcown.m sets terrain_own.metal's function constant 41 (SO_WFAR) for it, so the same library's
+	 * shade_own_fs is specialized with the far water's cheaper path (water.metal SHADE_WFAR_*): a pipeline of its own, not a branch.
+	 */
+	public static final int K_WFAR = 1 << 31;
+
+	/**
+	 * (1.2.9) The far water's distance this frame (blocks; 0 = off): -Dmcopt.shade.water.far (live; off by default), only for the
+	 * HDR world with the water module and the camera above water in the overworld (the LEAN_ABOVE variants).
+	 */
+	public static float waterFar() {
+		if (!ShadeConfig.HDR || !mcopt.metal.shade.water.ShadeWater.ON || (ShadeLean.tag() & ShadeMsl.LEAN_ABOVE) == 0) return 0f;
+		if (!mcopt.metal.shade.water.ShadeWater.farCode()) return 0f;
+		float d = mcopt.metal.shade.Live.f("mcopt.shade.water.far", 0f);
+		return d > 0f ? Math.max(d, 32f) : 0f;
+	}
+
+	/** (1.2.9) Water-off translucent variants (bits) whose library and pipelines are built (woffReady). */
+	private static final java.util.Set<Integer> WOFF_READY = ConcurrentHashMap.newKeySet(), WOFF_STARTED = ConcurrentHashMap.newKeySet();
+
+	/**
+	 * (1.2.9) Whether the translucent variant bits (with water-off bits) can be drawn with now; if not, its library and then its
+	 * pipelines (the layouts met so far) are built in the background, and a later frame takes it.
+	 */
+	private static boolean woffReady(int bits) {
+		if (WOFF_READY.contains(bits)) return true;
+		if (WOFF_STARTED.add(bits)) {
+			int key = TRANSLUCENT | bits;
+			CompletableFuture<Long> mine = new CompletableFuture<>();
+			CompletableFuture<Long> f = LIBRARIES.putIfAbsent(key, mine);
+			if (f == null) {
+				f = mine;
+				Runnable task = () -> mine.complete(compile(true, bits));
+				if (!mcopt.metal.shade.ShadeCompile.background(task)) COMPILER.execute(task);
+			}
+			f.whenComplete((lib, ex) -> {
+				if (lib == null || lib == 0) return; // (failed: the variant without stays)
+				Runnable task = () -> {
+					try {
+						int n = (int) shadePrewarm.invokeExact(own, (long) lib, 1, ShadeConfig.HDR ? 1 : 0);
+						if (Boolean.getBoolean("mcopt.shade.terrain.log")) System.out.println("[mcopt] shade: water-off variant " + Integer.toHexString(bits) + " ready (" + n + " pipelines)");
+					} catch (Throwable t) {
+						System.out.println("[mcopt] shade: own terrain pipeline prewarm failed: " + t);
+					}
+					WOFF_READY.add(bits);
+				};
+				if (!mcopt.metal.shade.ShadeCompile.background(task)) COMPILER.execute(task);
+			});
+		}
+		return false;
 	}
 
 	/** Variant (translucent, bits)'s library handle, built now if nobody has started it; 0 if it failed. */
@@ -236,6 +296,9 @@ public final class ShadeTerrain {
 					sets.add(new int[] {1, b | ShadeMsl.LEAN_ABOVE | ShadeMsl.LEAN_DEV | ShadeMsl.LEAN_NOFALLS});
 				}
 			}
+			// (1.2.9) the player's water settings that are off (their variants, above water, no moving water near first)
+			int woff = mcopt.metal.shade.water.ShadeWater.ON ? mcopt.metal.shade.water.ShadeWater.offBits() : 0;
+			if (woff != 0) for (int t = 0; t < 4; t++) for (int nf : new int[] {ShadeMsl.LEAN_NOFALLS, 0}) woffReady(ShadeMsl.LEAN_OW | t << 1 | ShadeMsl.LEAN_ABOVE | nf | woff << ShadeMsl.WOFF_SHIFT);
 		} else {
 			sets.add(new int[] {0, 0});
 			sets.add(new int[] {1, 0});

@@ -40,6 +40,7 @@ typedef struct {
 	float swell3[4]; // x the swell's share in the mirrored images' direction, y the glint's glitter, zw reserved
 	float rhist[4];  // (2026-11-06) the reflection history: x weight (0 = off), y last frame's valid (set here), z this frame's tag (here), w box (> 0: compiled in)
 	float mirror[4]; // (2026-11-06) x the ripple-aware mirror normal's strength, y the reflection filter, z the panorama, w (1.2.8) the caustics' gain from above
+	float far[4];    // (1.2.9) the far water: x its distance (0 = off), y the near draw's fade band
 } WaterParams;
 
 typedef struct {
@@ -62,6 +63,7 @@ typedef struct {
 	// happened this frame / last frame. dummyRh: a 1x1 writable stand-in for texture(30) before the pair exists.
 	id<MTLTexture> rh[2], dummyRh;
 	int rhCur, rhCaptured;
+	int dev; // (1.2.9 pricing, ShadeWater.frame: state.x as Java sends it) bit 0: no depth pyramid (-Dmcopt.shade.water.devNoPyr)
 } WaterState;
 
 // The one state mc_water_bind binds from (set by mc_water_new).
@@ -122,6 +124,7 @@ void mc_water_free(WaterState *s) {
 // frame's was written by a capture last frame; rhist.z: the tag this frame's texels get, the opposite of last frame's).
 void mc_water_params(WaterState *s, const float *p) {
 	memcpy(&s->params, p, sizeof(WaterParams));
+	s->dev = (int) s->params.state[0];
 	s->params.state[0] = 0.0f;
 	s->rhCur ^= 1;
 	s->params.rhist[1] = s->rhCaptured && s->rh[0] && s->rh[1] ? 1.0f : 0.0f;
@@ -196,7 +199,10 @@ int mc_water_capture(Enc *enc, WaterState *s) {
 		// (FT2.8, audit idx 61) the coarse depth first, from the attachment itself (the same texels as the copy): it then depends
 		// only on the ended world encoder and can run alongside the ~0.37 ms copy below instead of waiting for all of it
 		NSUInteger pyrFarW = 0, pyrFarH = 0, pyrFarY = 0; // (the 128-pixel blocks made this frame: copied into the pyramid below)
-		if (s->pyrPso && s->pyr2Pso) {
+		// (1.2.9, issue #68) no pyramid while nothing marches: Scene reflections off (tune.y 0) or Reflections 0 % (tune.z 0); the
+		// water and the glossy blocks skip their SSR then, and the stale pyramid bound is never read
+		int marches = s->params.tune[1] > 0.0f && s->params.tune[2] > 0.0f && !(s->dev & 1);
+		if (s->pyrPso && s->pyr2Pso && marches) {
 			// (candidate 8) the exact march's pyramid in three small passes: the plain 8-pixel blocks from the depth attachment (their
 			// own texture), the 16-pixel blocks (each with half a block around it) from those, and the 128-pixel blocks from the
 			// 16-pixel ones (their own small target: copied into its region by the scene copy's blit encoder below). Straight from the
@@ -279,7 +285,7 @@ int mc_water_capture(Enc *enc, WaterState *s) {
 			[b copyFromTexture:depth sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(cw, ch, 1)
 				toTexture:s->depth destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
 		}
-		if (pyrFarW > 0 && s->pyrFar && s->pyr) // (candidate 8) the pyramid's 128-pixel blocks into their region
+		if (pyrFarW > 0 && s->pyrFar && s->pyr && marches) // (candidate 8) the pyramid's 128-pixel blocks into their region
 			[b copyFromTexture:s->pyrFar sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(pyrFarW, pyrFarH, 1)
 				toTexture:s->pyr destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, pyrFarY, 0)];
 		[b endEncoding];
@@ -413,6 +419,11 @@ void mc_water_waves_done(Enc *enc, WaterState *s) {
 		[b endEncoding];
 	}
 	s->params.state[3] = 1.0f;
+}
+
+// (1.2.9 pricing, -Dmcopt.shade.water.devNoBake) last bake's waves stay bound this frame, without a bake
+void mc_water_waves_keep(WaterState *s) {
+	if (s->waves) s->params.state[3] = 1.0f;
 }
 
 id<MTLTexture> mc_water_scene_copy(WaterState *s) { return s->color; }

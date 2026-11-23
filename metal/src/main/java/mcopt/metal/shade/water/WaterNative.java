@@ -36,6 +36,7 @@ final class WaterNative {
 	private static final MethodHandle SET_HZ = fn("mc_water_set_hz", false, null, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle SET_PYR = fn("mc_water_set_pyr", false, null, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle WAVES_DONE = fn("mc_water_waves_done", false, null, JAVA_LONG, JAVA_LONG);
+	private static final MethodHandle WAVES_KEEP = fn("mc_water_waves_keep", true, null, JAVA_LONG);
 
 	private WaterNative() {
 	}
@@ -53,7 +54,7 @@ final class WaterNative {
 	}
 
 	static long create(long ctx) { try { return (long) NEW.invokeExact(ctx); } catch (Throwable t) { throw rethrow(t); } }
-	/** params: the address of 36 floats (still, flow, state, tune, swell, swell2, swell3, rhist, mirror: water.metal ShadeWaterParams). */
+	/** params: the address of 40 floats (still, flow, state, tune, swell, swell2, swell3, rhist, mirror, far: water.metal ShadeWaterParams). */
 	static void params(long state, long params) { try { PARAMS.invokeExact(state, params); } catch (Throwable t) { throw rethrow(t); } }
 	static void bind(long enc) { try { BIND.invokeExact(enc); } catch (Throwable t) { throw rethrow(t); } }
 	static int capture(long enc, long state) { try { return (int) CAPTURE.invokeExact(enc, state); } catch (Throwable t) { throw rethrow(t); } }
@@ -61,5 +62,6 @@ final class WaterNative {
 	static long wavesDetail(long ctx, long state, int size) { try { return (long) WAVES_DETAIL.invokeExact(ctx, state, size); } catch (Throwable t) { throw rethrow(t); } }
 	static void setHz(long state, long pso) { try { SET_HZ.invokeExact(state, pso); } catch (Throwable t) { throw rethrow(t); } }
 	static void setPyr(long state, long pso, long pso2) { try { SET_PYR.invokeExact(state, pso, pso2); } catch (Throwable t) { throw rethrow(t); } }
+	static void wavesKeep(long state) { try { WAVES_KEEP.invokeExact(state); } catch (Throwable t) { throw rethrow(t); } }
 	static void wavesDone(long enc, long state) { try { WAVES_DONE.invokeExact(enc, state); } catch (Throwable t) { throw rethrow(t); } }
 }

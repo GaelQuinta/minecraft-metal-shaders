@@ -149,6 +149,194 @@ static inline float soPbrGgx(float3 n, float3 v, float3 l, float alpha) {
 }
 
 
+// (1.2.9, issue #68) What the translucent stage draws for glass, ice, slime, honey (and M1's water stand-in): not inlined in the
+// translucent stage with the water module (SO_OTHER_ATTR), so its code doesn't weigh on every water pixel (priced 0.6-0.9 ms over the
+// sea on an M4, notes/2026-11-23); the opaque stages keep it inline, as before. dims / netherLit as the caller found them.
+#if defined(SHADE_OWN_TRANSLUCENT) && defined(SHADE_WATER) && (defined(SHADE_WP_COLD) || defined(SHADE_OWN_COLD_OTHER))
+#define SO_OTHER_ATTR __attribute__((noinline))
+#else
+#define SO_OTHER_ATTR __attribute__((always_inline))
+#endif
+static SO_OTHER_ATTR float3 shadeOwnOther(thread float &alpha, bool water, float3 p, half3 n, half3 materialN, float4 materialS, float materialAo, bool pbr,
+	float4 texel, half3 albedo, half3 tint, half skyLight, half blockLight, half shadow, bool thin, bool foliage, bool dimsIn, bool netherLitIn,
+	float3 dpx, float3 dpy, float2 uv, int debug, float ex, float2 fragXY, half3 shadeColor, texture2d<float> atlas, sampler atlasSampler,
+	constant ShadeFrame &sf, constant ShadeLook &sl, constant ShadeGpu &sg, texture2d<half> skyLut, sampler skyLutSmplr
+#ifdef SHADE_DYNLIGHT
+	, constant ShadeDynLights &dl, texture3d<half> dlIrr, texture3d<half> dlDir
+#endif
+#ifdef MCOPT_HDR
+	, constant ShadeResources &sr
+#endif
+#if defined(SHADE_UW_CAUSTICS) && !defined(SHADE_OWN_TRANSLUCENT)
+	, constant ShadeWaterHead &wph
+#endif
+#ifdef SHADE_WATER
+	, texture2d<half> sceneCopy, depth2d<float> depthCopy, constant ShadeWaterParams &wp, texture2d<float> waterCoarse
+#endif
+	) {
+#ifdef SHADE_LEAN_OW
+	const bool dims = false, netherLit = false;
+#elif defined(SHADE_LEAN_NETHER)
+	const bool dims = dimsIn, netherLit = true;
+#else
+	bool dims = dimsIn, netherLit = netherLitIn;
+#endif
+	float3 radiance = 0.0;
+	if (water) {
+#ifdef SHADE_OWN_TRANSLUCENT
+		float3 lit = shadeLit2(half3(1.0h), n, skyLight, blockLight, shadow, false, false, sf, sl);
+#ifdef SHADE_COLOR_LIGHT
+		lit += sf.ambientBlock.xyz * float3(shadeColor);
+#endif
+#ifdef SHADE_DYNLIGHT
+		lit += sf.ambientBlock.xyz * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(n), false, blockLight);
+#endif
+		float4 w = shadeWater(lit, tint, shadeLumaH(half3(texel.rgb)), alpha, p, skyLight, shadow, skyLut, skyLutSmplr, sf);
+		radiance = w.rgb;
+		alpha = w.a;
+#endif
+	} else {
+#if defined(SHADE_WEATHER) && !defined(SHADE_LEAN_DRY)
+		// M3 weather (weather_surface.metal): rain-soaked, darker albedo, puddles on open top faces, snow cover
+#ifdef MCOPT_HDR
+		ShadeWet wet = shadeWetSurface(p, n, skyLight, thin, foliage, max(length(dpx), length(dpy)), sf, sl, sr.weatherNoise, sl.ssr.z > 0.5, shadeWxVegHue(albedo));
+#else
+		ShadeWet wet = shadeWetSurface(p, n, skyLight, thin, foliage, max(length(dpx), length(dpy)), sf, sl, skyLut, false, shadeWxVegHue(albedo));
+#endif
+#ifdef SHADE_WET_ALL
+		// M3.3 wet ground: the film gathers in the texture's darker texels (a height proxy: the texel against its sprite's mean,
+		// the atlas' coarsest mip; far away the texture's own mip evens it out) instead of lying on the block like varnish
+		if (wet.film > 0.0h && wet.omega > 0.05h && sl.waterAbs.z > 0.0)
+			wet.tex = shadeWetTexHeight(half3(texel.rgb), half3(atlas.sample(atlasSampler, uv, level(4.0)).rgb), sl);
+#endif
+#ifdef SHADE_SNOW_GRAIN
+		// (2026-10-11) the snow cover keeps a trace of the block's texture (the texel against its sprite's mean): snow lying on
+		// the block instead of a flat white sheet
+		if (wet.snow > 0.0h)
+			wet.grain = half(clamp(float(shadeLumaH(half3(texel.rgb))) / max(float(shadeLumaH(half3(atlas.sample(atlasSampler, uv, level(4.0)).rgb))), 0.02) - 1.0, -0.5, 0.5));
+#endif
+		half3 wetAlbedo = debug == 3 ? albedo : shadeWetAlbedo(albedo, wet);
+#else
+		half3 wetAlbedo = albedo;
+#endif
+		// Nether/End (dims module): shadeLit2 without sky light and sun, plus the dimension's own light (shadeLitDimsExtra)
+		radiance = shadeLit2(wetAlbedo, materialN, dims ? half(0.0) : skyLight, blockLight, dims ? half(0.0) : shadow, thin, foliage, sf, sl);
+		if (dims) radiance += shadeLitDimsExtra(wetAlbedo, materialN, shadow, thin, foliage, p, sf, sl);
+#ifdef SHADE_COLOR_LIGHT
+		// (1.2.8) placed lights of a colour of their own light in it (colorlight.metal, per vertex)
+		radiance += float3(wetAlbedo) * sf.ambientBlock.xyz * float3(shadeColor);
+#endif
+#if defined(SHADE_UW_CAUSTICS) && !defined(SHADE_OWN_TRANSLUCENT)
+		// (1.2.8, issue #61: "caustics don't render underwater") the camera under water: the sunlit bottom and walls below the
+		// surface get the caustics the water's surface draws on them when seen from above (water.metal), on the sun's term only
+		if (SHADE_CAMERA_UNDERWATER(sf) && !dims && wph.tune.w > 0.0) {
+			float dy = wph.state.y - p.y; // depth under the surface above the eye
+			if (dy > 0.05 && dy < 18.0) {
+				float2 lod = shadeCausticLod(max(length(dpx), length(dpy))); // fine lines alias far away: softened, then faded
+				float fade = exp(-dy * 0.2) * saturate(dy * 3.0) * lod.y;
+				half3 direct = shadeLit2Direct(materialN, skyLight, shadow, thin, foliage, sf, sl);
+				if (fade > 0.02 && max3(direct.r, direct.g, direct.b) > 1e-4h) {
+					float3 l = sf.lightDirWorld.xyz;
+					float2 x = p.xz + l.xz / max(l.y, 0.25) * dy + sf.cameraFract.xz + fmod(sf.cameraBlock.xz, 2048.0);
+					float kk = min(dy, 5.0) * 0.25 * 3.2 * wph.tune.x * (1.0 + 0.8 * wph.state.z) * lod.x;
+					float c = shadeCausticFocus(x, sf.sunPath.w, kk);
+					radiance += float3(wetAlbedo) * float3(direct) * ((c * 0.8 - 1.0) * min(0.75 * fade * wph.tune.w, 1.0));
+				}
+			}
+		}
+#endif
+#ifdef SHADE_DYNLIGHT
+		radiance += float3(wetAlbedo) * sf.ambientBlock.xyz * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(materialN), thin, blockLight);
+#endif
+#if defined(MCOPT_HDR) && defined(SHADE_PBR)
+		if (pbr) {
+			float3 materialLit = radiance;
+			radiance *= materialAo;
+			// G is linear F0 below 230, otherwise an albedo-coloured conductor.
+			bool metal = materialS.g * 255.0 > 229.5;
+			float3 F0 = metal ? float3(albedo) : float3(materialS.g);
+			if (sl.user3.z > 0.0 && max3(F0.r,F0.g,F0.b) > 0.0) {
+				float rough = max((1.0-materialS.r)*(1.0-materialS.r), 0.045);
+				float3 N = float3(materialN), V = normalize(p-shadeEye(sf.invViewProj));
+				float nv = saturate(dot(N,-V));
+				float3 F = F0 + (1.0-F0)*pow(1.0-nv,5.0);
+				float3 R = reflect(V,N);
+				float3 env = mix(shadeSkyLookup(float3(R.x,max(R.y,0.0),R.z),skyLut,skyLutSmplr,sf),
+				    sf.ambientSky.rgb, saturate(rough*1.6));
+				float open = float(shadeSkyCurve(skyLight));
+				// Nether/End have their own ambient environment, even with zero vanilla skylight.
+				if (dims) env = mix(sf.ambientGround.rgb,sf.ambientSky.rgb,saturate(R.y*0.5+0.5));
+				else env = mix(sf.ambientGround.rgb,env,smoothstep(-0.15,0.15,R.y))*open;
+				// Approximate the local reflected fill from the lighting already evaluated above (torches, held lights,
+				// cave minimum). A conductor in a lit cave must not become black just because it sees no sky.
+				env += materialLit / max(float3(wetAlbedo),0.02) * ((1.0-open)*0.5);
+				float3 direct = dims ? float3(0.0) : sf.sunColor.rgb * min(soPbrGgx(N,V,sf.lightDirWorld.xyz,max(rough*rough,0.0025)),60.0)
+				    * float(shadow)*float(smoothstep(0.3h,0.8h,skyLight))*(1.0-sl.wet.w);
+				radiance = radiance*(1.0-min(sl.user3.z,1.0)*(metal ? float3(1.0) : F0))
+				    + (env*F*materialAo+direct*F)*sl.user3.z;
+			}
+			float emission = materialS.a; // CPU decoded labPBR A=255 to zero before filtering
+			radiance += float3(albedo)*sf.ambientBlock.xyz*(emission*4.0*sl.user3.w);
+		}
+#endif
+		// Light sources until a material mask: at block light 14-15, bright warm texels (torch and lantern flames, glowstone, lava,
+		// shroomlights) glow instead of being lit like the rest of the block (stronger in the Nether).
+		half tl = shadeLumaH(half3(texel.rgb));
+		if (blockLight > 0.92h && texel.r > 0.9 && tl > 0.62h && texel.r > texel.b + 0.12)
+			radiance += float3(albedo) * float3(sf.ambientBlock.xyz) * ((netherLit ? 3.1 : 2.2) * sl.user0.w); // (1.1) user0.w: glowing blocks
+#ifdef SHADE_WEATHER
+#if defined(SHADE_COLOR_SHADOW) && defined(MCOPT_HDR)
+		// light that came through stained glass, ice or water takes their colour (the shadow pass's tint map, near cascade)
+		if (!dims && shadow > 0.0h && skyLight > 0.3h && sl.ssr.w > 0.5 && !shadeDev(sf, SHADE_DEV_WX_NO_TINT))
+			radiance += shadeShadowTintDelta(wetAlbedo, n, skyLight, shadow, shadeShadowTint(p, n, sf, sl, sr.shadowTint), thin, foliage, sf);
+#endif
+#if defined(SHADE_LIGHTNING) && !defined(SHADE_LEAN_DRY)
+		if (!dims) radiance += shadeWxFlash(wetAlbedo, n, skyLight, sl); // ShadeLook.flash is the End flash in the End
+#endif
+#ifndef SHADE_LEAN_DRY
+		{
+			ShadeWetLight wl;
+			wl.p = p;
+			wl.n = n;
+			wl.sky = skyLight;
+			wl.shadow = shadow;
+			wl.pixel = fragXY;
+#ifdef MCOPT_HDR
+			wl.prevExposure = sl.ssr.x > 0.5 ? sg.exposure.z : 0.0;
+			wl.histOk = sl.ssr.x > 0.5 && sl.ssr.y > 0.5;
+			radiance = shadeWetShade(radiance, wetAlbedo, wet, wl, sf, sl, skyLut, skyLutSmplr, sr.prevScene, sr.prevDepth);
+#else
+			wl.prevExposure = 0.0;
+			wl.histOk = false;
+			radiance = shadeWetShade(radiance, wetAlbedo, wet, wl, sf, sl, skyLut, skyLutSmplr, skyLut, skyLut);
+#endif
+		}
+		if (debug == 8) radiance = float3(float(wet.omega), float(wet.puddle), float(wet.snow)) * 0.25 / max(ex, 1e-3);
+#endif
+#endif
+#if defined(SHADE_WATER) && defined(SHADE_GLOSSY)
+		// the water module's glossy translucents (stained glass, ice, slime, honey): mirror reflection over the lit colour
+		if (!thin && !shadeDev(sf, SHADE_DEV_NO_WATER)) {
+#ifdef MCOPT_HDR
+#ifdef SHADE_SSR_PREV
+			float prevEx = sl.ssr.x > 0.5 ? sg.exposure.z : 0.0;
+#else
+			float prevEx = 0.0;
+#endif
+			float4 gl = shadeGlossy(radiance, alpha, p, float3(n), fragXY, skyLight, shadow, ex, prevEx, sf, &sl, &sr, wp, skyLut,
+			                        skyLutSmplr, sceneCopy, depthCopy, sr.prevScene, waterCoarse);
+#else
+			float4 gl = shadeGlossy(radiance, alpha, p, float3(n), fragXY, skyLight, shadow, ex, 0.0, sf, nullptr, nullptr, wp, skyLut,
+			                        skyLutSmplr, sceneCopy, depthCopy, sceneCopy, waterCoarse);
+#endif
+			radiance = gl.rgb;
+			alpha = gl.a;
+		}
+#endif
+	}
+	return radiance;
+}
+
 fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [[buffer(28)]], constant SoTerrain &t [[buffer(29)]],
 	constant SoFog &fog [[buffer(30)]], texture2d<float> atlas [[texture(26)]], sampler atlasSampler [[sampler(14)]],
 	texture2d<float> lightmap [[texture(27)]], sampler lightSampler [[sampler(15)]],
@@ -310,8 +498,17 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	half shadow = (skyLight <= 0.3h && !endLit) || netherLit ? half(1.0)
 #endif
 		// M3.4 (mcopt.shade.waterShadowSoft, ShadeLook.waterShadow.x, read every frame): up-facing water gets a soft-edged shadow
+#ifdef SHADE_WOFF_WSHADOW
+		: waterFull ? shadeShadow(shadowMap, shadowCompare, sf, p, n, false) // (1.2.9: Water shadow blur 0, the soft one compiled out)
+#elif defined(SHADE_WFAR_SHADOW)
+		// (1.2.9 far water) the far draw: one tap; the near draw's soft radius fades to 0 toward D
+		: waterFull ? (n.y > 0.5h && sl.waterShadow.x > 0.0 ? (SHADE_FAR_NOSHADOW ? shadeWaterShadowFar(shadowMap, shadowCompare, sf, p, n)
+			: shadeShadowSoft(shadowMap, shadowCompare, sf, p, n, sl.waterShadow.x * (1.0 - shadeWaterFarT(wp, length(p))), in.fragCoord.xy, sl.waterShadow.z))
+		                                                    : shadeShadow(shadowMap, shadowCompare, sf, p, n, false))
+#else
 		: waterFull ? (n.y > 0.5h && sl.waterShadow.x > 0.0 ? shadeShadowSoft(shadowMap, shadowCompare, sf, p, n, sl.waterShadow.x, in.fragCoord.xy, sl.waterShadow.z)
 		                                                    : shadeShadow(shadowMap, shadowCompare, sf, p, n, false))
+#endif
 		: shadeShadow2(shadowMap, shadowCompare, sf, sl, p, n, thin || foliage, foliage, in.fragCoord.xy, shadowSky);
 #ifdef MCOPT_HDR
 	// M3: the volumetric clouds' shadows (shade_clouds.metal; 1 when they are off); overworld only (only where the sun or moon
@@ -388,7 +585,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #ifdef SHADE_WATER_DETAIL
 		// M2.1 fine ripples (baked waves): top faces, and the surface seen from below with the camera under water
 #ifndef SHADE_PRICE_NODETAIL
-		if (!SHADE_WDEV_IS(sf, SHADE_WDEV_NO_DETAIL) && (n.y > 0.5h || (n.y < -0.5h && SHADE_CAMERA_UNDERWATER(sf))) && wp.state.w > 0.5) wi.detail = shadeWaterDetailIn(wi, sf, waterDetail);
+		if (!SHADE_FAR_NODETAIL && !SHADE_WDEV_IS(sf, SHADE_WDEV_NO_DETAIL) && (n.y > 0.5h || (n.y < -0.5h && SHADE_CAMERA_UNDERWATER(sf))) && wp.state.w > 0.5) wi.detail = shadeWaterDetailIn(wi, sf, waterDetail);
 #endif
 #endif
 #ifdef SHADE_WATER_SWELL
@@ -466,157 +663,52 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #endif
 	} else
 #endif
-	if (water) {
+#if defined(SHADE_OWN_TRANSLUCENT) && (defined(SHADE_PRICE_NONW) || defined(SHADE_PRICE_NOM1))
+	// (1.2.9 pricing, -Dmcopt.shade.leanDev=SHADE_PRICE_NONW / _NOM1: what the translucent stage's code for glass and ice (NONW) or
+	// M1's water stand-in (NOM1) costs the water's pixels; the image of those blocks is wrong in that variant)
+	if (true) {
+		radiance = float3(albedo) * 0.5;
+#ifndef SHADE_PRICE_NOM1
+		if (water) radiance = shadeWater(float3(1.0), tint, shadeLumaH(half3(texel.rgb)), alpha, p, skyLight, shadow, skyLut, skyLutSmplr, sf).rgb;
+#endif
+#ifndef SHADE_PRICE_NONW
+		if (!water) radiance = shadeLit2(albedo, materialN, skyLight, blockLight, shadow, thin, foliage, sf, sl);
+#endif
+	} else
+#endif
+	{
+	radiance = shadeOwnOther(alpha, water, p, n, materialN, materialS, materialAo,
+#if defined(MCOPT_HDR) && defined(SHADE_PBR)
+		pbr,
+#else
+		false,
+#endif
+		texel, albedo,
 #ifdef SHADE_OWN_TRANSLUCENT
-		float3 lit = shadeLit2(half3(1.0h), n, skyLight, blockLight, shadow, false, false, sf, sl);
-#ifdef SHADE_COLOR_LIGHT
-		lit += sf.ambientBlock.xyz * float3(in.shadeColor);
+		tint,
+#else
+		half3(0.0h),
 #endif
+		skyLight, blockLight, shadow, thin, foliage, dims, netherLit, dpx, dpy, uv, debug, ex, in.fragCoord.xy,
+#ifdef SHADE_COLOR_LIGHT
+		in.shadeColor,
+#else
+		half3(0.0h),
+#endif
+		atlas, atlasSampler, sf, sl, sg, skyLut, skyLutSmplr
 #ifdef SHADE_DYNLIGHT
-		lit += sf.ambientBlock.xyz * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(n), false, blockLight);
+		, dl, dlIrr, dlDir
 #endif
-		float4 w = shadeWater(lit, tint, shadeLumaH(half3(texel.rgb)), alpha, p, skyLight, shadow, skyLut, skyLutSmplr, sf);
-		radiance = w.rgb;
-		alpha = w.a;
-#endif
-	} else {
-#if defined(SHADE_WEATHER) && !defined(SHADE_LEAN_DRY)
-		// M3 weather (weather_surface.metal): rain-soaked, darker albedo, puddles on open top faces, snow cover
 #ifdef MCOPT_HDR
-		ShadeWet wet = shadeWetSurface(p, n, skyLight, thin, foliage, max(length(dpx), length(dpy)), sf, sl, sr.weatherNoise, sl.ssr.z > 0.5, shadeWxVegHue(albedo));
-#else
-		ShadeWet wet = shadeWetSurface(p, n, skyLight, thin, foliage, max(length(dpx), length(dpy)), sf, sl, skyLut, false, shadeWxVegHue(albedo));
-#endif
-#ifdef SHADE_WET_ALL
-		// M3.3 wet ground: the film gathers in the texture's darker texels (a height proxy: the texel against its sprite's mean,
-		// the atlas' coarsest mip; far away the texture's own mip evens it out) instead of lying on the block like varnish
-		if (wet.film > 0.0h && wet.omega > 0.05h && sl.waterAbs.z > 0.0)
-			wet.tex = shadeWetTexHeight(half3(texel.rgb), half3(atlas.sample(atlasSampler, uv, level(4.0)).rgb), sl);
-#endif
-#ifdef SHADE_SNOW_GRAIN
-		// (2026-10-11) the snow cover keeps a trace of the block's texture (the texel against its sprite's mean): snow lying on
-		// the block instead of a flat white sheet
-		if (wet.snow > 0.0h)
-			wet.grain = half(clamp(float(shadeLumaH(half3(texel.rgb))) / max(float(shadeLumaH(half3(atlas.sample(atlasSampler, uv, level(4.0)).rgb))), 0.02) - 1.0, -0.5, 0.5));
-#endif
-		half3 wetAlbedo = debug == 3 ? albedo : shadeWetAlbedo(albedo, wet);
-#else
-		half3 wetAlbedo = albedo;
-#endif
-		// Nether/End (dims module): shadeLit2 without sky light and sun, plus the dimension's own light (shadeLitDimsExtra)
-		radiance = shadeLit2(wetAlbedo, materialN, dims ? half(0.0) : skyLight, blockLight, dims ? half(0.0) : shadow, thin, foliage, sf, sl);
-		if (dims) radiance += shadeLitDimsExtra(wetAlbedo, materialN, shadow, thin, foliage, p, sf, sl);
-#ifdef SHADE_COLOR_LIGHT
-		// (1.2.8) placed lights of a colour of their own light in it (colorlight.metal, per vertex)
-		radiance += float3(wetAlbedo) * sf.ambientBlock.xyz * float3(in.shadeColor);
+		, sr
 #endif
 #if defined(SHADE_UW_CAUSTICS) && !defined(SHADE_OWN_TRANSLUCENT)
-		// (1.2.8, issue #61: "caustics don't render underwater") the camera under water: the sunlit bottom and walls below the
-		// surface get the caustics the water's surface draws on them when seen from above (water.metal), on the sun's term only
-		if (SHADE_CAMERA_UNDERWATER(sf) && !dims && wph.tune.w > 0.0) {
-			float dy = wph.state.y - p.y; // depth under the surface above the eye
-			if (dy > 0.05 && dy < 18.0) {
-				float2 lod = shadeCausticLod(max(length(dpx), length(dpy))); // fine lines alias far away: softened, then faded
-				float fade = exp(-dy * 0.2) * saturate(dy * 3.0) * lod.y;
-				half3 direct = shadeLit2Direct(materialN, skyLight, shadow, thin, foliage, sf, sl);
-				if (fade > 0.02 && max3(direct.r, direct.g, direct.b) > 1e-4h) {
-					float3 l = sf.lightDirWorld.xyz;
-					float2 x = p.xz + l.xz / max(l.y, 0.25) * dy + sf.cameraFract.xz + fmod(sf.cameraBlock.xz, 2048.0);
-					float kk = min(dy, 5.0) * 0.25 * 3.2 * wph.tune.x * (1.0 + 0.8 * wph.state.z) * lod.x;
-					float c = shadeCausticFocus(x, sf.sunPath.w, kk);
-					radiance += float3(wetAlbedo) * float3(direct) * ((c * 0.8 - 1.0) * min(0.75 * fade * wph.tune.w, 1.0));
-				}
-			}
-		}
+		, wph
 #endif
-#ifdef SHADE_DYNLIGHT
-		radiance += float3(wetAlbedo) * sf.ambientBlock.xyz * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(materialN), thin, blockLight);
+#ifdef SHADE_WATER
+		, sceneCopy, depthCopy, wp, waterCoarse
 #endif
-#if defined(MCOPT_HDR) && defined(SHADE_PBR)
-		if (pbr) {
-			float3 materialLit = radiance;
-			radiance *= materialAo;
-			// G is linear F0 below 230, otherwise an albedo-coloured conductor.
-			bool metal = materialS.g * 255.0 > 229.5;
-			float3 F0 = metal ? float3(albedo) : float3(materialS.g);
-			if (sl.user3.z > 0.0 && max3(F0.r,F0.g,F0.b) > 0.0) {
-				float rough = max((1.0-materialS.r)*(1.0-materialS.r), 0.045);
-				float3 N = float3(materialN), V = normalize(p-shadeEye(sf.invViewProj));
-				float nv = saturate(dot(N,-V));
-				float3 F = F0 + (1.0-F0)*pow(1.0-nv,5.0);
-				float3 R = reflect(V,N);
-				float3 env = mix(shadeSkyLookup(float3(R.x,max(R.y,0.0),R.z),skyLut,skyLutSmplr,sf),
-				    sf.ambientSky.rgb, saturate(rough*1.6));
-				float open = float(shadeSkyCurve(skyLight));
-				// Nether/End have their own ambient environment, even with zero vanilla skylight.
-				if (dims) env = mix(sf.ambientGround.rgb,sf.ambientSky.rgb,saturate(R.y*0.5+0.5));
-				else env = mix(sf.ambientGround.rgb,env,smoothstep(-0.15,0.15,R.y))*open;
-				// Approximate the local reflected fill from the lighting already evaluated above (torches, held lights,
-				// cave minimum). A conductor in a lit cave must not become black just because it sees no sky.
-				env += materialLit / max(float3(wetAlbedo),0.02) * ((1.0-open)*0.5);
-				float3 direct = dims ? float3(0.0) : sf.sunColor.rgb * min(soPbrGgx(N,V,sf.lightDirWorld.xyz,max(rough*rough,0.0025)),60.0)
-				    * float(shadow)*float(smoothstep(0.3h,0.8h,skyLight))*(1.0-sl.wet.w);
-				radiance = radiance*(1.0-min(sl.user3.z,1.0)*(metal ? float3(1.0) : F0))
-				    + (env*F*materialAo+direct*F)*sl.user3.z;
-			}
-			float emission = materialS.a; // CPU decoded labPBR A=255 to zero before filtering
-			radiance += float3(albedo)*sf.ambientBlock.xyz*(emission*4.0*sl.user3.w);
-		}
-#endif
-		// Light sources until a material mask: at block light 14-15, bright warm texels (torch and lantern flames, glowstone, lava,
-		// shroomlights) glow instead of being lit like the rest of the block (stronger in the Nether).
-		half tl = shadeLumaH(half3(texel.rgb));
-		if (blockLight > 0.92h && texel.r > 0.9 && tl > 0.62h && texel.r > texel.b + 0.12)
-			radiance += float3(albedo) * float3(sf.ambientBlock.xyz) * ((netherLit ? 3.1 : 2.2) * sl.user0.w); // (1.1) user0.w: glowing blocks
-#ifdef SHADE_WEATHER
-#if defined(SHADE_COLOR_SHADOW) && defined(MCOPT_HDR)
-		// light that came through stained glass, ice or water takes their colour (the shadow pass's tint map, near cascade)
-		if (!dims && shadow > 0.0h && skyLight > 0.3h && sl.ssr.w > 0.5 && !shadeDev(sf, SHADE_DEV_WX_NO_TINT))
-			radiance += shadeShadowTintDelta(wetAlbedo, n, skyLight, shadow, shadeShadowTint(p, n, sf, sl, sr.shadowTint), thin, foliage, sf);
-#endif
-#if defined(SHADE_LIGHTNING) && !defined(SHADE_LEAN_DRY)
-		if (!dims) radiance += shadeWxFlash(wetAlbedo, n, skyLight, sl); // ShadeLook.flash is the End flash in the End
-#endif
-#ifndef SHADE_LEAN_DRY
-		{
-			ShadeWetLight wl;
-			wl.p = p;
-			wl.n = n;
-			wl.sky = skyLight;
-			wl.shadow = shadow;
-			wl.pixel = in.fragCoord.xy;
-#ifdef MCOPT_HDR
-			wl.prevExposure = sl.ssr.x > 0.5 ? sg.exposure.z : 0.0;
-			wl.histOk = sl.ssr.x > 0.5 && sl.ssr.y > 0.5;
-			radiance = shadeWetShade(radiance, wetAlbedo, wet, wl, sf, sl, skyLut, skyLutSmplr, sr.prevScene, sr.prevDepth);
-#else
-			wl.prevExposure = 0.0;
-			wl.histOk = false;
-			radiance = shadeWetShade(radiance, wetAlbedo, wet, wl, sf, sl, skyLut, skyLutSmplr, skyLut, skyLut);
-#endif
-		}
-		if (debug == 8) radiance = float3(float(wet.omega), float(wet.puddle), float(wet.snow)) * 0.25 / max(ex, 1e-3);
-#endif
-#endif
-#if defined(SHADE_WATER) && defined(SHADE_GLOSSY)
-		// the water module's glossy translucents (stained glass, ice, slime, honey): mirror reflection over the lit colour
-		if (!thin && !shadeDev(sf, SHADE_DEV_NO_WATER)) {
-#ifdef MCOPT_HDR
-#ifdef SHADE_SSR_PREV
-			float prevEx = sl.ssr.x > 0.5 ? sg.exposure.z : 0.0;
-#else
-			float prevEx = 0.0;
-#endif
-			float4 gl = shadeGlossy(radiance, alpha, p, float3(n), in.fragCoord.xy, skyLight, shadow, ex, prevEx, sf, &sl, &sr, wp, skyLut,
-			                        skyLutSmplr, sceneCopy, depthCopy, sr.prevScene, waterCoarse);
-#else
-			float4 gl = shadeGlossy(radiance, alpha, p, float3(n), in.fragCoord.xy, skyLight, shadow, ex, 0.0, sf, nullptr, nullptr, wp, skyLut,
-			                        skyLutSmplr, sceneCopy, depthCopy, sceneCopy, waterCoarse);
-#endif
-			radiance = gl.rgb;
-			alpha = gl.a;
-		}
-#endif
+		);
 	}
 	float fogValue = SHADE_FOG_VALUE;
 #undef SHADE_FOG_VALUE

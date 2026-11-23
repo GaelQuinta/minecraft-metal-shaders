@@ -627,7 +627,8 @@ static id<MTLFunction> ownStage(Own *w, int kind, int vertex, int shadeHdr, char
 	bool sway = vertex == 1 && ownSwayKind(w, kind);  // (mcopt-shade 1.2.7: F_SWAY)
 	NSString *key = [NSString stringWithFormat:@"%@ %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d%@%@", name, vertex ? vsMode | translucent << 2 | quads << 3 : frag, half, lean, nonidx,
 		rev, tight, posonly, occA, occB, (kind >> 29) & 1, oracle, fogvert, fogvertAll, fogvertT, qflat, group ? @" g" : @"", sway ? @" s" : @""];
-	if (shadeHdr && !vertex) key = [key stringByAppendingFormat:@" hdr%d k%d", shadeHdr, (shadeHdr & 2) ? w->shadeKey : 0];  // (mcopt-shade)
+	if (shadeHdr && !vertex) key = [key stringByAppendingFormat:@" hdr%d k%d%@", shadeHdr, (shadeHdr & 2) ? w->shadeKey : 0,
+		(shadeHdr & 2) && ((unsigned) kind >> 31) ? @" wf" : @""];  // (mcopt-shade; 1.2.9: wf the far water, kind bit 31)
 	id<MTLFunction> fn = w->functions[key];
 	if (fn) return fn;
 	NSError *e = nil;
@@ -685,6 +686,10 @@ static id<MTLFunction> ownStageMake(Own *w, id<MTLLibrary> lib, NSString *name, 
 		if (shadeHdr & 1) {
 			bool hdr = true;
 			[cv setConstantValue:&hdr type:MTLDataTypeBool atIndex:40];  // (mcopt-shade: terrain.metal SHADE_OWN_HDR)
+		}
+		if ((shadeHdr & 2) && ((unsigned) kind >> 31)) {
+			bool wfar = true;  // (mcopt-shade 1.2.9: kind bit 31, the far water draw: terrain_own.metal SO_WFAR)
+			[cv setConstantValue:&wfar type:MTLDataTypeBool atIndex:41];
 		}
 	}
 	return [lib newFunctionWithName:name constantValues:cv error:e];

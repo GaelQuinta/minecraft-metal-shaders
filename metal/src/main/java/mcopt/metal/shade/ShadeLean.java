@@ -37,6 +37,23 @@ public final class ShadeLean {
 	 */
 	public static final String DEV_DEFINES = devDefines(System.getProperty("mcopt.shade.leanDev", ""));
 	private static volatile int tag;
+	/** (1.2.9) This frame's water-off bits (ShadeMsl.WOFF_*, unshifted), 0 when none or off; see waterOff(). */
+	private static volatile int waterOff;
+
+	/**
+	 * (1.2.9, issue #68) The water settings the player turned off, as ShadeMsl.WOFF_* bits (unshifted): the translucent terrain's
+	 * variant then has that code compiled out. Only with the camera above water in the overworld (LEAN_ABOVE: the variants that
+	 * draw the surface from above); -Dmcopt.shade.leanWater=false (read every frame) turns it off, for in-session A/B.
+	 */
+	public static int waterOff() {
+		return ON ? waterOff : 0;
+	}
+
+	private static int waterOffNow() {
+		if ("false".equals(System.getProperty("mcopt.shade.leanWater"))) return 0;
+		if (!mcopt.metal.shade.water.ShadeWater.ON) return 0;
+		return mcopt.metal.shade.water.ShadeWater.offBits();
+	}
 
 	private static String devDefines(String v) {
 		StringBuilder b = new StringBuilder();
@@ -65,6 +82,7 @@ public final class ShadeLean {
 			t |= ShadeMsl.LEAN_ABOVE;
 			if (!DEV_DEFINES.isEmpty() && Boolean.getBoolean("mcopt.shade.leanDev.on")) t |= ShadeMsl.LEAN_DEV;
 		}
+		waterOff = (t & ShadeMsl.LEAN_ABOVE) != 0 ? waterOffNow() : 0;
 		// (FT2.11) the overworld's water without the moving water's look while there is no moving water near (WaterFlowScan), or the look
 		// is off (mcopt.shade.water.falls=0)
 		if (dimension == ShadeFrame.DIM_OVERWORLD && (!mcopt.metal.shade.water.WaterFlowScan.near()

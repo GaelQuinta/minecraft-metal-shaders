@@ -62,6 +62,53 @@
 #undef SHADE_SSRH_BUDGET
 #define SHADE_SSRH_BUDGET 8
 #endif
+// (1.2.9, issue #68: "fps tanks ... even with all shader settings toggled off") SHADE_WOFF_*: the water settings the player turned off
+// (ShadeLean.waterOff, ShadeMsl.WOFF_*; only in the variant for the camera above water), their code compiled out. The uniforms skipped
+// most of it already, but the water shader is register-bound: code a branch skips is still paid on every water pixel. Each one keeps
+// the image the setting's 0 drew: REFL (Reflections 0 %: the Fresnel is 0, nothing mirrored reaches the colour), SSR (Scene
+// reflections off), PANO (Side reflections off), SWELL (Swell 0: no swell anywhere), CAUSTICS, FOAM, GLINT (0 %), WSHADOW (Water
+// shadow blur 0: the plain shadow lookup), RTR (the reflections' reprojection at 0).
+#if defined(SHADE_LEAN_ABOVE) && defined(SHADE_OWN_TRANSLUCENT)
+#if defined(SHADE_WOFF_REFL) && defined(SHADE_WATER_RHIST)
+#undef SHADE_WOFF_REFL // (the reflection history keeps the mirrored term itself: dev only, kept whole)
+#endif
+// FAST (Water quality: Fast, ShadeWater.fast; with SSR, PANO, RTR, SWELL, FOAM and WSHADOW): also no glitter, no ripple-aware mirror
+// normal, and the sky reflection without the on-screen sky (the atmosphere and the clouds' dome only); the fine ripples (one baked
+// sample) and the caustics stay: they are what makes it our water
+#ifdef SHADE_WOFF_FAST
+#undef SHADE_WATER_GLITTER
+#undef SHADE_WATER_MIRROR_AA
+#endif
+#if defined(SHADE_WOFF_REFL) || defined(SHADE_WOFF_SSR)
+#undef SHADE_SSR
+#undef SHADE_SSRH_DEBUG
+#endif
+#if defined(SHADE_WOFF_REFL) || defined(SHADE_WOFF_SSR) || defined(SHADE_WOFF_PANO)
+#undef SHADE_WATER_PANO
+#endif
+#if defined(SHADE_WOFF_REFL) || defined(SHADE_WOFF_RTR)
+#undef SHADE_WATER_RTR
+#endif
+#ifdef SHADE_WOFF_SWELL
+#undef SHADE_WATER_SWELL
+#endif
+#ifdef SHADE_WOFF_CAUSTICS
+#undef SHADE_CAUSTICS
+#endif
+// (foam and glint: their settings scale them through ShadeLook, which the water reads only with the HDR world and last frame's image)
+#if defined(SHADE_WOFF_FOAM) && defined(MCOPT_HDR) && defined(SHADE_SSR_PREV)
+#undef SHADE_FOAM
+#endif
+#if !(defined(SHADE_WOFF_GLINT) && defined(MCOPT_HDR) && defined(SHADE_SSR_PREV))
+#undef SHADE_WOFF_GLINT
+#endif
+#else
+#undef SHADE_WOFF_REFL
+#undef SHADE_WOFF_SSR
+#undef SHADE_WOFF_GLINT
+#undef SHADE_WOFF_WSHADOW
+#undef SHADE_WOFF_FAST
+#endif
 // (1.2.7 candidate 8) SHADE_COLD: a function called, not inlined. Priced in one session over a lake (notes/2026-11-09 price-11 /
 // price-12): it paid for the mirrored hit's colour (about -0.3 ms) and is what keeps the panorama's march out of every water pixel;
 // for the hits' haze, the caustics, the shore foam and the rendered sky it cost 0.1 ms each (they stay inline), and for the exact
@@ -116,7 +163,68 @@ struct ShadeWaterParams {
 	               // 0 = none), y (candidate 8, SHADE_SSR_HIER) the mirrored image's footprint filter (mcopt.shade.water.reflFilter, 1; 0 = one
 	               // tap per pixel), z (candidate 8, SHADE_WATER_PANO) the panorama's share off screen (mcopt.shade.water.reflPano, 1; 0 = none),
 	               // w (1.2.8) the gain of the caustics' bright lines seen from above (mcopt.shade.water.causticGain; 1 = 1.2.7's)
+	float4 far;    // (1.2.9, water phase 2) x the far water's distance D (blocks, mcopt.shade.water.far; 0 = off), y its fade band (blocks)
 };
+
+// (1.2.9, water phase 2: the far water) Own's far draw (OwnTerrain: the translucent list's farthest run of sections, all wholly
+// beyond wp.far.x) specializes the same shade_own_fs with function constant 41 (mcown.m, kind bit 31): what SHADE_WFAR_* cut is
+// compiled out of that pipeline (not a branch: the near water's registers don't pay for it, nor the far's for the near's). The near
+// draw fades those terms out over the band before D (shadeWaterFarT), so the two meet without a seam. Cuts (ShadeWater.prelude,
+// mcopt.shade.water.farCut; SHADE_WFAR_KEEP_* in a leanDev variant keeps one, for in-session prices): SSR the scene reflections,
+// SKY the rendered sky in the reflection (the atmosphere and the clouds' dome stay), SHADOW the soft shadow (one tap of its
+// cascade), RTR the reflections' reprojection, DETAIL the fine ripples (0 beyond SHADE_WATER_DETAIL_FAR anyway), CAUS the caustics.
+constant bool SO_WFAR_SET [[function_constant(41)]];
+constant bool SO_WFAR = is_function_constant_defined(SO_WFAR_SET) && SO_WFAR_SET;
+#if defined(SHADE_WFAR_SSR) && !defined(SHADE_WFAR_KEEP_SSR)
+#define SHADE_FAR_NOSSR SO_WFAR
+#else
+#define SHADE_FAR_NOSSR false
+#endif
+#if defined(SHADE_WFAR_SKY) && !defined(SHADE_WFAR_KEEP_SKY)
+#define SHADE_FAR_NOSKY SO_WFAR
+#else
+#define SHADE_FAR_NOSKY false
+#endif
+#if defined(SHADE_WFAR_SHADOW) && !defined(SHADE_WFAR_KEEP_SHADOW)
+#define SHADE_FAR_NOSHADOW SO_WFAR
+#else
+#define SHADE_FAR_NOSHADOW false
+#endif
+#if defined(SHADE_WFAR_RTR) && !defined(SHADE_WFAR_KEEP_RTR)
+#define SHADE_FAR_NORTR SO_WFAR
+#else
+#define SHADE_FAR_NORTR false
+#endif
+#if defined(SHADE_WFAR_DETAIL) && !defined(SHADE_WFAR_KEEP_DETAIL)
+#define SHADE_FAR_NODETAIL SO_WFAR
+#else
+#define SHADE_FAR_NODETAIL false
+#endif
+#if defined(SHADE_WFAR_CAUS) && !defined(SHADE_WFAR_KEEP_CAUS)
+#define SHADE_FAR_NOCAUS SO_WFAR
+#else
+#define SHADE_FAR_NOCAUS false
+#endif
+// The near draw's fade toward the far look at camera-relative distance dist: 0 nearer than D - band, 1 from D on (0 when off)
+static inline float shadeWaterFarT(constant ShadeWaterParams &wp, float dist) {
+	return wp.far.x > 0.0 ? smoothstep(wp.far.x - wp.far.y, wp.far.x, dist) : 0.0;
+}
+// The far water's shadow (SHADE_FAR_NOSHADOW): shadeShadowSoft's disc at radius 0, one tap (the near draw's soft radius fades to 0
+// toward D, so the two meet)
+static half shadeWaterShadowFar(depth2d_array<float> map, sampler cmp, constant ShadeFrame &f, float3 p, half3 n) {
+	if (f.flags.z == 0 || shadeDev(f, SHADE_DEV_NO_SHADOW)) return half(1.0);
+	float3 L = f.lightDirWorld.xyz;
+	float nl = dot(float3(n), L);
+	if (nl <= 0.0) return half(1.0);
+	float tanT = clamp(sqrt(max(1.0 - nl * nl, 0.0)) / max(nl, 0.02), 0.0, 12.0);
+	float3 dir = float3(n) * 0.75 + L * (0.5 + 0.75 * tanT);
+	float4 c0 = f.shadowViewProj[1] * float4(p + dir * f.cascadeSplits.w, 1.0);
+	float m = max(abs(c0.x), abs(c0.y));
+	if (c0.z <= 0.0 || c0.z >= 1.0) m = 2.0;
+	if (m >= 1.0) return shadeShadow(map, cmp, f, p, n, false);
+	float s = map.sample_compare(cmp, shadeShadowUV(c0.xyz), 1u, c0.z);
+	return half(mix(s, 1.0, smoothstep(0.85, 1.0, m)));
+}
 
 // (2026-11-06) the reflection history's textures (SHADE_WATER_RHIST; mcwater.m binds them, ping-pong): texture(29) last frame's,
 // texture(30) this frame's, RGBA16F at the world target's size: rgb the mirrored image (radiance before exposure, before the
@@ -1079,7 +1187,7 @@ static inline float4 shadeSsrhPast(float4 hit, float3 so, float3 dso, bool scree
 // and no pixel has to re-aim a shared hit. ownOk: this pixel has a ray. Returns its hit as shadeSsrTrace does (w 11: a crossing
 // behind something standing in).
 static float4 shadeSsrTraceQuadOwn(float3 s0, float3 ds, float3 so, float3 dso, bool ownOk, bool screenEnd, float yFloor, int c, constant ShadeFrame &f,
-                                   depth2d<float> depth, texture2d<float> pyr) {
+                                   depth2d<float> depth, texture2d<float> pyr, bool devL0 = false) {
 	float2 tex = float2(depth.get_width(), depth.get_height());
 	float2 size = shadeWaterRenderSize(f, tex);
 	float A = f.proj[2][2], B = f.proj[3][2];
@@ -1104,6 +1212,7 @@ static float4 shadeSsrTraceQuadOwn(float3 s0, float3 ds, float3 so, float3 dso, 
 #ifdef SHADE_PRICE_NOL1
 	return float4(0.0, 0.0, 0.0, -1.0);
 #endif
+	if (devL0) return float4(0.0, 0.0, 0.0, -1.0); // (1.2.9 pricing, devSsr 2)
 	bool front = true;   // this pixel's ray is in front of the scene where the walk stands
 	bool done = !ownOk;  // this pixel has its answer
 	bool all = false;    // every pixel of the quad has
@@ -1333,7 +1442,7 @@ static inline float3 shadeWaterSkySeen(float3 sky, float2 uv, float wgt, float3 
 }
 
 static float3 shadeWaterSkyRefl(float3 r, float3 rs, float3 o, float prevExposure, constant ShadeFrame &f, constant ShadeLook *L, constant ShadeResources *R,
-                                texture2d<half> lut, sampler lutS, depth2d<float> depth, texture2d<half> prev) {
+                                texture2d<half> lut, sampler lutS, depth2d<float> depth, texture2d<half> prev, float seenK = 1.0) {
 	float3 sky = shadeSkyLookup(r, lut, lutS, f);
 	// M3: the volumetric clouds in that direction from their reflection dome (off-screen directions; on screen the rendered
 	// sky below holds them, already with their aerial perspective)
@@ -1370,6 +1479,7 @@ static float3 shadeWaterSkyRefl(float3 r, float3 rs, float3 o, float prevExposur
 			float2 edge = saturate(min(uv, 1.0 - uv) * 12.0);
 			float wgt = edge.x * edge.y;
 #endif
+			wgt *= seenK; // (1.2.9 far water's fade; 1 otherwise)
 			if (wgt > 0.0) sky = shadeWaterSkySeen(sky, uv, wgt, rs, o, prevExposure, volumetricClouds, f, L, lut, lutS, depth, prev);
 		}
 	}
@@ -1576,7 +1686,7 @@ static inline float shadeSsrHitT(float2 uv, float3 p0, constant ShadeFrame &f, d
 // footprint (candidate 8, the exact march): the scale of the footprint the hit's colour is read over (wp.mirror.y; 0 = one tap)
 static float4 shadeSsrT(float3 p0, float3 r, float2 pixel, float maxDist, float exposure, float prevExposure, constant ShadeFrame &f,
                        constant ShadeLook *L, texture2d<half> scene, depth2d<float> depth, texture2d<half> prev, texture2d<float> hz,
-                       thread float &tHit, float footprint = 1.0, float panoShare = 0.0, constant ShadeResources *R = nullptr) {
+                       thread float &tHit, float footprint = 1.0, float panoShare = 0.0, constant ShadeResources *R = nullptr, int dev = 0) {
 	tHit = -1.0;
 	float2 tex = float2(depth.get_width(), depth.get_height());
 	float2 size = shadeWaterRenderSize(f, tex);
@@ -1606,7 +1716,10 @@ static float4 shadeSsrT(float3 p0, float3 r, float2 pixel, float maxDist, float 
 	bool endOwn = false;
 	bool ownOk = shadeSsrSegment(p0Own, rOwn, maxDist, f, so, dso, endOwn);
 #ifndef SHADE_PRICE_NOMARCH // (pricing, -Dmcopt.shade.leanDev=SHADE_PRICE_...: in-session A/B of the exact march's parts)
-	if (seg) hit = shadeSsrTraceQuadOwn(s0, ds, so, dso, ownOk, endOwn, yFloor, int(q.x & 1u) + 2 * int(q.y & 1u), f, depth, hz);
+	// (1.2.9 pricing, ShadeWaterParams.far.z = -Dmcopt.shade.water.devSsr, live: 1 no march, 2 only the 128-pixel level, 3 no resolve
+	// or panorama after the march, 4 no panorama)
+	if (dev == 1) seg = false;
+	if (seg) hit = shadeSsrTraceQuadOwn(s0, ds, so, dso, ownOk, endOwn, yFloor, int(q.x & 1u) + 2 * int(q.y & 1u), f, depth, hz, dev == 2);
 #endif
 	float4 raw = hit; // (as the march returned it: shadeSsrResolve's shadeSsrhPast)
 	// the hit is a point of this pixel's ray: its screen place, its world point and its distance without reading the depth copy back
@@ -1671,6 +1784,8 @@ static float4 shadeSsrT(float3 p0, float3 r, float2 pixel, float maxDist, float 
 		want.x *= min(panoShare, 1.0);
 	}
 #endif
+	if (dev == 4) want = 0.0;
+	if (dev == 3) return 0.0;
 	if (hit.w < 0.0 && want.x <= 0.0) return 0.0;
 	float2 fx = 0.0, fy = 0.0;
 	float span = 0.0;
@@ -2218,6 +2333,9 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	float3 v = pe / max(dist, 1e-4);
 	bool top = w.nFace.y > 0.5;
 	float height = 0.0, pattern = 0.0;
+#ifdef SHADE_WFAR_ANY
+	float farT = shadeWaterFarT(wp, dist); // (1.2.9 far water: the near draw's fade toward the far draw's look)
+#endif
 	float3 n = w.nFace;
 #ifdef SHADE_WATER_SWELL
 	float cosV0 = 0.0; // (2026-11-02) the cosine without the swell, where there is one (wp.swell.w)
@@ -2282,10 +2400,19 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	float4 ssrHit = float4(0.0);
 	float ssrW = 0.0;
 	float fq = shadeQuadMax(shadeWaterFresnel(cosV));
-	if (fq > 0.022 && wp.tune.y > 0.0 && !SHADE_WDEV_IS(f, SHADE_WDEV_NO_SSR)) { // (1.1) tune.y 0: the player turned screen reflections off
+#ifdef SHADE_WFAR_SSR
+	// (1.2.9 far water) the near draw's scene reflections fade out toward D; quads wholly past it don't march
+	float farSsr = 1.0 - farT, farQ = shadeQuadMax(farSsr);
+	if (!SHADE_FAR_NOSSR && farQ > 0.0 && fq > 0.022 && wp.tune.y > 0.0 && !SHADE_WDEV_IS(f, SHADE_WDEV_NO_SSR)) {
 		ssrHit = shadeSsrT(w.p + n * 0.02, rr, w.pixel, wp.tune.y, w.exposure, w.prevExposure, f, w.look, scene, depth, prev, hz, tHit, wp.mirror.y, top ? wp.mirror.z : 0.0, w.res);
+		ssrW = ssrHit.a * smoothstep(0.022, 0.03, fq) * farSsr;
+	}
+#else
+	if (fq > 0.022 && wp.tune.y > 0.0 && !SHADE_WDEV_IS(f, SHADE_WDEV_NO_SSR)) { // (1.1) tune.y 0: the player turned screen reflections off
+		ssrHit = shadeSsrT(w.p + n * 0.02, rr, w.pixel, wp.tune.y, w.exposure, w.prevExposure, f, w.look, scene, depth, prev, hz, tHit, wp.mirror.y, top ? wp.mirror.z : 0.0, w.res, int(wp.far.z));
 		ssrW = ssrHit.a * smoothstep(0.022, 0.03, fq);
 	}
+#endif
 #endif
 
 	// --- what is behind the surface: refraction, absorption, in-scattering, caustics
@@ -2329,7 +2456,7 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	float3 bottom = shadeWaterSceneRadiance(scene.sample(shadeWaterLinear, uvR * size / tex).rgb, w.exposure);
 #endif
 #if defined(SHADE_CAUSTICS) && !defined(SHADE_PRICE_NOCAUSTICS)
-	if (top && wp.tune.w > 0.0 && dy > 0.05 && dy < 18.0) {
+	if (!SHADE_FAR_NOCAUS && top && wp.tune.w > 0.0 && dy > 0.05 && dy < 18.0) {
 		// (1.2.8) the sun's share of the bottom's light relative to full sun, s x 4 / (3 s + 1) for visibility s (the direct ~3x the sky's
 		// light): the caustics follow the sun's light as they do seen from under water (terrain_own.metal, linear in it, against the
 		// sky's light there). 1.2.7's smoothstep(0.1, 0.8, s) dropped them to 5 % under a cloud's shadow (s ~0.2; under water ~40 %):
@@ -2402,8 +2529,15 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	// the LUT sky follows a calmer direction too: the rippled one smeared the low sun's aureole over the near water as a
 	// milky veil (the glint below is what carries the sun's sparkle)
 	float3 rl = normalize(mix(rs, rr, 0.6));
-#ifdef SHADE_PRICE_NOSKY
+#ifdef SHADE_WOFF_REFL
+	float3 refl = 0.0; // (1.2.9: Reflections 0 %, the Fresnel below is 0)
+#elif defined(SHADE_WOFF_FAST)
+	float3 refl = shadeWaterSkyRefl(rl, rr, w.p, 0.0, f, w.look, w.res, lut, lutS, depth, prev) * open; // (1.2.9 Fast: no on-screen sky)
+#elif defined(SHADE_PRICE_NOSKY)
 	float3 refl = shadeSkyLookup(rl, lut, lutS, f) * open;
+#elif defined(SHADE_WFAR_SKY)
+	// (1.2.9 far water) the rendered sky's share fades out toward D in the near draw; the far draw has none (atmosphere and dome only)
+	float3 refl = shadeWaterSkyRefl(rl, rr, w.p, SHADE_FAR_NOSKY ? 0.0 : w.prevExposure, f, w.look, w.res, lut, lutS, depth, prev, 1.0 - farT) * open;
 #else
 	float3 refl = shadeWaterSkyRefl(rl, rr, w.p, w.prevExposure, f, w.look, w.res, lut, lutS, depth, prev) * open;
 #endif
@@ -2412,7 +2546,11 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	// 2026-10-10: "debería de verse así con la textura realista siempre, aunque solo sea una fila"). Its surroundings instead: the
 	// clear sky's shape (bright toward the horizon, dimmer above, as walls lit around and a darker ceiling) in the light and colour
 	// of the place (the surface's own light, torches), as lit walls of albedo ~0.5. The same ripples then show as on a lake
+#ifndef SHADE_WOFF_REFL
 	if (w.cave.z > 0.0h) {
+#else
+	if (false) {
+#endif
 		float sk = shadeLuma(shadeSkyLookup(float3(rl.x, max(rl.y, 0.0), rl.z), lut, lutS, f));
 		float3 env = w.lit * (0.5 * sk / max(shadeLuma(f.ambientSky.rgb), 1e-6));
 		refl = mix(refl, env, float(w.cave.z));
@@ -2499,12 +2637,12 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 #ifdef SHADE_WATER_MIRROR_AA
 	alpha = sqrt(alpha * alpha + rippleVar); // (2026-11-06) and so do the ripples a pixel can't resolve
 #endif
-#ifdef SHADE_PRICE_NOGLINT
-	float spec = 0.0;
+#if defined(SHADE_PRICE_NOGLINT) || defined(SHADE_WOFF_GLINT) || defined(SHADE_WOFF_REFL)
+	float spec = 0.0; // (1.2.9 WOFF: the glint's or the reflections' setting at 0 multiplies it by 0 below)
 #else
 	float spec = shadeGgxSpec(n, v, f.lightDirWorld.xyz, alpha);
 #endif
-#if defined(SHADE_WATER_GLITTER) && defined(SHADE_WATER_DETAIL) && !defined(SHADE_PRICE_NOGLINT)
+#if defined(SHADE_WATER_GLITTER) && defined(SHADE_WATER_DETAIL) && !defined(SHADE_PRICE_NOGLINT) && !defined(SHADE_WOFF_GLINT) && !defined(SHADE_WOFF_REFL)
 	// (2026-11-02; STUDY.md "what we could do: water" item 3, after Complementary's sparkle term: technique only, our own code;
 	// mcopt.shade.water.glitter, 0 = none) glitter: the glint times a facet contrast ((n_r.l) / (n.l))^4 from a rougher normal n_r:
 	// facets tilted toward the sun light up, those tilted away go dark, so near the camera the road breaks into sparkles. n_r is n
@@ -2553,10 +2691,14 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	// sky's at infinity: a direction), kept inside this 2x2 quad's range of colours (no ghost of anything the reflection didn't
 	// show), and blended in by the reflection's share (fres) x wp.swell3.w (mcopt.shade.water.reflTemporal; 0 = candidate 6).
 	// Only where last frame saw water at about the same distance there (its depth copy, ShadeResources.prevDepth).
-	{
+	if (!SHADE_FAR_NORTR) {
 		float3 qlo = float3(shadeQuadMin(color.r), shadeQuadMin(color.g), shadeQuadMin(color.b));
 		float3 qhi = float3(shadeQuadMax(color.r), shadeQuadMax(color.g), shadeQuadMax(color.b));
+#ifdef SHADE_WFAR_RTR
+		float kT = wp.swell3.w * fres * (1.0 - farT); // (1.2.9 far water: faded out toward D)
+#else
 		float kT = wp.swell3.w * fres;
+#endif
 		if (top && kT > 0.0 && w.prevExposure > 0.0 && w.look != nullptr && w.res != nullptr && w.look->ssr.y > 0.5) {
 			bool far = !(hitWeight > 0.5 && tHit > 0.0);
 			float4 pc = w.look->prevViewProjNoJitter * (far ? float4(v, 0.0) : float4(w.p + v * tHit, 1.0));

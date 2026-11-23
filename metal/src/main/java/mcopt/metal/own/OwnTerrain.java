@@ -2838,6 +2838,11 @@ public final class OwnTerrain {
 			if (fa != 0) tRdStart = MemoryUtil.memGetFloat(fa + fog.offset() + 24);
 		}
 		if (OwnFrag.FOG_LOG) this.tFogStat(camera, fog, order, orderCount, visible);
+		// mcopt-shade (1.2.9, water phase 2; mcopt.shade.water.far = D blocks, 0 = off): the list's farthest run of sections wholly beyond
+		// D (the list is far to near) is drawn first with the far water stage (kind bit 31: ShadeTerrain.K_WFAR), the rest as before
+		float wFar = !this.tHalfNow && !TFLAT && mcopt.metal.shade.terrain.ShadeTerrain.ON ? mcopt.metal.shade.terrain.ShadeTerrain.waterFar() : 0f;
+		boolean farOpen = wFar > 0f;
+		int farN = 0;
 		for (int i = order != null ? orderCount - 1 : visible.size() - 1; i >= 0; i--) {
 			int slot = order != null ? order[orderCount - 1 - i] : visible.get(i).index;
 			OwnMesh m = slot < this.slotCap ? this.slotMesh[slot] : null;
@@ -2868,6 +2873,13 @@ public final class OwnTerrain {
 			boolean filtered = TCULL && m.tUse;
 			int units = filtered ? m.fRecCount : m.tRecCount, first = filtered ? m.fRec : m.tRecStart;
 			if (this.tSortedNow) first = filtered ? (m.fsRec >= 0 ? m.fsRec : first) : (m.sRecStart >= 0 ? m.sRecStart : first);
+			if (farOpen && units > 0) {
+				long sa = this.master + (long) slot * SECTION_BYTES;
+				double ox = MemoryUtil.memGetInt(sa) - cx, oy = MemoryUtil.memGetInt(sa + 4) - cy, oz = MemoryUtil.memGetInt(sa + 8) - cz;
+				double dx = Math.max(0, Math.max(ox, -ox - 16)), dy = Math.max(0, Math.max(oy, -oy - 16)), dz = Math.max(0, Math.max(oz, -oz - 16));
+				if (dx * dx + dy * dy + dz * dz > (double) wFar * wFar) farN = at + units;
+				else farOpen = false;
+			}
 			if (this.tHalfNow && units > 0) {
 				// lean: faded in and the section box wholly inside the render-distance fog start (frag_cull's rule, on the CPU); the list's
 				// nearest run of such sections is drawn lean, everything before it rich (one split: the order is kept)
@@ -2902,9 +2914,9 @@ public final class OwnTerrain {
 		boolean leanPart = this.tHalfNow && !TFLAT && tSplit < at;
 		int richN = leanPart ? tSplit : at;
 		MemoryUtil.memPutInt(args, TFLAT ? at * 6 : RUN * 6);
-		MemoryUtil.memPutInt(args + 4, TFLAT ? (at > 0 ? 1 : 0) : richN);
+		MemoryUtil.memPutInt(args + 4, TFLAT ? (at > 0 ? 1 : 0) : wFar > 0f ? at - farN : richN);
 		MemoryUtil.memPutInt(args + 32, RUN * 6);
-		MemoryUtil.memPutInt(args + 36, at - richN);
+		MemoryUtil.memPutInt(args + 36, wFar > 0f ? farN : at - richN);
 		MemoryUtil.memPutInt(args + 40, 0);
 		MemoryUtil.memPutInt(args + 44, 0);
 		MemoryUtil.memPutInt(args + 48, 0);
@@ -2945,6 +2957,15 @@ public final class OwnTerrain {
 			// (tprobe 8: the translucent draw with the frag variants' half colour and lean varyings: K_HALF 1 << 18, K_LEAN 1 << 19; thalf:
 			// half on both parts, lean on the second)
 			int half = TPROBE == 8 ? 1 << 18 | 1 << 19 : this.tHalfNow ? 1 << 18 : 0;
+			if (wFar > 0f) {
+				// (1.2.9 far water: the far run first, in its own stage; drawn with no instances when there is none, so its pipeline is
+				// made before the first frame that has one, as thalf's lean part)
+				OwnNative.draw(this.own, this.enc, 3 | half | mcopt.metal.shade.terrain.ShadeTerrain.K_WFAR | OwnFrag.tKind(), d, DRAW_FRAME_BYTES, this.arenaBuffer, this.tables[k],
+					this.recBuffer, this.tLists[k], this.tArgs, k * 64L + 32, u, MetalBridge.viewHandle(atlas), MetalBridge.samplerHandle(sampler), MetalBridge.viewHandle(light),
+					MetalBridge.samplerHandle(lightSampler), 0);
+				MemoryUtil.memPutInt(d, farN);  // (DrawFrame.listBase: the near part's first entry)
+				this.tsLeanUnits += farN;
+			}
 			if (richN > 0 || !leanPart)
 				OwnNative.draw(this.own, this.enc, 3 | half | OwnFrag.tKind(), d, DRAW_FRAME_BYTES, this.arenaBuffer, this.tables[k], this.recBuffer, this.tLists[k], this.tArgs, k * 64L, u,
 					MetalBridge.viewHandle(atlas), MetalBridge.samplerHandle(sampler), MetalBridge.viewHandle(light), MetalBridge.samplerHandle(lightSampler),

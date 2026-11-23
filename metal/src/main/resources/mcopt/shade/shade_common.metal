@@ -629,6 +629,12 @@ static half shadeShadow(depth2d_array<float> map, sampler cmp, constant ShadeFra
 // wide (its compare depth raised by d / contact blocks). Without this a bank more than a block above the water put the disc's
 // inland taps under it (inside the bank: shadowed whatever the sun) and drew a soft dark band along every such shore, on the
 // side facing the sun too; long shadows of far islands keep their full softness.
+#if defined(SHADE_WSOFT_T2) && !defined(SHADE_WSOFT_TAPS)
+#define SHADE_WSOFT_TAPS 2
+#endif
+#ifndef SHADE_WSOFT_TAPS
+#define SHADE_WSOFT_TAPS 4
+#endif
 static inline float shadeShadowCascadeDisc(depth2d_array<float> map, sampler cmp, uint layer, float4x4 vp, float3 p, float3 offset, float r,
                                            float turn, thread float &m, float contact = 0.0, float3 L = float3(0.0)) {
 	float4 c0 = vp * float4(p + offset, 1.0);
@@ -646,13 +652,14 @@ static inline float shadeShadowCascadeDisc(depth2d_array<float> map, sampler cmp
 		if (db > 0.02) r = clamp(db * contact, 0.1, r);
 	}
 	float s = 0.0;
-	for (int i = 0; i < 4; i++) {
-		float a = (float(i) + turn) * 2.39996323, d = r * sqrt((float(i) + 0.5) * 0.25);
+	// (1.2.9 water phase 2, SHADE_WSOFT_TAPS: fewer taps, the per-pixel, per-frame turn spreads them for the TAA; 4 = as before)
+	for (int i = 0; i < SHADE_WSOFT_TAPS; i++) {
+		float a = (float(i) + turn) * 2.39996323, d = r * sqrt((float(i) + 0.5) * (1.0 / SHADE_WSOFT_TAPS));
 		float3 c = c0.xyz + ax * (cos(a) * d) + az * (sin(a) * d);
 		float ref = contact > 0.0 ? c.z + zPerBlock * (d / contact) : c.z;
 		s += map.sample_compare(cmp, shadeShadowUV(c), layer, ref);
 	}
-	return s * 0.25;
+	return s * (1.0 / SHADE_WSOFT_TAPS);
 }
 
 // M3.4 (water): shadeShadow for an up-facing water surface with a soft edge of radius r blocks. Distant blocky casters (an
