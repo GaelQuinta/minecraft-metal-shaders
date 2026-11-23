@@ -468,7 +468,7 @@ public final class ShadeLook {
 		put4(b, USER4, Live.b("mcopt.shade.skyHaze", true) ? 1f : 0f, Live.b("mcopt.shade.sun", true) ? 0f : Live.f("mcopt.shade.sunTexGain", 40f, 1f, 400f),
 			Math.round(Live.f("mcopt.shade.clouds.fogBlend", 2f, 0f, 2f)), Live.f("mcopt.shade.mistSun", 1f, 0.25f, 4f));
 		// (1.2.9 look pass, Look2) a: x the foliage sheen, y the side faces' extra darkening, z the sheen's share of the plant's hue (shade_m2.metal shadeLit2), w reserved; b: rgb the sky's gain (sky_lut.metal), w reserved
-		put4(b, LOOK2A, this.l2Sheen, this.l2Face, Look2.v("sheenHue", 0.5f, 0f, 1f), 0f);
+		put4(b, LOOK2A, this.l2Sheen, this.l2Face, Look2.v("sheenHue", 0.75f, 0f, 1f), 0f);
 		put4(b, LOOK2B, this.l2Sky[0], this.l2Sky[1], this.l2Sky[2], 0f);
 		mcopt.metal.shade.weather.ShadeWeather.pack(b); // M3 weather: wet, wind, flash
 	}
@@ -534,8 +534,9 @@ public final class ShadeLook {
 			// by day the meter follows a little less of the scene: a forest floor or a shaded valley stays darker than open ground
 			// (forest interior L* 39 -> ~30; Photon 15, no auto exposure at all)
 			this.l2Lambda *= 1f - (1f - Look2.v("dayMeter", 0.5f, 0f, 1f)) * day * kx;
-			// with the meter following less, open daylight scenes would sit below 1.2.8's brightness: the reference up a little by day
-			this.l2Ev += Look2.v("dayEv", 0.1f, -1f, 1f) * day * (1f - Math.min(w, 1f)) * kx;
+			// with the meter following less and the fill weaker, open noon scenes would sit below 1.2.8's brightness: the reference up a little
+			// (high sun only: at 25-40 degrees the frames with the lake and the bright sky were already above 1.2.8's)
+			this.l2Ev += Look2.v("dayEv", 0.3f, -1f, 1f) * smooth(25f, 50f, e) * kx;
 		}
 		// 8. rain: a blue-teal overcast instead of grey-lavender (half the rain's desaturation back, cooler)
 		float kr = Look2.k("rain") * rain * this.outdoor;
@@ -572,7 +573,7 @@ public final class ShadeLook {
 			float mu = fl > 0f ? (fx * ld[0] + fy * ld[1] + fz * ld[2]) / fl : 0f;
 			float g = Look2.v("sheenG", 0.5f, 0f, 0.9f), x = 1f + g * g - 2f * g * mu;
 			float hg = 0.0795775f * (1f - g * g) / (float) Math.pow(Math.max(x, 1e-4f), 1.5);
-			this.l2Sheen = Look2.v("sheenGain", 0.8f, 0f, 4f) * kh * hg * linearStep(-0.8f, -0.2f, mu) * (1f - rain) * smooth(-2f, 4f, e);
+			this.l2Sheen = Look2.v("sheenGain", 0.55f, 0f, 4f) * kh * hg * linearStep(-0.8f, -0.2f, mu) * (1f - rain) * smooth(-2f, 4f, e);
 		}
 	}
 
