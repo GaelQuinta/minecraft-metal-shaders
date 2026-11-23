@@ -475,6 +475,19 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #endif
 	} else
 #endif
+#if defined(SHADE_OWN_TRANSLUCENT) && (defined(SHADE_PRICE_NONW) || defined(SHADE_PRICE_NOM1))
+	// (1.2.9 pricing, -Dmcopt.shade.leanDev=SHADE_PRICE_NONW / _NOM1: what the translucent stage's code for glass and ice (NONW) or
+	// M1's water stand-in (NOM1) costs the water's pixels; the image of those blocks is wrong in that variant)
+	if (true) {
+		radiance = float3(albedo) * 0.5;
+#ifndef SHADE_PRICE_NOM1
+		if (water) radiance = shadeWater(float3(1.0), tint, shadeLumaH(half3(texel.rgb)), alpha, p, skyLight, shadow, skyLut, skyLutSmplr, sf).rgb;
+#endif
+#ifndef SHADE_PRICE_NONW
+		if (!water) radiance = shadeLit2(albedo, materialN, skyLight, blockLight, shadow, thin, foliage, sf, sl);
+#endif
+	} else
+#endif
 	if (water) {
 #ifdef SHADE_OWN_TRANSLUCENT
 		float3 lit = shadeLit2(half3(1.0h), n, skyLight, blockLight, shadow, false, false, sf, sl);
