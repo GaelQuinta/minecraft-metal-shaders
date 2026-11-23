@@ -506,7 +506,7 @@ public final class ShadeLook {
 		float kw = Look2.k("noonWarm");
 		if (sun && kw > 0f) gradeLight(f.sky.light, 1f + Look2.v("noonGamma", 0.25f, 0f, 0.8f) * kw * day * (1f - rain), 1f);
 		// (and a warmer daylight white balance: Photon's noon grass is yellower, a* -20 b* +43 against our -24 / +35, and its zenith warmer)
-		if (kw > 0f) this.whiteBalance += Look2.v("dayWarm", 14f, -30f, 40f) * kw * day * (1f - rain) * this.outdoor;
+		if (kw > 0f) this.whiteBalance += Look2.v("dayWarm", 22f, -30f, 50f) * kw * day * (1f - rain) * this.outdoor;
 		// 2. deeper shade: the sky's fill and the bounce weaker by day (sun / shade luminance on grass 1.9-2.2 -> ~2.8)
 		float ks = Look2.k("shade") * day;
 		if (ks > 0f) {
@@ -529,7 +529,9 @@ public final class ShadeLook {
 			this.contrast *= 1f + Look2.v("contrast", 0.03f, -0.2f, 0.3f) * kx * day * this.outdoor;
 			// by day the meter follows a little less of the scene: a forest floor or a shaded valley stays darker than open ground
 			// (forest interior L* 39 -> ~30; Photon 15, no auto exposure at all)
-			this.l2Lambda *= 1f - (1f - Look2.v("dayMeter", 0.7f, 0f, 1f)) * day * kx;
+			this.l2Lambda *= 1f - (1f - Look2.v("dayMeter", 0.5f, 0f, 1f)) * day * kx;
+			// with the meter following less, open daylight scenes would sit below 1.2.8's brightness: the reference up a little by day
+			this.l2Ev += Look2.v("dayEv", 0.3f, -1f, 1f) * day * (1f - Math.min(w, 1f)) * kx;
 		}
 		// 8. rain: a blue-teal overcast instead of grey-lavender (half the rain's desaturation back, cooler)
 		float kr = Look2.k("rain") * rain * this.outdoor;
