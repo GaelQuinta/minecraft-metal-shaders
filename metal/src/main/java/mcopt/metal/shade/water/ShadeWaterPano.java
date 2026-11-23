@@ -48,7 +48,7 @@ public final class ShadeWaterPano {
 	 */
 	static boolean on() {
 		// (1.2.9, issue #68) nor while nothing marches (Scene reflections off, Reflections 0 %): no pass for a panorama nobody reads
-		return mcopt.metal.shade.Live.b("mcopt.shade.water.reflSides", true) && mcopt.metal.shade.ShadeSettings.ssr() && !ShadeWater.fast()
+		return mcopt.metal.shade.Live.b("mcopt.shade.water.reflSides", true) && mcopt.metal.shade.ShadeSettings.ssr() && !ShadeWater.fast() && !ShadeWater.medium()
 			&& mcopt.metal.shade.ShadeSettings.reflect() > 0f;
 	}
 

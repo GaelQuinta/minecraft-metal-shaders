@@ -85,6 +85,11 @@ public final class ShadeWater {
 		return cores > 0 && cores <= 8;
 	}
 
+	/** (1.2.9) Water quality Medium: Normal without the scene and side reflections (compiled out: WOFF_SSR, WOFF_PANO), the sky's stays. */
+	public static boolean medium() {
+		return ON && "medium".equalsIgnoreCase(mcopt.metal.shade.Live.s("mcopt.shade.water.quality", "normal"));
+	}
+
 	static boolean fastNoCopy() {
 		return fast() && Boolean.getBoolean("mcopt.shade.water.fastNoCopy");
 	}
@@ -565,6 +570,7 @@ public final class ShadeWater {
 		if (shadowSoft() <= 0f) b |= ShadeMsl.WOFF_WSHADOW;
 		if (!RTR || mcopt.metal.shade.Live.f("mcopt.shade.water.reflTemporal", 0.8f, 0f, 0.95f) <= 0f) b |= ShadeMsl.WOFF_RTR;
 		if (mcopt.metal.shade.Live.f(u + "glint", 1f, 0f, 3f) <= 0f) b |= ShadeMsl.WOFF_GLINT;
+		if (medium()) b |= ShadeMsl.WOFF_SSR | ShadeMsl.WOFF_PANO;
 		if (fast()) b |= ShadeMsl.WOFF_FAST | ShadeMsl.WOFF_SSR | ShadeMsl.WOFF_PANO | ShadeMsl.WOFF_RTR | ShadeMsl.WOFF_SWELL | ShadeMsl.WOFF_FOAM
 			| ShadeMsl.WOFF_WSHADOW;
 		return b;
@@ -582,8 +588,8 @@ public final class ShadeWater {
 		// (1.1) waves, reflections and screen reflections on/off from the settings screen (ShadeSettings, live), mcopt.shade.ssrDist live,
 		// w the caustics' strength (user.caustics, 0..2; 0 = none; only with the module's code built in, mcopt.shade.caustics at startup)
 		float ssrDist = Math.clamp(mcopt.metal.shade.Live.f("mcopt.shade.ssrDist", SSR_DIST), 8f, 1024f);
-		boolean fast = fast(); // (1.2.9 Fast water: its uniforms off too, for the frames before its variant is ready; no pyramid then)
-		p.putFloat(48, mcopt.metal.shade.ShadeSettings.waves()).putFloat(52, mcopt.metal.shade.ShadeSettings.ssr() && !fast ? ssrDist : 0f)
+		boolean fast = fast(), noSsr = fast || medium(); // (1.2.9 Fast water: its uniforms off too, for the frames before its variant is ready; no pyramid then)
+		p.putFloat(48, mcopt.metal.shade.ShadeSettings.waves()).putFloat(52, mcopt.metal.shade.ShadeSettings.ssr() && !noSsr ? ssrDist : 0f)
 			.putFloat(56, mcopt.metal.shade.ShadeSettings.reflect())
 			.putFloat(60, CAUSTICS ? mcopt.metal.shade.Live.f("mcopt.shade.user.caustics", 1f, 0f, 2f) : 0f);
 		// (2026-11-02, water round 1) swell (64), swell2 (80), swell3 (96): water.metal ShadeWaterParams. The calm of the long waves and the
