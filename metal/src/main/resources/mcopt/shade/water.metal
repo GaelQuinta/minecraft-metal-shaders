@@ -72,8 +72,9 @@
 #if defined(SHADE_WOFF_REFL) && defined(SHADE_WATER_RHIST)
 #undef SHADE_WOFF_REFL // (the reflection history keeps the mirrored term itself: dev only, kept whole)
 #endif
-// FAST (Water quality: Fast, ShadeWater.fast; with SSR, PANO, RTR, SWELL, CAUSTICS, FOAM and WSHADOW): also no glitter, no ripple-aware
-// mirror normal, no fine ripples, and the sky reflection without the on-screen sky (the atmosphere and the clouds' dome only)
+// FAST (Water quality: Fast, ShadeWater.fast; with SSR, PANO, RTR, SWELL, FOAM and WSHADOW): also no glitter, no ripple-aware mirror
+// normal, and the sky reflection without the on-screen sky (the atmosphere and the clouds' dome only); the fine ripples (one baked
+// sample) and the caustics stay: they are what makes it our water
 #ifdef SHADE_WOFF_FAST
 #undef SHADE_WATER_GLITTER
 #undef SHADE_WATER_MIRROR_AA

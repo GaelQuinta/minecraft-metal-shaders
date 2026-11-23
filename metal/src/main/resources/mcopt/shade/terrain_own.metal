@@ -585,9 +585,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #ifdef SHADE_WATER_DETAIL
 		// M2.1 fine ripples (baked waves): top faces, and the surface seen from below with the camera under water
 #ifndef SHADE_PRICE_NODETAIL
-#ifndef SHADE_WOFF_FAST // (1.2.9 Fast water: no fine ripples)
 		if (!SHADE_FAR_NODETAIL && !SHADE_WDEV_IS(sf, SHADE_WDEV_NO_DETAIL) && (n.y > 0.5h || (n.y < -0.5h && SHADE_CAMERA_UNDERWATER(sf))) && wp.state.w > 0.5) wi.detail = shadeWaterDetailIn(wi, sf, waterDetail);
-#endif
 #endif
 #endif
 #ifdef SHADE_WATER_SWELL

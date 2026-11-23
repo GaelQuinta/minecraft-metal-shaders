@@ -70,9 +70,9 @@ public final class ShadeWater {
 	 */
 	/**
 	 * (1.2.9, issue #68) Water quality, live: mcopt.shade.water.quality = normal (default: the look as released), fast (its own compiled
-	 * variant, water.metal SHADE_WOFF_FAST: the sky reflection without the on-screen sky, Fresnel, glint, the body and bottom, the
-	 * plain shadow; no scene reflections, panorama, reflection reprojection, swell, caustics, foam or fine ripples, and no depth
-	 * pyramid, panorama pass or ripple bake), or auto (fast on GPUs of 8 cores or fewer: the M1 / M2 class, Profile.gpuCores).
+	 * variant, water.metal SHADE_WOFF_FAST: the sky reflection without the on-screen sky, Fresnel, glint, fine ripples, caustics, the
+	 * body and bottom, the plain shadow; no scene reflections, panorama, reflection reprojection, swell or foam, and no depth pyramid
+	 * or panorama pass), or auto (fast on GPUs of 8 cores or fewer: the M1 / M2 class, Profile.gpuCores).
 	 * -Dmcopt.shade.water.fastNoCopy=true (live, proposal): fast without the scene copy and the pass split, the water blended over the
 	 * scene (M1's stand-in, terrain_own.metal shadeWater).
 	 */
@@ -501,7 +501,7 @@ public final class ShadeWater {
 			}
 			long tex = WaterNative.waves(ctx, state, BAKE_SIZE);
 			mcopt.metal.shade.ShadeRender.pass(enc, bakePso, tex, mcopt.metal.shade.ShadeRender.DONT_CARE, null, null, "mcopt shade water: wave bake");
-			if (DETAIL && !fast()) { // (1.2.9: Fast water has no fine ripples)
+			if (DETAIL) {
 				// M2.1: the fine-ripple layer (water.metal shade_water_bake_detail_fs: the same waves, faster), texture(22)
 				if (bakeDetailPso == 0) {
 					long t0 = mcopt.metal.shade.ShadeCompile.now();
@@ -565,8 +565,8 @@ public final class ShadeWater {
 		if (shadowSoft() <= 0f) b |= ShadeMsl.WOFF_WSHADOW;
 		if (!RTR || mcopt.metal.shade.Live.f("mcopt.shade.water.reflTemporal", 0.8f, 0f, 0.95f) <= 0f) b |= ShadeMsl.WOFF_RTR;
 		if (mcopt.metal.shade.Live.f(u + "glint", 1f, 0f, 3f) <= 0f) b |= ShadeMsl.WOFF_GLINT;
-		if (fast()) b |= ShadeMsl.WOFF_FAST | ShadeMsl.WOFF_SSR | ShadeMsl.WOFF_PANO | ShadeMsl.WOFF_RTR | ShadeMsl.WOFF_SWELL | ShadeMsl.WOFF_CAUSTICS
-			| ShadeMsl.WOFF_FOAM | ShadeMsl.WOFF_WSHADOW;
+		if (fast()) b |= ShadeMsl.WOFF_FAST | ShadeMsl.WOFF_SSR | ShadeMsl.WOFF_PANO | ShadeMsl.WOFF_RTR | ShadeMsl.WOFF_SWELL | ShadeMsl.WOFF_FOAM
+			| ShadeMsl.WOFF_WSHADOW;
 		return b;
 	}
 
@@ -585,7 +585,7 @@ public final class ShadeWater {
 		boolean fast = fast(); // (1.2.9 Fast water: its uniforms off too, for the frames before its variant is ready; no pyramid then)
 		p.putFloat(48, mcopt.metal.shade.ShadeSettings.waves()).putFloat(52, mcopt.metal.shade.ShadeSettings.ssr() && !fast ? ssrDist : 0f)
 			.putFloat(56, mcopt.metal.shade.ShadeSettings.reflect())
-			.putFloat(60, CAUSTICS && !fast ? mcopt.metal.shade.Live.f("mcopt.shade.user.caustics", 1f, 0f, 2f) : 0f);
+			.putFloat(60, CAUSTICS ? mcopt.metal.shade.Live.f("mcopt.shade.user.caustics", 1f, 0f, 2f) : 0f);
 		// (2026-11-02, water round 1) swell (64), swell2 (80), swell3 (96): water.metal ShadeWaterParams. The calm of the long waves and the
 		// ripples' strength in clear weather (style photon), read every frame since round 1 (they were startup defines: now A/B-able in session)
 		// the swell (mcopt.shade.water.swell 0..3, 0 = none: the look before it): its strength, its masking k (.swellMask), the light through
