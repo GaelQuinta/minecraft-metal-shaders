@@ -232,7 +232,7 @@ public final class CloudParams {
 		put4(b, 400, sl[0], ly, sl[2], this.mode);
 		// art: a low sun gets fewer, dimmer scattering octaves (more contrast: gold sunlit sides, darker bodies)
 		float low = this.sunLit ? 1f - smoothstep(0.03f, 0.3f, sunY) : 0f;
-		put4(b, 416, (OCTAVE_WEIGHT - 0.15f * low) * (1f + (mcopt.metal.shade.Look2.v("cloudOctave", 0.8f, 0.3f, 1.5f) - 1f) * kcl), OCTAVE_EXTINCTION, SKY_EXTINCTION, ShadeClouds.blocky() ? (this.vanillaCells ? 2f : 1f) : 0f);
+		put4(b, 416, (OCTAVE_WEIGHT - 0.15f * low) * (1f + (mcopt.metal.shade.Look2.v("cloudOctave", 0.8f, 0.3f, 1.5f) - 1f) * kcl * (this.sunLit ? smoothstep(0.0f, 0.1f, sunY) : 0f)), OCTAVE_EXTINCTION, SKY_EXTINCTION, ShadeClouds.blocky() ? (this.vanillaCells ? 2f : 1f) : 0f);
 		// wind shear: the tops lean downwind by ~40 blocks over the layer (more on windy days)
 		float shear = ShadeClouds.blocky() ? 0f : 25f + 3f * w.windSpeed;
 		put4(b, 432, w.windX * shear, w.windZ * shear, OD_STEP, OD_MIN);

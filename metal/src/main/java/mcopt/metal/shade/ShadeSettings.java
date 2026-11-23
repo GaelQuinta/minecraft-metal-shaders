@@ -162,7 +162,7 @@ public final class ShadeSettings {
 	/** How far the eye sees into water, 1 = as released (the absorption is divided by it). */
 	public static float clarity() {
 		// (1.2.9 look pass, Look2 water) unset: clearer water with the new atmosphere (the shallows turquoise, the bottom near the shore)
-		if (System.getProperty(WATER_CLARITY) == null) return 1f + (Look2.v("waterClarity", 1.3f, 0.25f, 3f) - 1f) * Math.min(Look2.k("water"), 1f);
+		if (System.getProperty(WATER_CLARITY) == null) return 1f + (Look2.v("waterClarity", 1.6f, 0.25f, 3f) - 1f) * Math.min(Look2.k("water"), 1f);
 		return clarity / 100f;
 	}
 
@@ -172,7 +172,7 @@ public final class ShadeSettings {
 
 	public static float reflect() {
 		// (1.2.9 look pass, Look2 water) unset: a little less reflection with the new atmosphere
-		if (System.getProperty(REFLECT) == null) return 1f + (Look2.v("waterReflect", 0.85f, 0f, 2f) - 1f) * Math.min(Look2.k("water"), 1f);
+		if (System.getProperty(REFLECT) == null) return 1f + (Look2.v("waterReflect", 0.8f, 0f, 2f) - 1f) * Math.min(Look2.k("water"), 1f);
 		return reflect;
 	}
 

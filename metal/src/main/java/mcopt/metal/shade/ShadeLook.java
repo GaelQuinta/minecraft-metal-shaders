@@ -510,7 +510,7 @@ public final class ShadeLook {
 		// 2. deeper shade: the sky's fill and the bounce weaker by day (sun / shade luminance on grass 1.9-2.2 -> ~2.8)
 		float ks = Look2.k("shade") * day;
 		if (ks > 0f) {
-			float amb = 1f + (Look2.v("skyFill", 0.62f, 0.2f, 1f) - 1f) * ks;
+			float amb = 1f + (Look2.v("skyFill", 0.55f, 0.2f, 1f) - 1f) * ks;
 			for (int i = 0; i < 3; i++) this.ambientTint[i] *= amb;
 			this.l2Bounce = 1f + (Look2.v("bounceFill", 0.6f, 0f, 1f) - 1f) * ks;
 			// side faces darker than tops (Photon's directional term: x0.8 on vertical faces; ours was x0.94 on x faces only)
@@ -525,12 +525,16 @@ public final class ShadeLook {
 			this.l2Ev = -Look2.v("evening", 0.75f, 0f, 3f) * w * (1f - 0.5f * rain);
 			this.l2Lambda = 1f - Look2.v("eveningMeter", 0.5f, 0f, 1f) * Math.min(w, 1f);
 			this.contrast *= 1f + Look2.v("contrast", 0.03f, -0.2f, 0.3f) * kx * day * this.outdoor;
+			// by day the meter follows a little less of the scene: a forest floor or a shaded valley stays darker than open ground
+			// (forest interior L* 39 -> ~30; Photon 15, no auto exposure at all)
+			this.l2Lambda *= 1f - (1f - Look2.v("dayMeter", 0.7f, 0f, 1f)) * day * kx;
 		}
 		// 8. rain: a blue-teal overcast instead of grey-lavender (half the rain's desaturation back, cooler)
 		float kr = Look2.k("rain") * rain * this.outdoor;
 		if (kr > 0f) {
-			this.saturation *= 1f + Look2.v("rainSat", 0.22f, 0f, 1f) * kr;
-			this.whiteBalance -= Look2.v("rainCool", 10f, -30f, 60f) * kr;
+			this.saturation *= 1f + Look2.v("rainSat", 0.45f, 0f, 1.5f) * kr;
+			this.whiteBalance -= Look2.v("rainCool", 16f, -30f, 60f) * kr;
+			this.l2Ev -= Look2.v("rainEv", 0.35f, 0f, 1.5f) * kr; // and a little darker (Photon's overcast frame L* 41 against our 53)
 		}
 		// 6. sky: a deeper blue by day, a blue-violet blue hour (sun about -3 degrees) instead of orange; the gold and rose give way there
 		float ky = Look2.k("sky");
