@@ -62,6 +62,19 @@ import org.lwjgl.system.MemoryUtil;
  * <p>Free of game types (ShadeMsl, which the shade mixin plugin loads early, reads {@link #prelude}).
  */
 public final class ShadeWater {
+	/**
+	 * (1.2.9, water phase 2 proposal; not in the menu yet) -Dmcopt.shade.water.quality=fast: the cheap water for weaker Macs, as
+	 * defaults for the settings it bundles (a value the player or the config set is kept): no reflection reprojection, the plain
+	 * shadow on water, no side reflections (their code then compiles out: ShadeLean.waterOff), and the far water from 96 blocks
+	 * (no scene reflections, rendered sky, soft shadow or reprojection there).
+	 */
+	static {
+		if ("fast".equalsIgnoreCase(System.getProperty("mcopt.shade.water.quality", "").trim())) {
+			String[][] fast = {{"mcopt.shade.water.reflTemporal", "0"}, {"mcopt.shade.waterShadowSoft", "0"}, {"mcopt.shade.water.reflSides", "false"},
+				{"mcopt.shade.water.far", "96"}};
+			for (String[] kv : fast) if (System.getProperty(kv[0]) == null) System.setProperty(kv[0], kv[1]);
+		}
+	}
 	/** The module's flag on its own (what ShadeMsl assembles the MSL by; validation tools run without mcopt.shade). */
 	public static final boolean MODULE = Boolean.parseBoolean(System.getProperty("mcopt.shade.water", "true"));
 	/** The module is live: shading on and the flag on. The backend's hooks test this static final. */
