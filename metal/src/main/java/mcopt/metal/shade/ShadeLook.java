@@ -204,7 +204,10 @@ public final class ShadeLook {
 		float gm = this.frames - this.vlAirFrame <= 2 ? Live.f("mcopt.shade.vl.goldenMist", 1.0f, 0f, 1.5f) : 0f;
 		this.goldenMist = gm;
 		if (gm > 0f) {
-			float fade = sunY < 0.18f ? 0.37f + 1.2f * Math.max(0f, -sunY) : 1.7f;
+			// (1.2.9, Gael 2026-11-23 "the fog is excessive") mcopt.shade.vl.goldenMistEnd (live, degrees of sun, 12..90; 50.2 = Photon's
+			// me_fade, which reaches 0 at sin 0.768): where the golden-hour mist is back to the day's after its peak at ~10 degrees
+			float mistEnd = Live.f("mcopt.shade.vl.goldenMistEnd", 50.2f, 12f, 90f);
+			float fade = sunY < 0.18f ? 0.37f + 1.2f * Math.max(0f, -sunY) : 1f / ((float) Math.sin(Math.toRadians(mistEnd)) - 0.18f);
 			float me = Math.max(0f, Math.min(1f, 1f - fade * Math.abs(sunY - 0.18f)));
 			me *= me;
 			float blue = linearStep(0.05f, 1f, (float) Math.exp(-190.0 * (sunY + 0.07283) * (sunY + 0.07283)));
@@ -452,7 +455,10 @@ public final class ShadeLook {
 		put4(b, USER3, f.naturalLighting, ShadePbr.strength("normal"), ShadePbr.strength("specular"), ShadePbr.strength("emission"));
 		// (1.2.9) x: the haze and the mist over the sky too (mcopt.shade.skyHaze, live; false = 1.2.8: none on the sky)
 		// y (issue #67): 1 = Minecraft's sun (the resource pack's texture) instead of the sky's own disc (mcopt.shade.sun=false, live)
-		put4(b, USER4, Live.b("mcopt.shade.skyHaze", true) ? 1f : 0f, Live.b("mcopt.shade.sun", true) ? 0f : 1f, 0f, 0f);
+		// z, w (1.2.9): the border fog's clouds behind distant terrain from edge z on, to the power w (shade_m2.metal shadeFogAir2;
+		// mcopt.shade.clouds.lateStart / lateCurve, live; 0.7 and 2 = FT2.10's late ramp)
+		put4(b, USER4, Live.b("mcopt.shade.skyHaze", true) ? 1f : 0f, Live.b("mcopt.shade.sun", true) ? 0f : 1f,
+			Live.f("mcopt.shade.clouds.lateStart", 0.7f, 0f, 0.95f), Live.f("mcopt.shade.clouds.lateCurve", 2f, 0.05f, 4f));
 		mcopt.metal.shade.weather.ShadeWeather.pack(b); // M3 weather: wet, wind, flash
 	}
 

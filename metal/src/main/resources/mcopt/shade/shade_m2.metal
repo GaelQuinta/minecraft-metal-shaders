@@ -410,8 +410,9 @@ static float3 shadeFogAir2(float3 radiance, float3 p, float vanillaFog, float ch
 				if (shadeCloudDev(L, SHADE_CLOUD_DEV_EARLY_FOG)) {
 					wc *= smoothstep(0.015, 0.035, max(ap * 0.6, edge));
 				} else {
-					float late = saturate(edge * 3.333333 - 2.333333);
-					wc *= late * late;
+					// (1.2.9) from edge user4.z on, to the power user4.w (mcopt.shade.clouds.lateStart / lateCurve; 0.7, 2 = FT2.10)
+					float late = saturate((edge - L.user4.z) / max(1.0 - L.user4.z, 1e-3));
+					wc *= pow(late, L.user4.w);
 				}
 			}
 			if (shadeCloudDev(L, SHADE_CLOUD_DEV_NO_FOG)) wc = 0.0;
