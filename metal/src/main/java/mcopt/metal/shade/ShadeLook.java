@@ -201,12 +201,14 @@ public final class ShadeLook {
 		// (the time uniforms me_fade, me_weight, time_sunrise, time_noon, time_sunset)
 		// (2026-11 clouds: 1.2 -> 1.0, Photon's own density. Gael wants Photon's golden hour; at 1.2, and 7 in the morning, the mist
 		// veiled the whole low sky and the clouds into one peach haze; the shafts stay, run at-e)
-		float gm = this.frames - this.vlAirFrame <= 2 ? Live.f("mcopt.shade.vl.goldenMist", 1.0f, 0f, 1.5f) : 0f;
+		// (1.2.9, Gael 2026-11-23 "the fog is excessive": 1.0 -> 0.5, and back to the day's by 30 degrees of sun instead of ~50, below;
+		// measured against Photon MIT at his lake: the near field keeps its contrast, the far land still melts into the morning haze)
+		float gm = this.frames - this.vlAirFrame <= 2 ? Live.f("mcopt.shade.vl.goldenMist", 0.5f, 0f, 1.5f) : 0f;
 		this.goldenMist = gm;
 		if (gm > 0f) {
 			// (1.2.9, Gael 2026-11-23 "the fog is excessive") mcopt.shade.vl.goldenMistEnd (live, degrees of sun, 12..90; 50.2 = Photon's
 			// me_fade, which reaches 0 at sin 0.768): where the golden-hour mist is back to the day's after its peak at ~10 degrees
-			float mistEnd = Live.f("mcopt.shade.vl.goldenMistEnd", 50.2f, 12f, 90f);
+			float mistEnd = Live.f("mcopt.shade.vl.goldenMistEnd", 30f, 12f, 90f);
 			float fade = sunY < 0.18f ? 0.37f + 1.2f * Math.max(0f, -sunY) : 1f / ((float) Math.sin(Math.toRadians(mistEnd)) - 0.18f);
 			float me = Math.max(0f, Math.min(1f, 1f - fade * Math.abs(sunY - 0.18f)));
 			me *= me;
