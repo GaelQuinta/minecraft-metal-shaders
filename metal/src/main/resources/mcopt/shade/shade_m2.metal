@@ -410,9 +410,18 @@ static float3 shadeFogAir2(float3 radiance, float3 p, float vanillaFog, float ch
 				if (shadeCloudDev(L, SHADE_CLOUD_DEV_EARLY_FOG)) {
 					wc *= smoothstep(0.015, 0.035, max(ap * 0.6, edge));
 				} else {
-					// (1.2.9) from edge user4.z on, to the power user4.w (mcopt.shade.clouds.lateStart / lateCurve; 0.7, 2 = FT2.10)
-					float late = saturate((edge - L.user4.z) / max(1.0 - L.user4.z, 1e-3));
-					wc *= pow(late, L.user4.w);
+					float late = saturate(edge * 3.333333 - 2.333333);
+					// (1.2.9, mcopt.shade.clouds.fogBlend, ShadeLook.user4.z: 0 FT2.10's late ramp everywhere, 1 the clouds from the
+					// fog's start everywhere, 2 = default: late only toward a low sun) With the late ramp the land at the border faded
+					// into the CLEAR sky while the sky next to it showed clouds: pale blue ghosts of hills, with a hard outline, in front
+					// of white clouds, at any hour (Gael 2026-11-23). The early blend fades the land into exactly what is behind it;
+					// the late one is kept only where it was needed: toward a sun under ~15-30 degrees, whose bright cloud edges
+					// showed through half-faded peaks (2026-10-10).
+					float3 ld = f.lightDirWorld.xyz;
+					float glare = (1.0 - smoothstep(0.26, 0.5, ld.y)) *
+						smoothstep(-0.2, 0.5, dot(v.xz, ld.xz) * rsqrt(max(dot(v.xz, v.xz) * dot(ld.xz, ld.xz), 1e-8)));
+					float lateW = L.user4.z > 1.5 ? glare : (L.user4.z > 0.5 ? 0.0 : 1.0);
+					wc *= mix(smoothstep(0.015, 0.035, max(ap * 0.6, edge)), late * late, lateW);
 				}
 			}
 			if (shadeCloudDev(L, SHADE_CLOUD_DEV_NO_FOG)) wc = 0.0;

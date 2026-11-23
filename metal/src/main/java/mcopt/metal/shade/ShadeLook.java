@@ -455,10 +455,10 @@ public final class ShadeLook {
 		put4(b, USER3, f.naturalLighting, ShadePbr.strength("normal"), ShadePbr.strength("specular"), ShadePbr.strength("emission"));
 		// (1.2.9) x: the haze and the mist over the sky too (mcopt.shade.skyHaze, live; false = 1.2.8: none on the sky)
 		// y (issue #67): 1 = Minecraft's sun (the resource pack's texture) instead of the sky's own disc (mcopt.shade.sun=false, live)
-		// z, w (1.2.9): the border fog's clouds behind distant terrain from edge z on, to the power w (shade_m2.metal shadeFogAir2;
-		// mcopt.shade.clouds.lateStart / lateCurve, live; 0.7 and 2 = FT2.10's late ramp)
+		// z (1.2.9): how the border fog shows the clouds behind distant terrain (shade_m2.metal shadeFogAir2; mcopt.shade.clouds.fogBlend,
+		// live: 0 = FT2.10's late ramp, 1 = from the fog's start, 2 = late only toward a low sun)
 		put4(b, USER4, Live.b("mcopt.shade.skyHaze", true) ? 1f : 0f, Live.b("mcopt.shade.sun", true) ? 0f : 1f,
-			Live.f("mcopt.shade.clouds.lateStart", 0.7f, 0f, 0.95f), Live.f("mcopt.shade.clouds.lateCurve", 2f, 0.05f, 4f));
+			Math.round(Live.f("mcopt.shade.clouds.fogBlend", 2f, 0f, 2f)), 0f);
 		mcopt.metal.shade.weather.ShadeWeather.pack(b); // M3 weather: wet, wind, flash
 	}
 
