@@ -147,12 +147,18 @@ public final class CloudConfig {
 
 	/** (1.1) live: mcopt.shade.clouds.detail, the fine-detail strength ({@link #DETAIL}, 0..3). */
 	public static float detail() {
+		// (1.2.9 look pass, Look2 clouds) unset: finer detail with the new atmosphere (the study's 1.5; Reddit: "too smooth")
+		if (System.getProperty("mcopt.shade.clouds.detail") == null && mcopt.metal.shade.Look2.k("clouds") > 0f)
+			return mcopt.metal.shade.Look2.v("cloudDetail", 1.5f, 0f, 3f);
 		return Live.f("mcopt.shade.clouds.detail", DETAIL, 0f, 3f);
 	}
 
 	/** (1.1) live: mcopt.shade.clouds.base, the cumulus base (absolute y; {@link #BASE}, NaN = vanilla's cloud height + 8). A change drops the history. */
 	public static float base() {
-		return Live.f("mcopt.shade.clouds.base", BASE);
+		float b = Live.f("mcopt.shade.clouds.base", BASE);
+		// (1.2.9 look pass, Look2 clouds) "Automatic" with the new atmosphere: y 380, not vanilla's height + 8 (Reddit: "too low")
+		if (Float.isNaN(b) && !ShadeClouds.blocky() && mcopt.metal.shade.Look2.k("clouds") > 0f) b = mcopt.metal.shade.Look2.v("cloudBase", 380f, 100f, 2000f);
+		return b;
 	}
 
 	/** (1.1) live: mcopt.shade.clouds.thickness, the cumulus layer ({@link #THICKNESS}, 20..600 blocks). A change drops the history. */

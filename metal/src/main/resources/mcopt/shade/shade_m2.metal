@@ -127,7 +127,12 @@ static float3 shadeLit2(half3 albedo, half3 n, half sky, half block, half shadow
 		fill *= half3(0.3h, 0.55h, 0.7h);
 	}
 	half face = half(1.0) - half(0.06) * abs(n.x) * (half(1.0) - abs(n.y));
-	return float3(albedo) * float3((direct + ambient + fill + torch + minimum) * face);
+	float3 lit = float3(albedo) * float3((direct + ambient + fill + torch + minimum) * face);
+	// (1.2.9 look pass, Look2 sheen; ShadeLook.look2a.x, 0 = 1.2.8) plants and leaves against the sun: light scattered forward through
+	// the thin blades, in the light's own colour (not the albedo's: the backlit edge glows pale gold), plants x1, leaves x0.5
+	if ((thin || foliage) && L.look2a.x > 0.0 && !SHADE_CAMERA_UNDERWATER(f))
+		lit += float3(sun) * (L.look2a.x * float(shadow * gate) * (thin ? 1.0 : 0.5));
+	return lit;
 }
 
 // (1.2.8, issue #61) shadeLit2's sun term alone (the same terms: keep the two in step): what the caustics under water modulate.
