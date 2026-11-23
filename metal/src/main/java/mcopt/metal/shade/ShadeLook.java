@@ -404,7 +404,8 @@ public final class ShadeLook {
 		put4(b, NIGHT, this.starBrightness, Live.f(U + "milkyWay", 1f, 0f, 4f), 0f, this.moonPhaseAngle); // (1.1) y: user.milkyWay
 		put4(b, RENDER_SCALE, f.renderScale, (float) (Math.log(f.mipScale) / Math.log(2)), f.width, f.height);
 		// at night the meter may brighten less (night stays night: the reference is already lifted for it)
-		float nightUp = EV_UP - (EV_UP - EV_UP_NIGHT) * (1f - smooth(-10f, -2f, this.elevation));
+		// (1.2.9, issue #66) only under the sky (outdoor): in a cave the night's tighter bound kept torch-lit tunnels ~1.4x darker than at noon
+		float nightUp = EV_UP - (EV_UP - EV_UP_NIGHT) * (1f - smooth(-10f, -2f, this.elevation)) * this.outdoor;
 		// (1.1) user.exposureSpeed: how fast the eye adapts (2 = twice as fast)
 		float speed = Live.f(U + "exposureSpeed", 1f, 0.2f, 5f);
 		float tauUp = TAU_UP, tauDown = TAU_DOWN;
