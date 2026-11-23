@@ -180,6 +180,24 @@ public final class ShadeTerrain {
 		}
 	}
 
+	/**
+	 * (1.2.9, water phase 2) Own's kind bit for the far water draw (OwnTerrain: the translucent list's farthest run of sections, all
+	 * wholly beyond waterFar()): mcown.m sets terrain_own.metal's function constant 41 (SO_WFAR) for it, so the same library's
+	 * shade_own_fs is specialized with the far water's cheaper path (water.metal SHADE_WFAR_*): a pipeline of its own, not a branch.
+	 */
+	public static final int K_WFAR = 1 << 31;
+
+	/**
+	 * (1.2.9) The far water's distance this frame (blocks; 0 = off): -Dmcopt.shade.water.far (live; off by default), only for the
+	 * HDR world with the water module and the camera above water in the overworld (the LEAN_ABOVE variants).
+	 */
+	public static float waterFar() {
+		if (!ShadeConfig.HDR || !mcopt.metal.shade.water.ShadeWater.ON || (ShadeLean.tag() & ShadeMsl.LEAN_ABOVE) == 0) return 0f;
+		if (!mcopt.metal.shade.water.ShadeWater.farCode()) return 0f;
+		float d = mcopt.metal.shade.Live.f("mcopt.shade.water.far", 0f);
+		return d > 0f ? Math.max(d, 32f) : 0f;
+	}
+
 	/** (1.2.9) Water-off translucent variants (bits) whose library and pipelines are built (woffReady). */
 	private static final java.util.Set<Integer> WOFF_READY = ConcurrentHashMap.newKeySet(), WOFF_STARTED = ConcurrentHashMap.newKeySet();
 

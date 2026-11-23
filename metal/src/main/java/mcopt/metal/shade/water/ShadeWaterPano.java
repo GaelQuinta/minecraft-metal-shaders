@@ -71,6 +71,7 @@ public final class ShadeWaterPano {
 			int every = sinceWater < 600 ? Math.clamp((int) mcopt.metal.shade.Live.f("mcopt.shade.water.reflPanoEvery", 3f, 1f, 60f), 1, 60) : 12;
 			double mx = lastX - panoX, my = lastY - panoY, mz = lastZ - panoZ;
 			boolean reset = frames == 0 || f.dimension != dimension || Math.abs(mx) + Math.abs(my) + Math.abs(mz) > 16;
+			if (!reset && Boolean.getBoolean("mcopt.shade.water.devNoPano")) return; // (1.2.9 pricing, read every frame: the pass skipped, the panorama kept)
 			if (reset || calls++ % every == 0) {
 				if (pso == 0) {
 					long t0 = mcopt.metal.shade.ShadeCompile.now();

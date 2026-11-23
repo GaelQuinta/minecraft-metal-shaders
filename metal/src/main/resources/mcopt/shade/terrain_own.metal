@@ -312,6 +312,11 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		// M3.4 (mcopt.shade.waterShadowSoft, ShadeLook.waterShadow.x, read every frame): up-facing water gets a soft-edged shadow
 #ifdef SHADE_WOFF_WSHADOW
 		: waterFull ? shadeShadow(shadowMap, shadowCompare, sf, p, n, false) // (1.2.9: Water shadow blur 0, the soft one compiled out)
+#elif defined(SHADE_WFAR_SHADOW)
+		// (1.2.9 far water) the far draw: one tap; the near draw's soft radius fades to 0 toward D
+		: waterFull ? (n.y > 0.5h && sl.waterShadow.x > 0.0 ? (SHADE_FAR_NOSHADOW ? shadeWaterShadowFar(shadowMap, shadowCompare, sf, p, n)
+			: shadeShadowSoft(shadowMap, shadowCompare, sf, p, n, sl.waterShadow.x * (1.0 - shadeWaterFarT(wp, length(p))), in.fragCoord.xy, sl.waterShadow.z))
+		                                                    : shadeShadow(shadowMap, shadowCompare, sf, p, n, false))
 #else
 		: waterFull ? (n.y > 0.5h && sl.waterShadow.x > 0.0 ? shadeShadowSoft(shadowMap, shadowCompare, sf, p, n, sl.waterShadow.x, in.fragCoord.xy, sl.waterShadow.z)
 		                                                    : shadeShadow(shadowMap, shadowCompare, sf, p, n, false))
@@ -392,7 +397,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #ifdef SHADE_WATER_DETAIL
 		// M2.1 fine ripples (baked waves): top faces, and the surface seen from below with the camera under water
 #ifndef SHADE_PRICE_NODETAIL
-		if (!SHADE_WDEV_IS(sf, SHADE_WDEV_NO_DETAIL) && (n.y > 0.5h || (n.y < -0.5h && SHADE_CAMERA_UNDERWATER(sf))) && wp.state.w > 0.5) wi.detail = shadeWaterDetailIn(wi, sf, waterDetail);
+		if (!SHADE_FAR_NODETAIL && !SHADE_WDEV_IS(sf, SHADE_WDEV_NO_DETAIL) && (n.y > 0.5h || (n.y < -0.5h && SHADE_CAMERA_UNDERWATER(sf))) && wp.state.w > 0.5) wi.detail = shadeWaterDetailIn(wi, sf, waterDetail);
 #endif
 #endif
 #ifdef SHADE_WATER_SWELL

@@ -294,6 +294,18 @@ public final class ShadeWater {
 	/** M3.4: the default soft shadow radius on water (blocks). */
 	static final float SHADOW_SOFT_DEFAULT = 2f;
 	/** M2.1: the water animates on a real-time clock instead of the (server-corrected, tick-based) game time. */
+	/**
+	 * (1.2.9, water phase 2; off by default) The far water: its code is compiled in when -Dmcopt.shade.water.far (blocks, live once in)
+	 * is set at start or -Dmcopt.shade.water.farCode=true; mcopt.shade.water.farCut lists what the far draw leaves out (water.metal
+	 * SHADE_WFAR_*), mcopt.shade.water.farBand the near draw's fade band (blocks, live).
+	 */
+	static final boolean FAR_CODE = Boolean.getBoolean("mcopt.shade.water.farCode") || floatProperty("mcopt.shade.water.far", 0f) > 0f;
+	public static boolean farCode() {
+		return FAR_CODE;
+	}
+
+	static final String FAR_CUT = System.getProperty("mcopt.shade.water.farCut", "ssr,sky,shadow,rtr,detail,caus");
+
 	public static final boolean CLOCK = Boolean.parseBoolean(System.getProperty("mcopt.shade.waterClock", "true"));
 	/**
 	 * The pipelines whose first use in a main pass triggers the scene copy: vanilla's translucent terrain (mcopt 0.3 port:
@@ -308,7 +320,7 @@ public final class ShadeWater {
 
 	private static long state;
 	private static boolean failed;
-	private static final ByteBuffer PARAMS = ByteBuffer.allocateDirect(144).order(ByteOrder.nativeOrder()); // water.metal ShadeWaterParams
+	private static final ByteBuffer PARAMS = ByteBuffer.allocateDirect(160).order(ByteOrder.nativeOrder()); // water.metal ShadeWaterParams
 	private static int captures;
 
 	private ShadeWater() {
@@ -373,6 +385,13 @@ public final class ShadeWater {
 		if (MIRROR_AA) b.append("#define SHADE_WATER_MIRROR_AA 1\n"); // (2026-11-06) the ripple-aware mirror normal
 		// (candidate 7, dev) mcopt.shade.water.ssrJitterFrame=false: the SSR step jitter fixed per pixel even with TAA (the flicker hunt)
 		if (!Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrJitterFrame", "true"))) b.append("#define SHADE_SSR_JITTER_STILL 1\n");
+		if (FAR_CODE) { // (1.2.9, water phase 2: the far water's cuts, water.metal SHADE_WFAR_*)
+			b.append("#define SHADE_WFAR_ANY 1\n");
+			for (String c : FAR_CUT.split(",")) {
+				String t = c.trim().toUpperCase(java.util.Locale.ROOT);
+				if (t.matches("SSR|SKY|SHADOW|RTR|DETAIL|CAUS")) b.append("#define SHADE_WFAR_").append(t).append(" 1\n");
+			}
+		}
 		return b.append(ShadeMsl.resource("water.metal")).append('\n').toString();
 	}
 
@@ -439,6 +458,10 @@ public final class ShadeWater {
 		boolean recent = captures != capturesAtBake;
 		capturesAtBake = captures;
 		if (!recent && bakedOnce) return;
+		if (bakedOnce && Boolean.getBoolean("mcopt.shade.water.devNoBake")) { // (1.2.9 pricing, read every frame: the waves stand still)
+			WaterNative.wavesKeep(state);
+			return;
+		}
 		bakedOnce = true;
 		try {
 			if (bakePso == 0) {
@@ -523,7 +546,8 @@ public final class ShadeWater {
 		ByteBuffer p = PARAMS;
 		for (int i = 0; i < 4; i++) p.putFloat(i * 4, still[i]);
 		for (int i = 0; i < 4; i++) p.putFloat(16 + i * 4, flow[i]);
-		p.putFloat(32, 0f).putFloat(36, surfaceY).putFloat(40, wetness).putFloat(44, 0f);
+		// (state.x: the copies' validity, set natively; from Java the pricing flags, mcwater.m WaterState.dev: 1 no depth pyramid)
+		p.putFloat(32, Boolean.getBoolean("mcopt.shade.water.devNoPyr") ? 1f : 0f).putFloat(36, surfaceY).putFloat(40, wetness).putFloat(44, 0f);
 		// (1.1) waves, reflections and screen reflections on/off from the settings screen (ShadeSettings, live), mcopt.shade.ssrDist live,
 		// w the caustics' strength (user.caustics, 0..2; 0 = none; only with the module's code built in, mcopt.shade.caustics at startup)
 		float ssrDist = Math.clamp(mcopt.metal.shade.Live.f("mcopt.shade.ssrDist", SSR_DIST), 8f, 1024f);
@@ -567,6 +591,10 @@ public final class ShadeWater {
 			.putFloat(136, ShadeWaterPano.ready() ? mcopt.metal.shade.Live.f("mcopt.shade.water.reflPano", 1f, 0f, 1f) : 0f)
 			// (1.2.8) the bright lines' gain in the caustics seen from above the water (water.metal shadeWaterAbove; 1 = 1.2.7's)
 			.putFloat(140, mcopt.metal.shade.Live.f("mcopt.shade.water.causticGain", CAUSTIC_GAIN, 0f, 8f));
+		// (1.2.9 far water) far: D and its band (0 = off: no fade in the near draw; OwnTerrain draws no far part)
+		float far = FAR_CODE ? mcopt.metal.shade.terrain.ShadeTerrain.waterFar() : 0f;
+		p.putFloat(144, far).putFloat(148, far > 0f ? Math.clamp(mcopt.metal.shade.Live.f("mcopt.shade.water.farBand", 24f), 1f, far - 1f) : 0f)
+			.putFloat(152, 0f).putFloat(156, 0f);
 		WaterNative.params(state, MemoryUtil.memAddress(p));
 	}
 }
