@@ -428,5 +428,8 @@
   "Grass and flowers bend aside as you or a mob walk through.": "你或生物走过时，草和花会向两侧弯开。",
   "Water quality": "水体质量",
   "Fast: lighter water, no scene reflections (more FPS on small Macs). Medium: reflects the sky and clouds but not the landscape. Auto: Fast on Macs with 8 or fewer GPU cores.": "快速：更轻量的水，没有场景反射（小型 Mac 上帧数更高）。中等：反射天空和云，但不反射地形。自动：GPU 核心数为 8 个或更少的 Mac 使用快速。",
-  "Medium": "中等"
+  "Medium": "中等",
+  "New: golden afternoon light, deeper shade, darker evenings, higher clouds and clearer water. Classic: the 1.2.8 look.": "新：午后金色光线、更深的阴影、更暗的傍晚、更高的云和更清澈的水。经典：1.2.8 的外观。",
+  "New": "新",
+  "Classic (1.2.8)": "经典 (1.2.8)"
 }

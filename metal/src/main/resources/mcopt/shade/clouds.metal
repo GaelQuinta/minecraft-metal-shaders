@@ -90,8 +90,11 @@ struct CloudParams {
 	                       //     sky at dusk), y the ray height (dir.y) where that ramp starts, z (round 4) the far light samples' weather
 	                       //     mip (cloudLightDepthB: the light march's third and fourth samples and the sky-light sample above read the
 	                       //     cloud's shape blurred over 2^z texels; 0 = the sharp map, M3), w their density's factor with z > 0
+	float4 look2;          // 528 (1.2.9 look pass, Look2 clouds; (1, 0, 0, 1) = 1.2.8) the fine detail: x its frequency (x 1/60 blocks), y the
+	                       //     curl-like warp of its sample position (blocks; 0 = none), z that warp's frequency (radians per block), w the
+	                       //     detail's mip offset over the billows' (1 = M3: one mip blurrier)
 };
-static_assert(sizeof(CloudParams) == 528, "CloudParams layout (CloudParams.java)");
+static_assert(sizeof(CloudParams) == 544, "CloudParams layout (CloudParams.java)");
 
 // M3.1 dev bits (CloudParams.lightDir.w; CloudConfig.DEV_*): an M3.1 saving switched back to M3's way, for pricing in game
 #define CLOUD_DEV_OLD_RESOLVE 1024 // the resolve reads its five march distances one by one (M3)
@@ -370,6 +373,19 @@ static inline float cloudFarK(float dist, constant CloudParams &c) {
 	return smoothstep(c.art3.x, c.art3.y, dist);
 }
 
+// (1.2.9 look pass, Look2 clouds) The fine detail's sample position in the 3D noise (n3: noise space, blocks), at look2.x times its
+// frequency and swirled by a smooth curl-like warp (three crossed sines of ~look2.z radians per block, look2.y blocks: no texture
+// fetch, so no latency in the batched march): the edges erode into wisps and curls instead of the same round pits everywhere (the
+// look of Photon's curl-warped Worley erosion, our own field). (1, 0, -, 1) = M3's position.
+static inline float3 cloudDetailPos(float3 n3, constant CloudParams &c) {
+	float3 p = n3;
+	if (c.look2.y > 0.0) {
+		float3 q = n3 * c.look2.z;
+		p += c.look2.y * sin(float3(q.y * 1.31 + q.z * 0.73, q.z * 1.17 - q.x * 0.81, q.x * 1.23 + q.y * 0.67) + float3(0.0, 2.1, 4.2));
+	}
+	return p * (CLOUD_DETAIL_SCALE * c.art2.y * c.look2.x);
+}
+
 // lod: mip level of the 3D noise (log2 of the sample's footprint in billow texels): far samples read blurred noise
 // instead of aliasing it into grain.
 static float cloudDensity(float3 p, float y, int q, constant CloudParams &c, texture2d<half> weather, texture3d<half> noise,
@@ -404,8 +420,8 @@ static float cloudDensity(float3 p, float y, int q, constant CloudParams &c, tex
 	thin = thin * (2.0 - thin);
 	d -= c.shape.w * 0.55 * wd * wd * thin;
 	if (q >= 2 && d > 0.0) {
-		half4 m = cloudDev(c, CLOUD_DEV_OLD_MIP) ? noise.sample(cloudRep, n3 * (CLOUD_DETAIL_SCALE * c.art2.y), level(lod + 1.0))
-			: noise.sample(cloudRepMip, n3 * (CLOUD_DETAIL_SCALE * c.art2.y), level(lod + 1.0));
+		half4 m = cloudDev(c, CLOUD_DEV_OLD_MIP) ? noise.sample(cloudRep, cloudDetailPos(n3, c), level(lod + c.look2.w))
+			: noise.sample(cloudRepMip, cloudDetailPos(n3, c), level(lod + c.look2.w));
 		float wd2 = 1.0 - (float(m.g) * 0.6 + float(m.b) * 0.4);
 		// fine detail: strongest on the sides and lower half, little on the domes' crowns
 		float fade = 0.6 + 0.2 * smoothstep(0.85, 1.0, 1.0 - h) - 0.35 * smoothstep(0.05, 0.5, h);
@@ -471,7 +487,7 @@ static inline float cloudDensityB(float3 p, float y, int q, constant CloudParams
 	float3 n3 = cloudNoisePos(xz, y, c);
 	half4 w = cloudWeatherAt(xz, h, c, weather);
 	half4 n = noise.sample(cloudRepMip, n3 * (CLOUD_NOISE_SCALE * c.art2.y), level(lod));
-	half4 m = q >= 2 ? noise.sample(cloudRepMip, n3 * (CLOUD_DETAIL_SCALE * c.art2.y), level(lod + 1.0)) : half4(0.0h);
+	half4 m = q >= 2 ? noise.sample(cloudRepMip, cloudDetailPos(n3, c), level(lod + c.look2.w)) : half4(0.0h);
 	return cloudDensityMath(w, n, m, h, q, c, detail, p.xz);
 }
 

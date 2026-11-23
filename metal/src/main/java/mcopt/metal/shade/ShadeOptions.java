@@ -59,6 +59,11 @@ public final class ShadeOptions {
 	public static final ShadeOption STYLE = choice("mcopt.shade.look", "Estilo", "Style",
 		"Épico: colores intensos. Cuento: más suave y cálido. Natural: más realista.", "Epic: rich colours. Storybook: softer and warmer. Natural: more realistic.",
 		new String[] {"epic", "storybook", "natural"}, new String[] {"Épico", "Cuento", "Natural"}, new String[] {"Epic", "Storybook", "Natural"}, () -> 0);
+	/** (1.2.9 look pass) The atmosphere: the new one (Look2) or 1.2.8's. Live. */
+	public static final ShadeOption ATMOSPHERE = choice(Look2.KEY, "Atmósfera", "Atmosphere",
+		"Nueva: luz dorada de tarde, sombras más profundas, atardeceres más oscuros, nubes más altas y agua más clara. Clásica: el look de la 1.2.8.",
+		"New: golden afternoon light, deeper shade, darker evenings, higher clouds and clearer water. Classic: the 1.2.8 look.",
+		new String[] {"true", "false"}, new String[] {"Nueva", "Clásica (1.2.8)"}, new String[] {"New", "Classic (1.2.8)"}, () -> 0);
 
 	public static final List<Page> PAGES = new ArrayList<>();
 
@@ -443,7 +448,7 @@ public final class ShadeOptions {
 
 	/** Every option on every page (and the main page's two). */
 	public static List<ShadeOption> all() {
-		List<ShadeOption> out = new ArrayList<>(List.of(PRESET, STYLE));
+		List<ShadeOption> out = new ArrayList<>(List.of(PRESET, STYLE, ATMOSPHERE));
 		for (Page p : PAGES) out.addAll(p.options());
 		return out;
 	}

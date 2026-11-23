@@ -82,6 +82,7 @@ public final class ShadeSettingsScreen extends OptionsSubScreen {
 		if (this.page == null) {
 			this.list.addHeader(header("Calidad", "Quality"));
 			this.list.addSmall(instance(ShadeOptions.PRESET), instance(ShadeOptions.STYLE));
+			this.list.addSmall(instance(ShadeOptions.ATMOSPHERE)); // (1.2.9 look pass)
 			this.list.addHeader(header("Ajustes", "Settings"));
 			List<AbstractWidget> buttons = new ArrayList<>();
 			for (ShadeOptions.Page p : ShadeOptions.PAGES) {
