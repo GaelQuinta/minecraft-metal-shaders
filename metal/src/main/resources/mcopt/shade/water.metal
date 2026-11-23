@@ -1186,7 +1186,7 @@ static inline float4 shadeSsrhPast(float4 hit, float3 so, float3 dso, bool scree
 // and no pixel has to re-aim a shared hit. ownOk: this pixel has a ray. Returns its hit as shadeSsrTrace does (w 11: a crossing
 // behind something standing in).
 static float4 shadeSsrTraceQuadOwn(float3 s0, float3 ds, float3 so, float3 dso, bool ownOk, bool screenEnd, float yFloor, int c, constant ShadeFrame &f,
-                                   depth2d<float> depth, texture2d<float> pyr) {
+                                   depth2d<float> depth, texture2d<float> pyr, bool devL0 = false) {
 	float2 tex = float2(depth.get_width(), depth.get_height());
 	float2 size = shadeWaterRenderSize(f, tex);
 	float A = f.proj[2][2], B = f.proj[3][2];
@@ -1211,6 +1211,7 @@ static float4 shadeSsrTraceQuadOwn(float3 s0, float3 ds, float3 so, float3 dso, 
 #ifdef SHADE_PRICE_NOL1
 	return float4(0.0, 0.0, 0.0, -1.0);
 #endif
+	if (devL0) return float4(0.0, 0.0, 0.0, -1.0); // (1.2.9 pricing, devSsr 2)
 	bool front = true;   // this pixel's ray is in front of the scene where the walk stands
 	bool done = !ownOk;  // this pixel has its answer
 	bool all = false;    // every pixel of the quad has
@@ -1684,7 +1685,7 @@ static inline float shadeSsrHitT(float2 uv, float3 p0, constant ShadeFrame &f, d
 // footprint (candidate 8, the exact march): the scale of the footprint the hit's colour is read over (wp.mirror.y; 0 = one tap)
 static float4 shadeSsrT(float3 p0, float3 r, float2 pixel, float maxDist, float exposure, float prevExposure, constant ShadeFrame &f,
                        constant ShadeLook *L, texture2d<half> scene, depth2d<float> depth, texture2d<half> prev, texture2d<float> hz,
-                       thread float &tHit, float footprint = 1.0, float panoShare = 0.0, constant ShadeResources *R = nullptr) {
+                       thread float &tHit, float footprint = 1.0, float panoShare = 0.0, constant ShadeResources *R = nullptr, int dev = 0) {
 	tHit = -1.0;
 	float2 tex = float2(depth.get_width(), depth.get_height());
 	float2 size = shadeWaterRenderSize(f, tex);
@@ -1714,7 +1715,10 @@ static float4 shadeSsrT(float3 p0, float3 r, float2 pixel, float maxDist, float 
 	bool endOwn = false;
 	bool ownOk = shadeSsrSegment(p0Own, rOwn, maxDist, f, so, dso, endOwn);
 #ifndef SHADE_PRICE_NOMARCH // (pricing, -Dmcopt.shade.leanDev=SHADE_PRICE_...: in-session A/B of the exact march's parts)
-	if (seg) hit = shadeSsrTraceQuadOwn(s0, ds, so, dso, ownOk, endOwn, yFloor, int(q.x & 1u) + 2 * int(q.y & 1u), f, depth, hz);
+	// (1.2.9 pricing, ShadeWaterParams.far.z = -Dmcopt.shade.water.devSsr, live: 1 no march, 2 only the 128-pixel level, 3 no resolve
+	// or panorama after the march, 4 no panorama)
+	if (dev == 1) seg = false;
+	if (seg) hit = shadeSsrTraceQuadOwn(s0, ds, so, dso, ownOk, endOwn, yFloor, int(q.x & 1u) + 2 * int(q.y & 1u), f, depth, hz, dev == 2);
 #endif
 	float4 raw = hit; // (as the march returned it: shadeSsrResolve's shadeSsrhPast)
 	// the hit is a point of this pixel's ray: its screen place, its world point and its distance without reading the depth copy back
@@ -1779,6 +1783,8 @@ static float4 shadeSsrT(float3 p0, float3 r, float2 pixel, float maxDist, float 
 		want.x *= min(panoShare, 1.0);
 	}
 #endif
+	if (dev == 4) want = 0.0;
+	if (dev == 3) return 0.0;
 	if (hit.w < 0.0 && want.x <= 0.0) return 0.0;
 	float2 fx = 0.0, fy = 0.0;
 	float span = 0.0;
@@ -2402,7 +2408,7 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	}
 #else
 	if (fq > 0.022 && wp.tune.y > 0.0 && !SHADE_WDEV_IS(f, SHADE_WDEV_NO_SSR)) { // (1.1) tune.y 0: the player turned screen reflections off
-		ssrHit = shadeSsrT(w.p + n * 0.02, rr, w.pixel, wp.tune.y, w.exposure, w.prevExposure, f, w.look, scene, depth, prev, hz, tHit, wp.mirror.y, top ? wp.mirror.z : 0.0, w.res);
+		ssrHit = shadeSsrT(w.p + n * 0.02, rr, w.pixel, wp.tune.y, w.exposure, w.prevExposure, f, w.look, scene, depth, prev, hz, tHit, wp.mirror.y, top ? wp.mirror.z : 0.0, w.res, int(wp.far.z));
 		ssrW = ssrHit.a * smoothstep(0.022, 0.03, fq);
 	}
 #endif

@@ -626,7 +626,7 @@ public final class ShadeWater {
 		// (1.2.9 far water) far: D and its band (0 = off: no fade in the near draw; OwnTerrain draws no far part)
 		float far = FAR_CODE ? mcopt.metal.shade.terrain.ShadeTerrain.waterFar() : 0f;
 		p.putFloat(144, far).putFloat(148, far > 0f ? Math.clamp(mcopt.metal.shade.Live.f("mcopt.shade.water.farBand", 24f), 1f, far - 1f) : 0f)
-			.putFloat(152, 0f).putFloat(156, 0f);
+			.putFloat(152, Integer.getInteger("mcopt.shade.water.devSsr", 0)).putFloat(156, 0f); // (z: 1.2.9 pricing, water.metal shadeSsrT dev)
 		WaterNative.params(state, MemoryUtil.memAddress(p));
 	}
 }
