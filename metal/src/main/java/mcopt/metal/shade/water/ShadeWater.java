@@ -411,6 +411,9 @@ public final class ShadeWater {
 		if (MIRROR_AA) b.append("#define SHADE_WATER_MIRROR_AA 1\n"); // (2026-11-06) the ripple-aware mirror normal
 		// (candidate 7, dev) mcopt.shade.water.ssrJitterFrame=false: the SSR step jitter fixed per pixel even with TAA (the flicker hunt)
 		if (!Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrJitterFrame", "true"))) b.append("#define SHADE_SSR_JITTER_STILL 1\n");
+		// (1.2.9, issue #68) glass, ice and M1's stand-in as a call in the water's stage (terrain_own.metal shadeOwnOther): -0.26..-0.30 ms
+		// over the sea on an M4, 12 of 12 interleaved pairs (notes/2026-11-23 wp-cold2); -Dmcopt.shade.water.coldOther=false: inline, as 1.2.8
+		if (!"false".equals(System.getProperty("mcopt.shade.water.coldOther"))) b.append("#define SHADE_OWN_COLD_OTHER 1\n");
 		if (FAR_CODE) { // (1.2.9, water phase 2: the far water's cuts, water.metal SHADE_WFAR_*)
 			b.append("#define SHADE_WFAR_ANY 1\n");
 			for (String c : FAR_CUT.split(",")) {
