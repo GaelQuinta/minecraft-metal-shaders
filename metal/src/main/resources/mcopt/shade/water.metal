@@ -62,6 +62,45 @@
 #undef SHADE_SSRH_BUDGET
 #define SHADE_SSRH_BUDGET 8
 #endif
+// (1.2.9, issue #68: "fps tanks ... even with all shader settings toggled off") SHADE_WOFF_*: the water settings the player turned off
+// (ShadeLean.waterOff, ShadeMsl.WOFF_*; only in the variant for the camera above water), their code compiled out. The uniforms skipped
+// most of it already, but the water shader is register-bound: code a branch skips is still paid on every water pixel. Each one keeps
+// the image the setting's 0 drew: REFL (Reflections 0 %: the Fresnel is 0, nothing mirrored reaches the colour), SSR (Scene
+// reflections off), PANO (Side reflections off), SWELL (Swell 0: no swell anywhere), CAUSTICS, FOAM, GLINT (0 %), WSHADOW (Water
+// shadow blur 0: the plain shadow lookup), RTR (the reflections' reprojection at 0).
+#if defined(SHADE_LEAN_ABOVE) && defined(SHADE_OWN_TRANSLUCENT)
+#if defined(SHADE_WOFF_REFL) && defined(SHADE_WATER_RHIST)
+#undef SHADE_WOFF_REFL // (the reflection history keeps the mirrored term itself: dev only, kept whole)
+#endif
+#if defined(SHADE_WOFF_REFL) || defined(SHADE_WOFF_SSR)
+#undef SHADE_SSR
+#undef SHADE_SSRH_DEBUG
+#endif
+#if defined(SHADE_WOFF_REFL) || defined(SHADE_WOFF_SSR) || defined(SHADE_WOFF_PANO)
+#undef SHADE_WATER_PANO
+#endif
+#if defined(SHADE_WOFF_REFL) || defined(SHADE_WOFF_RTR)
+#undef SHADE_WATER_RTR
+#endif
+#ifdef SHADE_WOFF_SWELL
+#undef SHADE_WATER_SWELL
+#endif
+#ifdef SHADE_WOFF_CAUSTICS
+#undef SHADE_CAUSTICS
+#endif
+// (foam and glint: their settings scale them through ShadeLook, which the water reads only with the HDR world and last frame's image)
+#if defined(SHADE_WOFF_FOAM) && defined(MCOPT_HDR) && defined(SHADE_SSR_PREV)
+#undef SHADE_FOAM
+#endif
+#if !(defined(SHADE_WOFF_GLINT) && defined(MCOPT_HDR) && defined(SHADE_SSR_PREV))
+#undef SHADE_WOFF_GLINT
+#endif
+#else
+#undef SHADE_WOFF_REFL
+#undef SHADE_WOFF_SSR
+#undef SHADE_WOFF_GLINT
+#undef SHADE_WOFF_WSHADOW
+#endif
 // (1.2.7 candidate 8) SHADE_COLD: a function called, not inlined. Priced in one session over a lake (notes/2026-11-09 price-11 /
 // price-12): it paid for the mirrored hit's colour (about -0.3 ms) and is what keeps the panorama's march out of every water pixel;
 // for the hits' haze, the caustics, the shore foam and the rendered sky it cost 0.1 ms each (they stay inline), and for the exact
@@ -2402,7 +2441,9 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	// the LUT sky follows a calmer direction too: the rippled one smeared the low sun's aureole over the near water as a
 	// milky veil (the glint below is what carries the sun's sparkle)
 	float3 rl = normalize(mix(rs, rr, 0.6));
-#ifdef SHADE_PRICE_NOSKY
+#ifdef SHADE_WOFF_REFL
+	float3 refl = 0.0; // (1.2.9: Reflections 0 %, the Fresnel below is 0)
+#elif defined(SHADE_PRICE_NOSKY)
 	float3 refl = shadeSkyLookup(rl, lut, lutS, f) * open;
 #else
 	float3 refl = shadeWaterSkyRefl(rl, rr, w.p, w.prevExposure, f, w.look, w.res, lut, lutS, depth, prev) * open;
@@ -2412,7 +2453,11 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	// 2026-10-10: "debería de verse así con la textura realista siempre, aunque solo sea una fila"). Its surroundings instead: the
 	// clear sky's shape (bright toward the horizon, dimmer above, as walls lit around and a darker ceiling) in the light and colour
 	// of the place (the surface's own light, torches), as lit walls of albedo ~0.5. The same ripples then show as on a lake
+#ifndef SHADE_WOFF_REFL
 	if (w.cave.z > 0.0h) {
+#else
+	if (false) {
+#endif
 		float sk = shadeLuma(shadeSkyLookup(float3(rl.x, max(rl.y, 0.0), rl.z), lut, lutS, f));
 		float3 env = w.lit * (0.5 * sk / max(shadeLuma(f.ambientSky.rgb), 1e-6));
 		refl = mix(refl, env, float(w.cave.z));
@@ -2499,12 +2544,12 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 #ifdef SHADE_WATER_MIRROR_AA
 	alpha = sqrt(alpha * alpha + rippleVar); // (2026-11-06) and so do the ripples a pixel can't resolve
 #endif
-#ifdef SHADE_PRICE_NOGLINT
-	float spec = 0.0;
+#if defined(SHADE_PRICE_NOGLINT) || defined(SHADE_WOFF_GLINT) || defined(SHADE_WOFF_REFL)
+	float spec = 0.0; // (1.2.9 WOFF: the glint's or the reflections' setting at 0 multiplies it by 0 below)
 #else
 	float spec = shadeGgxSpec(n, v, f.lightDirWorld.xyz, alpha);
 #endif
-#if defined(SHADE_WATER_GLITTER) && defined(SHADE_WATER_DETAIL) && !defined(SHADE_PRICE_NOGLINT)
+#if defined(SHADE_WATER_GLITTER) && defined(SHADE_WATER_DETAIL) && !defined(SHADE_PRICE_NOGLINT) && !defined(SHADE_WOFF_GLINT) && !defined(SHADE_WOFF_REFL)
 	// (2026-11-02; STUDY.md "what we could do: water" item 3, after Complementary's sparkle term: technique only, our own code;
 	// mcopt.shade.water.glitter, 0 = none) glitter: the glint times a facet contrast ((n_r.l) / (n.l))^4 from a rougher normal n_r:
 	// facets tilted toward the sun light up, those tilted away go dark, so near the camera the road breaks into sparkles. n_r is n

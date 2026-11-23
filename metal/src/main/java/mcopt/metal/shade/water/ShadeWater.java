@@ -495,6 +495,27 @@ public final class ShadeWater {
 	 */
 	public static volatile float dhSwell;
 
+	/**
+	 * (1.2.9, issue #68: "fps tanks ... even with all shader settings toggled off") The water settings that are off this frame, as
+	 * ShadeMsl.WOFF_* bits (ShadeLean.waterOff): the translucent terrain's variant compiles their code out. Each bit only where the
+	 * setting's value makes that code a no-op (the image is the same as with the code in).
+	 */
+	public static int offBits() {
+		String u = "mcopt.shade.user.";
+		int b = 0;
+		boolean refl = mcopt.metal.shade.ShadeSettings.reflect() > 0f;
+		if (!refl) b |= ShadeMsl.WOFF_REFL;
+		if (!mcopt.metal.shade.ShadeSettings.ssr()) b |= ShadeMsl.WOFF_SSR;
+		if (mcopt.metal.shade.Live.f("mcopt.shade.water.swell", 1.3f, 0f, 3f) <= 0f) b |= ShadeMsl.WOFF_SWELL;
+		if (!CAUSTICS || mcopt.metal.shade.Live.f(u + "caustics", 1f, 0f, 2f) <= 0f) b |= ShadeMsl.WOFF_CAUSTICS;
+		if (mcopt.metal.shade.Live.f(u + "foam", 1f, 0f, 3f) <= 0f) b |= ShadeMsl.WOFF_FOAM;
+		if (!ShadeWaterPano.on() || mcopt.metal.shade.Live.f("mcopt.shade.water.reflPano", 1f, 0f, 1f) <= 0f) b |= ShadeMsl.WOFF_PANO;
+		if (shadowSoft() <= 0f) b |= ShadeMsl.WOFF_WSHADOW;
+		if (!RTR || mcopt.metal.shade.Live.f("mcopt.shade.water.reflTemporal", 0.8f, 0f, 0.95f) <= 0f) b |= ShadeMsl.WOFF_RTR;
+		if (mcopt.metal.shade.Live.f(u + "glint", 1f, 0f, 3f) <= 0f) b |= ShadeMsl.WOFF_GLINT;
+		return b;
+	}
+
 	public static void frame(long ctx, float[] still, float[] flow, float surfaceY, float wetness) {
 		if (!ready(ctx)) return;
 		dhSwell = swellCompiled() && mcopt.metal.shade.Live.f("mcopt.shade.dh.waterSwell", 1f, 0f, 1f) > 0.5f

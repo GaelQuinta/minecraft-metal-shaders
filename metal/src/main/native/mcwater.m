@@ -196,7 +196,10 @@ int mc_water_capture(Enc *enc, WaterState *s) {
 		// (FT2.8, audit idx 61) the coarse depth first, from the attachment itself (the same texels as the copy): it then depends
 		// only on the ended world encoder and can run alongside the ~0.37 ms copy below instead of waiting for all of it
 		NSUInteger pyrFarW = 0, pyrFarH = 0, pyrFarY = 0; // (the 128-pixel blocks made this frame: copied into the pyramid below)
-		if (s->pyrPso && s->pyr2Pso) {
+		// (1.2.9, issue #68) no pyramid while nothing marches: Scene reflections off (tune.y 0) or Reflections 0 % (tune.z 0); the
+		// water and the glossy blocks skip their SSR then, and the stale pyramid bound is never read
+		int marches = s->params.tune[1] > 0.0f && s->params.tune[2] > 0.0f;
+		if (s->pyrPso && s->pyr2Pso && marches) {
 			// (candidate 8) the exact march's pyramid in three small passes: the plain 8-pixel blocks from the depth attachment (their
 			// own texture), the 16-pixel blocks (each with half a block around it) from those, and the 128-pixel blocks from the
 			// 16-pixel ones (their own small target: copied into its region by the scene copy's blit encoder below). Straight from the
@@ -279,7 +282,7 @@ int mc_water_capture(Enc *enc, WaterState *s) {
 			[b copyFromTexture:depth sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(cw, ch, 1)
 				toTexture:s->depth destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
 		}
-		if (pyrFarW > 0 && s->pyrFar && s->pyr) // (candidate 8) the pyramid's 128-pixel blocks into their region
+		if (pyrFarW > 0 && s->pyrFar && s->pyr && marches) // (candidate 8) the pyramid's 128-pixel blocks into their region
 			[b copyFromTexture:s->pyrFar sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(pyrFarW, pyrFarH, 1)
 				toTexture:s->pyr destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, pyrFarY, 0)];
 		[b endEncoding];

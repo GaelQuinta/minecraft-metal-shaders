@@ -310,8 +310,12 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	half shadow = (skyLight <= 0.3h && !endLit) || netherLit ? half(1.0)
 #endif
 		// M3.4 (mcopt.shade.waterShadowSoft, ShadeLook.waterShadow.x, read every frame): up-facing water gets a soft-edged shadow
+#ifdef SHADE_WOFF_WSHADOW
+		: waterFull ? shadeShadow(shadowMap, shadowCompare, sf, p, n, false) // (1.2.9: Water shadow blur 0, the soft one compiled out)
+#else
 		: waterFull ? (n.y > 0.5h && sl.waterShadow.x > 0.0 ? shadeShadowSoft(shadowMap, shadowCompare, sf, p, n, sl.waterShadow.x, in.fragCoord.xy, sl.waterShadow.z)
 		                                                    : shadeShadow(shadowMap, shadowCompare, sf, p, n, false))
+#endif
 		: shadeShadow2(shadowMap, shadowCompare, sf, sl, p, n, thin || foliage, foliage, in.fragCoord.xy, shadowSky);
 #ifdef MCOPT_HDR
 	// M3: the volumetric clouds' shadows (shade_clouds.metal; 1 when they are off); overworld only (only where the sun or moon

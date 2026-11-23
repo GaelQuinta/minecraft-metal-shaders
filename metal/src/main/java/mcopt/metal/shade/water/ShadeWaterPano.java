@@ -47,7 +47,9 @@ public final class ShadeWaterPano {
 	 * reflections end at the screen's sides as in candidate 7; back on, the panorama starts over from nothing.
 	 */
 	static boolean on() {
-		return mcopt.metal.shade.Live.b("mcopt.shade.water.reflSides", true);
+		// (1.2.9, issue #68) nor while nothing marches (Scene reflections off, Reflections 0 %): no pass for a panorama nobody reads
+		return mcopt.metal.shade.Live.b("mcopt.shade.water.reflSides", true) && mcopt.metal.shade.ShadeSettings.ssr()
+			&& mcopt.metal.shade.ShadeSettings.reflect() > 0f;
 	}
 
 	/**
