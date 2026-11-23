@@ -143,13 +143,13 @@ public final class CloudParams {
 				k *= this.sunFade;
 			}
 			float kt = mcopt.metal.shade.Look2.k("sunTint");
-			if (kt > 0f) mcopt.metal.shade.Look2.sunTint(sunY, kt * (1f - f.rain), this.tint);
+			if (kt > 0f) mcopt.metal.shade.Look2.sunTint(sunY, kt * (1f - f.rain) * mcopt.metal.shade.Look2.v("cloudTint", 0.5f, 0f, 1.5f), this.tint);
 			for (int i = 0; i < 3; i++) this.light[i] = t[i] * k * (kt > 0f ? this.tint[i] : 1f);
 			// (Look2 clouds) the low sun's light on the layer deeper gold (Photon's sunset cumulus: lit side a* +6..10, b* +22..32 against
 			// our +3..5, +9): chroma power up to cloudGold at a sun 0..14 degrees high
 			if (kc > 0f) {
 				float bell = smoothstep(-0.06f, 0.0f, sunY) * (1f - smoothstep(0.08f, 0.25f, sunY));
-				mcopt.metal.shade.Look2.chroma(this.light, 1f + (mcopt.metal.shade.Look2.v("cloudGold", 1.6f, 1f, 3f) - 1f) * bell * Math.min(kc, 1f) * (1f - f.rain));
+				mcopt.metal.shade.Look2.chroma(this.light, 1f + (mcopt.metal.shade.Look2.v("cloudGold", 1.9f, 1f, 3f) - 1f) * bell * Math.min(kc, 1f) * (1f - f.rain));
 			}
 			this.lightDir[0] = f.sunDir.x;
 			this.lightDir[1] = f.sunDir.y;
@@ -180,7 +180,9 @@ public final class CloudParams {
 		// and in the blue hour the sky that lights them is the graded one (Look2 sky gain: blue-violet), stronger: lavender-blue clouds
 		// against the violet sky, as Photon's at sun -3 degrees, not grey silhouettes
 		float[] sg = mcopt.metal.shade.Look2.SKY_GAIN;
-		float bhk = 1f + (mcopt.metal.shade.Look2.v("cloudBlueAmb", 2.2f, 0.5f, 6f) - 1f) * mcopt.metal.shade.Look2.blueHour * kcl;
+		float bh = mcopt.metal.shade.Look2.blueHour;
+		float bhk = 1f + (mcopt.metal.shade.Look2.v("cloudBlueAmb", 2.4f, 0.5f, 6f) - 1f) * bh * kcl;
+		sg = new float[] {1f + (sg[0] - 1f) * bh, 1f + (sg[1] - 1f) * bh, 1f + (sg[2] - 1f) * bh}; // (the day's gain is for the sky only)
 		put4(b, 256, as[0] * fill * bright * amb * sg[0] * bhk, as[1] * fill * bright * amb * sg[1] * bhk, as[2] * fill * bright * amb * sg[2] * bhk, albedo);
 		put4(b, 272, ag[0] * bright, ag[1] * bright, ag[2] * bright, 0.9f * amb);
 		// aerial perspective toward the sky behind: lighter while the sun is low (the clouds keep their sunset colour)

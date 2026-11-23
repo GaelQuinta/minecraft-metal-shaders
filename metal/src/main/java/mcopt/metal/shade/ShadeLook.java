@@ -504,14 +504,16 @@ public final class ShadeLook {
 		}
 		// and a slightly warmer, yellower noon sun (Photon's sunlit grass b* +43 vs ours +35): chroma power on the light
 		float kw = Look2.k("noonWarm");
-		if (sun && kw > 0f) gradeLight(f.sky.light, 1f + Look2.v("noonGamma", 0.10f, 0f, 0.5f) * kw * day * (1f - rain), 1f);
+		if (sun && kw > 0f) gradeLight(f.sky.light, 1f + Look2.v("noonGamma", 0.25f, 0f, 0.8f) * kw * day * (1f - rain), 1f);
 		// (and a warmer daylight white balance: Photon's noon grass is yellower, a* -20 b* +43 against our -24 / +35, and its zenith warmer)
 		if (kw > 0f) this.whiteBalance += Look2.v("dayWarm", 14f, -30f, 40f) * kw * day * (1f - rain) * this.outdoor;
 		// 2. deeper shade: the sky's fill and the bounce weaker by day (sun / shade luminance on grass 1.9-2.2 -> ~2.8)
 		float ks = Look2.k("shade") * day;
 		if (ks > 0f) {
 			float amb = 1f + (Look2.v("skyFill", 0.55f, 0.2f, 1f) - 1f) * ks;
-			for (int i = 0; i < 3; i++) this.ambientTint[i] *= amb;
+			// and a less blue fill (the keyframes' daytime ambient tint is 0.95, 1, 1.08: with Photon's yellower noon grass the fill is closer to neutral)
+			float[] warm = {Look2.v("fillR", 1.05f, 0.5f, 1.5f), 1f, Look2.v("fillB", 0.84f, 0.5f, 1.5f)};
+			for (int i = 0; i < 3; i++) this.ambientTint[i] *= amb * (1f + (warm[i] - 1f) * ks);
 			this.l2Bounce = 1f + (Look2.v("bounceFill", 0.6f, 0f, 1f) - 1f) * ks;
 			// side faces darker than tops (Photon's directional term: x0.8 on vertical faces; ours was x0.94 on x faces only)
 			this.l2Face = Look2.v("sideFace", 0.12f, 0f, 0.4f) * ks;
