@@ -459,7 +459,7 @@ public final class ShadeLook {
 		// z (1.2.9): how the border fog shows the clouds behind distant terrain (shade_m2.metal shadeFogAir2; mcopt.shade.clouds.fogBlend,
 		// live: 0 = FT2.10's late ramp, 1 = from the fog's start, 2 = late only toward a low sun)
 		put4(b, USER4, Live.b("mcopt.shade.skyHaze", true) ? 1f : 0f, Live.b("mcopt.shade.sun", true) ? 0f : 1f,
-			Math.round(Live.f("mcopt.shade.clouds.fogBlend", 2f, 0f, 2f)), 0f);
+			Math.round(Live.f("mcopt.shade.clouds.fogBlend", 2f, 0f, 2f)), Live.f("mcopt.shade.mistSun", 1f, 0.25f, 4f));
 		mcopt.metal.shade.weather.ShadeWeather.pack(b); // M3 weather: wet, wind, flash
 	}
 

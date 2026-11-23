@@ -81,7 +81,7 @@ struct ShadeLook {
 	float4 user1;         // 1040 x Distant Horizons' far water reflection strength, y its screen-space part on (1) / off (0), z foam, w refraction
 	float4 user2;         // 1056 x the sun's glint on water, y beacon radiance multiplier, z (cand. 6) Distant Horizons' sea swell, w its mirrored share
 	float4 user3;         // 1072 x Natural lighting daylight strength 0..2 (0 = Current, 1 = original Natural), y signed normal strength (negative flips Y), z specular, w emission (0 without PBR)
-	float4 user4;         // 1088 (1.2.9) x 1 = the haze and mist over the sky too, up to the border fog's radius (mcopt.shade.skyHaze; shade_post.metal shadeHazeSkyEnd), y 1 = Minecraft's own sun texture instead of the sky's disc (issue #67, mcopt.shade.sun=false), z the border fog's clouds behind terrain: 0 late ramp, 1 from the fog's start, 2 late only toward a low sun (mcopt.shade.clouds.fogBlend), w reserved
+	float4 user4;         // 1088 (1.2.9) x 1 = the haze and mist over the sky too, up to the border fog's radius (mcopt.shade.skyHaze; shade_post.metal shadeHazeSkyEnd), y 1 = Minecraft's own sun texture instead of the sky's disc (issue #67, mcopt.shade.sun=false), z the border fog's clouds behind terrain: 0 late ramp, 1 from the fog's start, 2 late only toward a low sun (mcopt.shade.clouds.fogBlend), w the mist's sunlit part's multiple-scattering gain (mcopt.shade.mistSun, 1 = before; shadeHazeInscatterFrom)
 };
 
 // ShadeLook.tier.y feature bits

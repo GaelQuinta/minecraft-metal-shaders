@@ -331,9 +331,14 @@ static float3 shadeHazeInscatterFrom(float3 p, float yc, constant ShadeFrame &f,
 	float glow = 1.0 + L.fogMisc.w; // (ShadeLook: strength x exp(-((sun elevation in degrees + 1) / 2.5)^2), once per frame)
 	float aM = L.fogM.w;
 	float3 sR = (E * phR + sky) * (1.0 / (1.0 - 0.5));
-	float3 sM = (E * phM * glow + sky) * aM / (1.0 - 0.5 * aM);
+	// (1.2.9, mcopt.shade.mistSun, ShadeLook.user4.w; 1 = before) the mist's sunlit part times a multiple-scattering gain: Photon's
+	// air fog sums four octaves of the sun's scattering (1 + 1/2 + 1/4 + 1/8 = 1.875), so its low-sun mist is warm and sun-coloured,
+	// where ours was mostly the sky's blue-grey ambient. Adapted from Photon Shaders by Benjamin Stott ("sixthsurge"), MIT License,
+	// commit 26c2906e (LICENSES/MIT-Photon.txt): include/fog/air_fog_vl.glsl (the multiple scattering loop's total)
+	float msGain = L.user4.w > 0.0 ? L.user4.w : 1.0;
+	float3 sM = (E * phM * glow * msGain + sky) * aM / (1.0 - 0.5 * aM);
 	float3 w = (1.0 - T) / max(tau, 1e-6);
-	Ssun = w * E * (tauR * (phR * 2.0) + tauM * (phM * glow * aM / (1.0 - 0.5 * aM)));
+	Ssun = w * E * (tauR * (phR * 2.0) + tauM * (phM * glow * msGain * aM / (1.0 - 0.5 * aM)));
 	// (FT2.10) what the cave air scatters instead: neutral grey at a share of the minimum cave light (L.eye.x, BSL's "minimum light
 	// x 0.5" fog colour, Photon's faint dark cave fog), so far walls fade into the cave's darkness, never into a tint
 	float cave = (1.0 - airSun) * L.eye.x * f.ambientBlock.w;
