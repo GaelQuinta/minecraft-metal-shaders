@@ -54,6 +54,11 @@ public final class Look2 {
 		return Live.f(KEY + "." + name, def, min, max);
 	}
 
+	/** Chroma power on a light colour (ShadeLook.gradeLight without the multiplier): luminance kept, the colour deepened by gamma > 1. */
+	public static void chroma(float[] c, float gamma) {
+		ShadeLook.gradeLight(c, gamma, 1f);
+	}
+
 	/**
 	 * The low sun's pink-gold tint (multiplier, luminance-neutral) at sin(sun elevation) sunY, times strength s: a rose-gold with
 	 * less green than red and blue, in from about -13 to 35 degrees of sun, strongest near 10. Constants adapted from Photon Shaders

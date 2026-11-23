@@ -84,6 +84,8 @@ public final class CloudParams {
 
 	private final Matrix4f m = new Matrix4f(), inv = new Matrix4f();
 	private final float[] t = new float[3], tint = new float[3];
+	/** (1.2.9 look pass) This frame's share of the sun's light the layer keeps below the horizon (Look2 clouds; 1 = 1.2.8). */
+	private float sunFade = 1f;
 
 	/** Packs CloudParams (SIZE bytes) at out's position 0. */
 	public void pack(ByteBuffer out, ShadeFrame f, CloudWeather w) {
@@ -134,13 +136,21 @@ public final class CloudParams {
 			// (1.2.9 look pass, Look2 clouds) the sun leaves the layer sooner below the horizon (no saturated orange deck in the blue
 			// hour), and its light gets the low sun's pink-gold tint the ground's light gets (ShadeLook, Look2.sunTint)
 			float kc = mcopt.metal.shade.Look2.k("clouds");
+			this.sunFade = 1f;
 			if (kc > 0f) {
 				float end = mcopt.metal.shade.Look2.v("cloudSunEnd", -0.035f, -0.1f, 0.05f);
-				k *= 1f + (smoothstep(end, end + mcopt.metal.shade.Look2.v("cloudSunRamp", 0.06f, 0.01f, 0.2f), sunY) - 1f) * Math.min(kc, 1f);
+				this.sunFade = 1f + (smoothstep(end, end + mcopt.metal.shade.Look2.v("cloudSunRamp", 0.06f, 0.01f, 0.2f), sunY) - 1f) * Math.min(kc, 1f);
+				k *= this.sunFade;
 			}
 			float kt = mcopt.metal.shade.Look2.k("sunTint");
 			if (kt > 0f) mcopt.metal.shade.Look2.sunTint(sunY, kt * (1f - f.rain), this.tint);
 			for (int i = 0; i < 3; i++) this.light[i] = t[i] * k * (kt > 0f ? this.tint[i] : 1f);
+			// (Look2 clouds) the low sun's light on the layer deeper gold (Photon's sunset cumulus: lit side a* +6..10, b* +22..32 against
+			// our +3..5, +9): chroma power up to cloudGold at a sun 0..14 degrees high
+			if (kc > 0f) {
+				float bell = smoothstep(-0.06f, 0.0f, sunY) * (1f - smoothstep(0.08f, 0.25f, sunY));
+				mcopt.metal.shade.Look2.chroma(this.light, 1f + (mcopt.metal.shade.Look2.v("cloudGold", 1.6f, 1f, 3f) - 1f) * bell * Math.min(kc, 1f) * (1f - f.rain));
+			}
 			this.lightDir[0] = f.sunDir.x;
 			this.lightDir[1] = f.sunDir.y;
 			this.lightDir[2] = f.sunDir.z;
@@ -162,8 +172,11 @@ public final class CloudParams {
 		// (1.1: mcopt.shade.clouds.sunsetFill read every frame, SUNSET_FILL its default)
 		float sunsetFill = Live.f("mcopt.shade.clouds.sunsetFill", SUNSET_FILL);
 		float fill = this.sunLit ? sunsetFill + (1f - sunsetFill) * smoothstep(0.04f, 0.35f, sunY) : 1f;
-		// (1.2.9 look pass, Look2 clouds) darker undersides: less of the sky's and the ground's fill (the lit sides are the direct light's)
-		float kcl = Math.min(mcopt.metal.shade.Look2.k("clouds"), 1f), amb = 1f + (mcopt.metal.shade.Look2.v("cloudAmb", 0.7f, 0.2f, 1.5f) - 1f) * kcl;
+		// (1.2.9 look pass, Look2 clouds) darker undersides by day: less of the sky's and the ground's fill (the lit sides are the direct
+		// light's); as the sun leaves the layer (sunFade) the sky's full fill comes back: the blue hour's clouds lit by the sky, not black
+		float kcl = Math.min(mcopt.metal.shade.Look2.k("clouds"), 1f);
+		float amb = 1f + (mcopt.metal.shade.Look2.v("cloudAmb", 0.55f, 0.2f, 1.5f) - 1f) * kcl * (this.sunLit ? smoothstep(0.02f, 0.2f, sunY) : 0f);
+		if (this.sunLit) fill += (1f - fill) * (1f - this.sunFade);
 		put4(b, 256, as[0] * fill * bright * amb, as[1] * fill * bright * amb, as[2] * fill * bright * amb, albedo);
 		put4(b, 272, ag[0] * bright, ag[1] * bright, ag[2] * bright, 0.9f * amb);
 		// aerial perspective toward the sky behind: lighter while the sun is low (the clouds keep their sunset colour)
@@ -215,7 +228,7 @@ public final class CloudParams {
 		put4(b, 400, sl[0], ly, sl[2], this.mode);
 		// art: a low sun gets fewer, dimmer scattering octaves (more contrast: gold sunlit sides, darker bodies)
 		float low = this.sunLit ? 1f - smoothstep(0.03f, 0.3f, sunY) : 0f;
-		put4(b, 416, (OCTAVE_WEIGHT - 0.15f * low) * (1f + (mcopt.metal.shade.Look2.v("cloudOctave", 0.88f, 0.3f, 1.5f) - 1f) * kcl), OCTAVE_EXTINCTION, SKY_EXTINCTION, ShadeClouds.blocky() ? (this.vanillaCells ? 2f : 1f) : 0f);
+		put4(b, 416, (OCTAVE_WEIGHT - 0.15f * low) * (1f + (mcopt.metal.shade.Look2.v("cloudOctave", 0.8f, 0.3f, 1.5f) - 1f) * kcl), OCTAVE_EXTINCTION, SKY_EXTINCTION, ShadeClouds.blocky() ? (this.vanillaCells ? 2f : 1f) : 0f);
 		// wind shear: the tops lean downwind by ~40 blocks over the layer (more on windy days)
 		float shear = ShadeClouds.blocky() ? 0f : 25f + 3f * w.windSpeed;
 		put4(b, 432, w.windX * shear, w.windZ * shear, OD_STEP, OD_MIN);

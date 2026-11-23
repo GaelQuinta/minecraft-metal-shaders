@@ -467,15 +467,15 @@ public final class ShadeLook {
 		// live: 0 = FT2.10's late ramp, 1 = from the fog's start, 2 = late only toward a low sun)
 		put4(b, USER4, Live.b("mcopt.shade.skyHaze", true) ? 1f : 0f, Live.b("mcopt.shade.sun", true) ? 0f : Live.f("mcopt.shade.sunTexGain", 40f, 1f, 400f),
 			Math.round(Live.f("mcopt.shade.clouds.fogBlend", 2f, 0f, 2f)), Live.f("mcopt.shade.mistSun", 1f, 0.25f, 4f));
-		// (1.2.9 look pass, Look2) a: x the foliage sheen (shade_m2.metal shadeLit2), yzw reserved; b: rgb the sky's gain (sky_lut.metal), w reserved
-		put4(b, LOOK2A, this.l2Sheen, 0f, 0f, 0f);
+		// (1.2.9 look pass, Look2) a: x the foliage sheen, y the side faces' extra darkening, z the sheen's share of the plant's hue (shade_m2.metal shadeLit2), w reserved; b: rgb the sky's gain (sky_lut.metal), w reserved
+		put4(b, LOOK2A, this.l2Sheen, this.l2Face, Look2.v("sheenHue", 0.5f, 0f, 1f), 0f);
 		put4(b, LOOK2B, this.l2Sky[0], this.l2Sky[1], this.l2Sky[2], 0f);
 		mcopt.metal.shade.weather.ShadeWeather.pack(b); // M3 weather: wet, wind, flash
 	}
 
 	// ---- (1.2.9 look pass) the new atmosphere (Look2): all 1 / 0 with mcopt.shade.look2=false ---------------------------------
 	/** This frame's: bounce multiplier, exposure-reference EV, auto-exposure share multiplier, foliage sheen, sky gain. */
-	private float l2Bounce = 1f, l2Ev = 0f, l2Lambda = 1f, l2Sheen = 0f;
+	private float l2Bounce = 1f, l2Ev = 0f, l2Lambda = 1f, l2Sheen = 0f, l2Face = 0f;
 	private final float[] l2Sky = {1f, 1f, 1f}, l2Tint = new float[3];
 
 	/**
@@ -487,6 +487,7 @@ public final class ShadeLook {
 		this.l2Ev = 0f;
 		this.l2Lambda = 1f;
 		this.l2Sheen = 0f;
+		this.l2Face = 0f;
 		this.l2Sky[0] = this.l2Sky[1] = this.l2Sky[2] = 1f;
 		if (!Look2.on()) return;
 		float e = this.elevation, sunY = (float) Math.sin(Math.toRadians(e));
@@ -502,19 +503,24 @@ public final class ShadeLook {
 		// and a slightly warmer, yellower noon sun (Photon's sunlit grass b* +43 vs ours +35): chroma power on the light
 		float kw = Look2.k("noonWarm");
 		if (sun && kw > 0f) gradeLight(f.sky.light, 1f + Look2.v("noonGamma", 0.10f, 0f, 0.5f) * kw * day * (1f - rain), 1f);
+		// (and a warmer daylight white balance: Photon's noon grass is yellower, a* -20 b* +43 against our -24 / +35, and its zenith warmer)
+		if (kw > 0f) this.whiteBalance += Look2.v("dayWarm", 8f, -30f, 40f) * kw * day * (1f - rain) * this.outdoor;
 		// 2. deeper shade: the sky's fill and the bounce weaker by day (sun / shade luminance on grass 1.9-2.2 -> ~2.8)
 		float ks = Look2.k("shade") * day;
 		if (ks > 0f) {
 			float amb = 1f + (Look2.v("skyFill", 0.62f, 0.2f, 1f) - 1f) * ks;
 			for (int i = 0; i < 3; i++) this.ambientTint[i] *= amb;
 			this.l2Bounce = 1f + (Look2.v("bounceFill", 0.6f, 0f, 1f) - 1f) * ks;
+			// side faces darker than tops (Photon's directional term: x0.8 on vertical faces; ours was x0.94 on x faces only)
+			this.l2Face = Look2.v("sideFace", 0.12f, 0f, 0.4f) * ks;
 		}
 		// 3. exposure: evenings darker (the reference down by up to evening EV from 35 degrees of sun to 3, held to -4 and back to the
 		// night's by -12; mornings a third of it), the meter following less of the scene meanwhile; a firmer toe by day
 		float kx = Look2.k("exposure");
 		if (kx > 0f) {
-			float w = smooth(35f, 3f, e) * smooth(-12f, -4f, e) * (this.rising > 0f ? Look2.v("morning", 0.35f, 0f, 1f) : 1f) * kx;
-			this.l2Ev = -Look2.v("evening", 1.0f, 0f, 3f) * w * (1f - 0.5f * rain);
+			// (full from 3 degrees down to 2, half at -3 degrees, back to the night's by -8: the blue hour stops half way to Photon's)
+			float w = smooth(Look2.v("eveningFrom", 30f, 5f, 60f), 3f, e) * smooth(-8f, 2f, e) * (this.rising > 0f ? Look2.v("morning", 0f, 0f, 1f) : 1f) * kx;
+			this.l2Ev = -Look2.v("evening", 0.85f, 0f, 3f) * w * (1f - 0.5f * rain);
 			this.l2Lambda = 1f - Look2.v("eveningMeter", 0.5f, 0f, 1f) * Math.min(w, 1f);
 			this.contrast *= 1f + Look2.v("contrast", 0.03f, -0.2f, 0.3f) * kx * day * this.outdoor;
 		}
@@ -529,7 +535,7 @@ public final class ShadeLook {
 		if (ky > 0f) {
 			float dw = smooth(8f, 25f, e) * (1f - rain) * ky;
 			float bh = (float) Math.exp(-Math.pow((e + Look2.v("blueHourAt", 3.5f, 0f, 10f)) / 2.8f, 2.0)) * (1f - rain) * ky;
-			float[] dg = {Look2.v("skyR", 0.80f, 0.3f, 1.5f), Look2.v("skyG", 0.78f, 0.3f, 1.5f), Look2.v("skyB", 0.82f, 0.3f, 1.5f)};
+			float[] dg = {Look2.v("skyR", 0.86f, 0.3f, 1.5f), Look2.v("skyG", 0.78f, 0.3f, 1.5f), Look2.v("skyB", 0.74f, 0.3f, 1.5f)};
 			float[] bg = {Look2.v("blueR", 0.55f, 0.1f, 1.5f), Look2.v("blueG", 0.62f, 0.1f, 1.5f), Look2.v("blueB", 1.25f, 0.1f, 2f)};
 			for (int i = 0; i < 3; i++) this.l2Sky[i] = (1f + (dg[i] - 1f) * dw) * (1f + (bg[i] - 1f) * Math.min(bh, 1f));
 			this.skyRose *= 1f - Math.min(bh, 1f);
