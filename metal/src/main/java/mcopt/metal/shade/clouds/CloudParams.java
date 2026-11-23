@@ -29,7 +29,7 @@ import org.joml.Matrix4f;
  * ShadeFrame and CloudWeather, no game types: the offline preview packs it too.
  */
 public final class CloudParams {
-	public static final int SIZE = 528;
+	public static final int SIZE = 544;
 	/** Art knobs: multiple-scattering octave weight and extinction factors, sky-light extinction (diffuse) factor. */
 	static final float OCTAVE_WEIGHT = CloudConfig.floatProperty("mcopt.shade.clouds.octaveWeight", 0.68f),
 		OCTAVE_EXTINCTION = CloudConfig.floatProperty("mcopt.shade.clouds.octaveExtinction", 0.48f),
@@ -235,6 +235,10 @@ public final class CloudParams {
 		// (round 4) z, w: the far light samples' weather mip and density factor (the blocky style's cell mask has no mips: off)
 		put4(b, 512, CloudConfig.horizonAp(), Live.f("mcopt.shade.clouds.horizonTop", 0.08f, 0.01f, 0.5f), ShadeClouds.blocky() ? 0f : CloudConfig.farLightMip(),
 			CloudConfig.farLightGain());
+		// (1.2.9 look pass, Look2 clouds) the fine detail: frequency, curl-like warp (blocks, radians per block), mip offset; 1.2.8: (1, 0, 0, 1)
+		float kd = ShadeClouds.blocky() ? 0f : Math.min(mcopt.metal.shade.Look2.k("clouds"), 1f);
+		put4(b, 528, 1f + (mcopt.metal.shade.Look2.v("cloudDetailFreq", 1.4f, 0.5f, 3f) - 1f) * kd, mcopt.metal.shade.Look2.v("cloudCurl", 9f, 0f, 40f) * kd,
+			6.2831853f / mcopt.metal.shade.Look2.v("cloudCurlSize", 55f, 10f, 400f), 1f + (mcopt.metal.shade.Look2.v("cloudDetailMip", 0.5f, 0f, 2f) - 1f) * kd);
 		// (1.1: shadows on/off and their strength live; off = 0, the consumers read 1, ShadeClouds skips the map's pass)
 		this.shadowStrength = CloudConfig.shadows() ? CloudConfig.shadowStrength() * smoothstep(0.04f, 0.18f, f.sky.lightDir[1]) * this.opacity : 0f;
 
