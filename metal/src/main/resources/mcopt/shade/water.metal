@@ -781,6 +781,9 @@ static inline uint shadeQuadOr(uint v) { v |= quad_shuffle_xor(v, 1); return v |
 #ifndef SHADE_SSRH_BUDGET
 #define SHADE_SSRH_BUDGET 32
 #endif
+#ifndef SHADE_SSRH_YM
+#define SHADE_SSRH_YM 1.0 // (1.2.9, SHADE_SSRH_HEIGHT) blocks of margin under the quad's mean ray (its four rays differ a little)
+#endif
 #define SHADE_SSRH_N0 20      // the 128-pixel intervals at most (rays longer than 2560 pixels get longer ones)
 
 // The pyramid (texture(21) in this mode, RG16F: r the nearest = largest reversed-Z, g the farthest; mcwater.m): for a depth copy
@@ -797,41 +800,62 @@ struct ShadeSsrPyrBuild {
 	int4 a; // x the block's size in the source's blocks (2: 16 pixels from the 8-pixel blocks; 8: 128 from the 16-pixel ones), yz the
 	        // region's origin in the target, w how many of them around it too (1; 4)
 	int4 b; // xy the source's valid size: the depth's rendered rect (pixels), or the blocks that cover it
+	float4 iy, iw; // (1.2.9) ShadeFrame.invViewProj's y and w rows: the depth's camera-relative world y (shadeSsrhY)
 };
+// (1.2.9) A pyramid height as stored (half): rounded up, the sky (and nothing) far below anything
+#define SHADE_SSRH_NO_Y -60000.0
 fragment float4 shade_water_pyr_fs(float4 pos [[position]], depth2d<float> d [[texture(0)]], constant ShadeSsrPyrBuild &u [[buffer(0)]]) {
 	constexpr sampler g(coord::normalized, filter::nearest, address::clamp_to_edge);
 	int2 valid = max(u.b.xy, int2(2));
 	int2 lo = min(int2(pos.xy) * 8, valid - 1), hi = min(lo + 7, valid - 1);
 	float2 inv = 1.0 / float2(d.get_width(), d.get_height());
-	float zn = 0.0, zf = 1.0;
+	float zn = 0.0, zf = 1.0, ym = SHADE_SSRH_NO_Y;
+	float2 vs = 2.0 / float2(valid); // (the rendered rect's pixel centres to NDC, as shadeSsrhY)
 	for (int y = lo.y; y <= hi.y; y += 2) {
 		int gy = min(y, valid.y - 2);
 		for (int x = lo.x; x <= hi.x; x += 2) {
-			float4 z = d.gather(g, (float2(float(min(x, valid.x - 2)), float(gy)) + 1.0) * inv);
+			int gx = min(x, valid.x - 2);
+			float4 z = d.gather(g, (float2(float(gx), float(gy)) + 1.0) * inv);
 			zn = max(zn, max(max(z.x, z.y), max(z.z, z.w)));
 			zf = min(zf, min(min(z.x, z.y), min(z.z, z.w)));
+			// (1.2.9) the highest world y of the four (gather order: (0,1) (1,1) (1,0) (0,0)); sky (z 0) has none
+			float2 c0 = (float2(float(gx), float(gy)) + 0.5) * vs - 1.0, c1 = c0 + vs;
+			float4 nx = float4(c0.x, c1.x, c1.x, c0.x), ny = float4(c1.y, c1.y, c0.y, c0.y);
+			float4 py = u.iy.x * nx + u.iy.y * ny + u.iy.z * z + u.iy.w, pw = u.iw.x * nx + u.iw.y * ny + u.iw.z * z + u.iw.w;
+			float4 wy = select(float4(SHADE_SSRH_NO_Y), py / pw, z > 0.0);
+			ym = max(ym, max(max(wy.x, wy.y), max(wy.z, wy.w)));
 		}
 	}
-	return float4(zn > 0.0 ? zn * (1.0 + 1.0 / 1024.0) + 6.0e-8 : 0.0, max(zf * (1.0 - 1.0 / 1024.0) - 6.0e-8, 0.0), 0.0, 0.0);
+	return float4(zn > 0.0 ? zn * (1.0 + 1.0 / 1024.0) + 6.0e-8 : 0.0, max(zf * (1.0 - 1.0 / 1024.0) - 6.0e-8, 0.0),
+		ym > SHADE_SSRH_NO_Y ? ym + abs(ym) * (1.0 / 512.0) + 0.02 : SHADE_SSRH_NO_Y, 0.0);
 }
 fragment float4 shade_water_pyr2_fs(float4 pos [[position]], texture2d<float> b [[texture(0)]], constant ShadeSsrPyrBuild &u [[buffer(0)]]) {
 	int2 valid = max(u.b.xy, int2(1));
 	int2 t = int2(pos.xy) - u.a.yz;
 	int2 lo = clamp(t * u.a.x - u.a.w, int2(0), valid - 1), hi = clamp(t * u.a.x + (u.a.x - 1 + u.a.w), int2(0), valid - 1);
-	float2 o = float2(0.0, 1.0);
+	float3 o = float3(0.0, 1.0, SHADE_SSRH_NO_Y);
 	for (int y = lo.y; y <= hi.y; y++) {
 		for (int x = lo.x; x <= hi.x; x++) {
-			float2 v = b.read(uint2(x, y)).xy;
-			o = float2(max(o.x, v.x), min(o.y, v.y));
+			float3 v = b.read(uint2(x, y)).xyz;
+			o = float3(max(o.x, v.x), min(o.y, v.y), max(o.z, v.z));
 		}
 	}
-	return float4(o, 0.0, 0.0);
+	return float4(o, 0.0);
 }
 
 // (nearest reversed-Z, farthest) of everything within half a 16- / 128-pixel block of pixel px (inside the rendered rect); row: the
 // 128-pixel blocks' first row in the texture
 static inline float2 shadeSsrhRange16(texture2d<float> pyr, float2 px) { return pyr.read(uint2(px) >> 4u).xy; }
 static inline float2 shadeSsrhRange128(texture2d<float> pyr, float2 px, uint row) { return pyr.read((uint2(px) >> 7u) + uint2(0u, row)).xy; }
+// (1.2.9) the same with z = the highest camera-relative world y around (SHADE_SSRH_NO_Y: only sky), one read
+static inline float3 shadeSsrhRange16Y(texture2d<float> pyr, float2 px) { return pyr.read(uint2(px) >> 4u).xyz; }
+static inline float3 shadeSsrhRange128Y(texture2d<float> pyr, float2 px, uint row) { return pyr.read((uint2(px) >> 7u) + uint2(0u, row)).xyz; }
+// (1.2.9) the camera-relative world y of NDC point s (xy as the march's, reversed-Z depth z)
+static inline float shadeSsrhNdcY(float3 s, constant ShadeFrame &f) {
+	float4 v = float4(s, 1.0);
+	return dot(float4(f.invViewProj[0].y, f.invViewProj[1].y, f.invViewProj[2].y, f.invViewProj[3].y), v)
+		/ dot(float4(f.invViewProj[0].w, f.invViewProj[1].w, f.invViewProj[2].w, f.invViewProj[3].w), v);
+}
 
 // The camera-relative world y of the depth copy's value z at pixel position px of the rendered rect
 static inline float shadeSsrhY(float2 px, float z, float2 size, constant ShadeFrame &f) {
@@ -1199,16 +1223,27 @@ static float4 shadeSsrTraceQuadOwn(float3 s0, float3 ds, float3 so, float3 dso, 
 	float inv0 = 1.0 / float(n0), inv1 = inv0 * 0.125, inv2 = inv1 * (1.0 / 11.0);
 	float wStart = B / max(so.z + A, 1e-7);
 	bool behind = SHADE_SSR_BEHIND != 0;
-	uint mF = 0u, mB = 0u;
+	uint mF = 0u, mB = 0u, mL = 0u;
 	for (int i = c; i < n0; i += 4) {
 		float ta = float(i) * inv0;
 		float za = s0.z + ds.z * ta, zb = za + ds.z * inv0;
+#ifdef SHADE_SSRH_HEIGHT
+		float3 r0 = shadeSsrhRange128Y(pyr, clamp(a + d * (ta + 0.5 * inv0), float2(0.0), top), org);
+#else
 		float2 r0 = shadeSsrhRange128(pyr, clamp(a + d * (ta + 0.5 * inv0), float2(0.0), top), org);
+#endif
 		if (min(za, zb) > r0.x || r0.x <= 0.0) mF |= 1u << uint(i);
+#ifdef SHADE_SSRH_HEIGHT
+		// (1.2.9) everything around it lies below where the (rising) ray starts it: nothing in it can be hit
+		else if (r0.z < shadeSsrhNdcY(s0 + ds * ta, f) - SHADE_SSRH_YM) mL |= 1u << uint(i);
+#endif
 		else if (max(za, zb) < r0.y) mB |= 1u << uint(i);
 	}
 	mF = shadeQuadOr(mF);
 	mB = shadeQuadOr(mB);
+#ifdef SHADE_SSRH_HEIGHT
+	mL = shadeQuadOr(mL) & ~mF;
+#endif
 #ifdef SHADE_PRICE_NOL1
 	return float4(0.0, 0.0, 0.0, -1.0);
 #endif
@@ -1221,20 +1256,32 @@ static float4 shadeSsrTraceQuadOwn(float3 s0, float3 ds, float3 so, float3 dso, 
 	int budget = SHADE_SSRH_BUDGET;
 	for (int i = 0; i < n0 && !all && budget > 0; i++) {
 		if (((mF >> uint(i)) & 1u) != 0u) { front = true; continue; }
+		if (((mL >> uint(i)) & 1u) != 0u) { front = false; continue; } // (1.2.9: below the ray; where it stands after it is not known)
 		if (((mB >> uint(i)) & 1u) != 0u && shadeQuadOr(uint(front && !done)) == 0u) continue; // behind everything, and no pixel was in front
 		float ta = float(i) * inv0;
-		uint f1 = 0u, b1 = 0u;
+		uint f1 = 0u, b1 = 0u, l1 = 0u;
 		for (int j = c; j < 8; j += 4) {
 			float t1 = ta + float(j) * inv1;
 			float z1a = s0.z + ds.z * t1, z1b = z1a + ds.z * inv1;
+#ifdef SHADE_SSRH_HEIGHT
+			float3 r1 = shadeSsrhRange16Y(pyr, clamp(a + d * (t1 + 0.5 * inv1), float2(0.0), top));
+#else
 			float2 r1 = shadeSsrhRange16(pyr, clamp(a + d * (t1 + 0.5 * inv1), float2(0.0), top));
+#endif
 			if (min(z1a, z1b) > r1.x || r1.x <= 0.0) f1 |= 1u << uint(j);
+#ifdef SHADE_SSRH_HEIGHT
+			else if (r1.z < shadeSsrhNdcY(s0 + ds * t1, f) - SHADE_SSRH_YM) l1 |= 1u << uint(j);
+#endif
 			else if (max(z1a, z1b) < r1.y) b1 |= 1u << uint(j);
 		}
 		f1 = shadeQuadOr(f1);
 		b1 = shadeQuadOr(b1);
+#ifdef SHADE_SSRH_HEIGHT
+		l1 = shadeQuadOr(l1) & ~f1;
+#endif
 		for (int j = 0; j < 8 && !all && budget > 0; j++) {
 			if (((f1 >> uint(j)) & 1u) != 0u) { front = true; continue; }
+			if (((l1 >> uint(j)) & 1u) != 0u) { front = false; continue; }
 			if (((b1 >> uint(j)) & 1u) != 0u && shadeQuadOr(uint(front && !done)) == 0u) continue;
 			budget--;
 #ifdef SHADE_PRICE_NOFINE

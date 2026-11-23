@@ -433,8 +433,8 @@ public final class ShadeWater {
 			if (SSR) {
 				try {
 					long t0 = mcopt.metal.shade.ShadeCompile.now();
-					if (SSR_EXACT) WaterNative.setPyr(state, mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_pyr_fs", mcopt.metal.shade.ShadeRender.RG16F,
-						mcopt.metal.shade.ShadeRender.BLEND_NONE), mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_pyr2_fs", mcopt.metal.shade.ShadeRender.RG16F,
+					if (SSR_EXACT) WaterNative.setPyr(state, mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_pyr_fs", mcopt.metal.shade.ShadeRender.RGBA16F,
+						mcopt.metal.shade.ShadeRender.BLEND_NONE), mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_pyr2_fs", mcopt.metal.shade.ShadeRender.RGBA16F,
 						mcopt.metal.shade.ShadeRender.BLEND_NONE));
 					if (!SSR_EXACT || Boolean.getBoolean("mcopt.shade.water.ssrBoth")) WaterNative.setHz(state, mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_hz_fs", mcopt.metal.shade.ShadeRender.R32F,
 						mcopt.metal.shade.ShadeRender.BLEND_NONE));
