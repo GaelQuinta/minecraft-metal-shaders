@@ -72,6 +72,12 @@
 #if defined(SHADE_WOFF_REFL) && defined(SHADE_WATER_RHIST)
 #undef SHADE_WOFF_REFL // (the reflection history keeps the mirrored term itself: dev only, kept whole)
 #endif
+// FAST (Water quality: Fast, ShadeWater.fast; with SSR, PANO, RTR, SWELL, CAUSTICS, FOAM and WSHADOW): also no glitter, no ripple-aware
+// mirror normal, no fine ripples, and the sky reflection without the on-screen sky (the atmosphere and the clouds' dome only)
+#ifdef SHADE_WOFF_FAST
+#undef SHADE_WATER_GLITTER
+#undef SHADE_WATER_MIRROR_AA
+#endif
 #if defined(SHADE_WOFF_REFL) || defined(SHADE_WOFF_SSR)
 #undef SHADE_SSR
 #undef SHADE_SSRH_DEBUG
@@ -100,6 +106,7 @@
 #undef SHADE_WOFF_SSR
 #undef SHADE_WOFF_GLINT
 #undef SHADE_WOFF_WSHADOW
+#undef SHADE_WOFF_FAST
 #endif
 // (1.2.7 candidate 8) SHADE_COLD: a function called, not inlined. Priced in one session over a lake (notes/2026-11-09 price-11 /
 // price-12): it paid for the mirrored hit's colour (about -0.3 ms) and is what keeps the panorama's march out of every water pixel;
@@ -2517,6 +2524,8 @@ static float3 shadeWaterAbove(ShadeWaterIn w, constant ShadeFrame &f, constant S
 	float3 rl = normalize(mix(rs, rr, 0.6));
 #ifdef SHADE_WOFF_REFL
 	float3 refl = 0.0; // (1.2.9: Reflections 0 %, the Fresnel below is 0)
+#elif defined(SHADE_WOFF_FAST)
+	float3 refl = shadeWaterSkyRefl(rl, rr, w.p, 0.0, f, w.look, w.res, lut, lutS, depth, prev) * open; // (1.2.9 Fast: no on-screen sky)
 #elif defined(SHADE_PRICE_NOSKY)
 	float3 refl = shadeSkyLookup(rl, lut, lutS, f) * open;
 #elif defined(SHADE_WFAR_SKY)

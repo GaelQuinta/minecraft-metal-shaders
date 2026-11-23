@@ -68,12 +68,25 @@ public final class ShadeWater {
 	 * shadow on water, no side reflections (their code then compiles out: ShadeLean.waterOff), and the far water from 96 blocks
 	 * (no scene reflections, rendered sky, soft shadow or reprojection there).
 	 */
-	static {
-		if ("fast".equalsIgnoreCase(System.getProperty("mcopt.shade.water.quality", "").trim())) {
-			String[][] fast = {{"mcopt.shade.water.reflTemporal", "0"}, {"mcopt.shade.waterShadowSoft", "0"}, {"mcopt.shade.water.reflSides", "false"},
-				{"mcopt.shade.water.far", "96"}};
-			for (String[] kv : fast) if (System.getProperty(kv[0]) == null) System.setProperty(kv[0], kv[1]);
-		}
+	/**
+	 * (1.2.9, issue #68) Water quality, live: mcopt.shade.water.quality = normal (default: the look as released), fast (its own compiled
+	 * variant, water.metal SHADE_WOFF_FAST: the sky reflection without the on-screen sky, Fresnel, glint, the body and bottom, the
+	 * plain shadow; no scene reflections, panorama, reflection reprojection, swell, caustics, foam or fine ripples, and no depth
+	 * pyramid, panorama pass or ripple bake), or auto (fast on GPUs of 8 cores or fewer: the M1 / M2 class, Profile.gpuCores).
+	 * -Dmcopt.shade.water.fastNoCopy=true (live, proposal): fast without the scene copy and the pass split, the water blended over the
+	 * scene (M1's stand-in, terrain_own.metal shadeWater).
+	 */
+	public static boolean fast() {
+		if (!ON) return false;
+		String q = mcopt.metal.shade.Live.s("mcopt.shade.water.quality", "normal");
+		if ("fast".equalsIgnoreCase(q)) return true;
+		if (!"auto".equalsIgnoreCase(q)) return false;
+		int cores = mcopt.metal.Profile.gpuCores();
+		return cores > 0 && cores <= 8;
+	}
+
+	static boolean fastNoCopy() {
+		return fast() && Boolean.getBoolean("mcopt.shade.water.fastNoCopy");
 	}
 	/** The module's flag on its own (what ShadeMsl assembles the MSL by; validation tools run without mcopt.shade). */
 	public static final boolean MODULE = Boolean.parseBoolean(System.getProperty("mcopt.shade.water", "true"));
@@ -212,7 +225,7 @@ public final class ShadeWater {
 	 * waves and the sun's size blur that edge in reality. mcopt.shade.waterShadowSoft (read every frame): 0 = M3.3.
 	 */
 	public static float shadowSoft() {
-		if (!ON) return 0f;
+		if (!ON || fast()) return 0f;
 		String v = System.getProperty("mcopt.shade.waterShadowSoft");
 		if (v == null) return SHADOW_SOFT_DEFAULT;
 		try {
@@ -485,7 +498,7 @@ public final class ShadeWater {
 			}
 			long tex = WaterNative.waves(ctx, state, BAKE_SIZE);
 			mcopt.metal.shade.ShadeRender.pass(enc, bakePso, tex, mcopt.metal.shade.ShadeRender.DONT_CARE, null, null, "mcopt shade water: wave bake");
-			if (DETAIL) {
+			if (DETAIL && !fast()) { // (1.2.9: Fast water has no fine ripples)
 				// M2.1: the fine-ripple layer (water.metal shade_water_bake_detail_fs: the same waves, faster), texture(22)
 				if (bakeDetailPso == 0) {
 					long t0 = mcopt.metal.shade.ShadeCompile.now();
@@ -513,7 +526,7 @@ public final class ShadeWater {
 	 * happened: the caller must restore its encoder state (pipeline, uniforms, scissor, vertex buffers, shade globals).
 	 */
 	public static boolean capture(long ctx, long enc) {
-		if (!ready(ctx)) return false;
+		if (!ready(ctx) || fastNoCopy()) return false;
 		boolean done = WaterNative.capture(enc, state) != 0;
 		if (done && captures++ == 0) System.out.println("[mcopt] shade: water scene copy active");
 		return done;
@@ -549,6 +562,8 @@ public final class ShadeWater {
 		if (shadowSoft() <= 0f) b |= ShadeMsl.WOFF_WSHADOW;
 		if (!RTR || mcopt.metal.shade.Live.f("mcopt.shade.water.reflTemporal", 0.8f, 0f, 0.95f) <= 0f) b |= ShadeMsl.WOFF_RTR;
 		if (mcopt.metal.shade.Live.f(u + "glint", 1f, 0f, 3f) <= 0f) b |= ShadeMsl.WOFF_GLINT;
+		if (fast()) b |= ShadeMsl.WOFF_FAST | ShadeMsl.WOFF_SSR | ShadeMsl.WOFF_PANO | ShadeMsl.WOFF_RTR | ShadeMsl.WOFF_SWELL | ShadeMsl.WOFF_CAUSTICS
+			| ShadeMsl.WOFF_FOAM | ShadeMsl.WOFF_WSHADOW;
 		return b;
 	}
 
@@ -564,14 +579,15 @@ public final class ShadeWater {
 		// (1.1) waves, reflections and screen reflections on/off from the settings screen (ShadeSettings, live), mcopt.shade.ssrDist live,
 		// w the caustics' strength (user.caustics, 0..2; 0 = none; only with the module's code built in, mcopt.shade.caustics at startup)
 		float ssrDist = Math.clamp(mcopt.metal.shade.Live.f("mcopt.shade.ssrDist", SSR_DIST), 8f, 1024f);
-		p.putFloat(48, mcopt.metal.shade.ShadeSettings.waves()).putFloat(52, mcopt.metal.shade.ShadeSettings.ssr() ? ssrDist : 0f)
+		boolean fast = fast(); // (1.2.9 Fast water: its uniforms off too, for the frames before its variant is ready; no pyramid then)
+		p.putFloat(48, mcopt.metal.shade.ShadeSettings.waves()).putFloat(52, mcopt.metal.shade.ShadeSettings.ssr() && !fast ? ssrDist : 0f)
 			.putFloat(56, mcopt.metal.shade.ShadeSettings.reflect())
-			.putFloat(60, CAUSTICS ? mcopt.metal.shade.Live.f("mcopt.shade.user.caustics", 1f, 0f, 2f) : 0f);
+			.putFloat(60, CAUSTICS && !fast ? mcopt.metal.shade.Live.f("mcopt.shade.user.caustics", 1f, 0f, 2f) : 0f);
 		// (2026-11-02, water round 1) swell (64), swell2 (80), swell3 (96): water.metal ShadeWaterParams. The calm of the long waves and the
 		// ripples' strength in clear weather (style photon), read every frame since round 1 (they were startup defines: now A/B-able in session)
 		// the swell (mcopt.shade.water.swell 0..3, 0 = none: the look before it): its strength, its masking k (.swellMask), the light through
 		// its crests at golden hour (.swellGlow 0..4, 0 = none), its share in the Fresnel (.swellFresnel, 1 physical, 0 = the cosine without it)
-		p.putFloat(64, mcopt.metal.shade.Live.f("mcopt.shade.water.swell", 1.3f, 0f, 3f)).putFloat(68, mcopt.metal.shade.Live.f("mcopt.shade.water.swellMask", 0.45f, 0f, 1f))
+		p.putFloat(64, fast ? 0f : mcopt.metal.shade.Live.f("mcopt.shade.water.swell", 1.3f, 0f, 3f)).putFloat(68, mcopt.metal.shade.Live.f("mcopt.shade.water.swellMask", 0.45f, 0f, 1f))
 			.putFloat(72, mcopt.metal.shade.Live.f("mcopt.shade.water.swellGlow", 0.5f, 0f, 4f))
 			.putFloat(76, mcopt.metal.shade.Live.f("mcopt.shade.water.swellFresnel", 1f, 0f, 1f));
 		// (candidate 7) the mirrored images' calm (.mirrorCalm 0.05..1: how far their normal is pulled toward the face's; 0.55 = before;
@@ -591,7 +607,7 @@ public final class ShadeWater {
 			.putFloat(104, mcopt.metal.shade.Live.f("mcopt.shade.water.glintSharp", 0.3f, 0.1f, 2f))
 			// (candidate 7) the mirrored image's temporal reprojection: its weight x the Fresnel (.reflTemporal 0..0.95; 0 = candidate 6;
 			// water.metal SHADE_WATER_RTR, Gael's flicker on the water while moving)
-			.putFloat(108, RTR ? mcopt.metal.shade.Live.f("mcopt.shade.water.reflTemporal", 0.8f, 0f, 0.95f) : 0f);
+			.putFloat(108, RTR && !fast ? mcopt.metal.shade.Live.f("mcopt.shade.water.reflTemporal", 0.8f, 0f, 0.95f) : 0f);
 		// (2026-11-06) the reflection's own history (water.metal SHADE_WATER_RHIST): x its weight (0 = no read, no write), w the clamp
 		// box's scale (> 0 tells mcwater.m the code is compiled in: it binds texture(29)/(30) then); y and z (valid, tag) are mcwater.m's
 		p.putFloat(112, RHIST ? mcopt.metal.shade.Live.f("mcopt.shade.water.reflHistK", 0.85f, 0f, 0.97f) : 0f).putFloat(116, 0f).putFloat(120, 0f)

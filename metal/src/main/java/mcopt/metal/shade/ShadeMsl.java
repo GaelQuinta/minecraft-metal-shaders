@@ -138,8 +138,8 @@ public final class ShadeMsl {
 	 * code that a uniform skips is still paid). Each define leaves the image exactly as the setting at 0 drew it.
 	 */
 	public static final int WOFF_SHIFT = 20, WOFF_SSR = 1, WOFF_REFL = 2, WOFF_SWELL = 4, WOFF_CAUSTICS = 8, WOFF_FOAM = 16, WOFF_PANO = 32,
-		WOFF_WSHADOW = 64, WOFF_RTR = 128, WOFF_GLINT = 256, WOFF_BITS = 9, WOFF_ALL = (1 << WOFF_BITS) - 1;
-	private static final String[] WOFF_NAMES = {"SSR", "REFL", "SWELL", "CAUSTICS", "FOAM", "PANO", "WSHADOW", "RTR", "GLINT"};
+		WOFF_WSHADOW = 64, WOFF_RTR = 128, WOFF_GLINT = 256, WOFF_FAST = 512, WOFF_BITS = 10, WOFF_ALL = (1 << WOFF_BITS) - 1;
+	private static final String[] WOFF_NAMES = {"SSR", "REFL", "SWELL", "CAUSTICS", "FOAM", "PANO", "WSHADOW", "RTR", "GLINT", "FAST"};
 
 	static String waterOffDefines(int w) {
 		StringBuilder b = new StringBuilder();
