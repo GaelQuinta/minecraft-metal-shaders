@@ -33,7 +33,7 @@ import org.joml.Matrix4f;
  * Pure maths, no game types: tools can pack it too.
  */
 public final class ShadeLook {
-	public static final int SIZE = 1088;
+	public static final int SIZE = 1104;
 	// Byte offsets of struct ShadeLook (shade_look.metal).
 	public static final int VIEW_PROJ = 0, PREV_VIEW_PROJ = 64, CELESTIAL = 128, CLOUD_SHADOW_VP = 192, SUN_GEOM = 256, SUN_ART = 272, AMBIENT_ART = 288,
 		BOUNCE = 304, GRADE0 = 320, GRADE1 = 336, GRADE2 = 352, GRADE3 = 368, TONEMAP = 384, OUTPUT = 400, BLOOM = 416, FOG_R = 432, FOG_M = 448,
@@ -41,7 +41,7 @@ public final class ShadeLook {
 		EYE = 624, SKY_GOLD_H = 640, SKY_GOLD_Z = 656, NIGHT = 672, SSR = 688, CLOCK2 = 704, RENDER_SCALE = 720, EXPOSURE_CFG = 736, DIM_TINT = 752, FLASH = 768,
 		DT = 784, TIER = 800, GRADE_IN = 816, GRADE_OUT = 864, GRADE_IN_INV = 912, GRADE_OUT_INV = 960, EXPOSURE_REF = 1008,
 		// (1.1) the player's settings the shaders read (ShadeSettings / the settings screen; shade_look.metal user0..3)
-		USER0 = 1024, USER1 = 1040, USER2 = 1056, USER3 = 1072;
+		USER0 = 1024, USER1 = 1040, USER2 = 1056, USER3 = 1072, USER4 = 1088;
 	/** (1.1) Prefix of the player's multipliers (Live: 1 = as released, unless a comment says otherwise). */
 	static final String U = "mcopt.shade.user.";
 
@@ -123,6 +123,8 @@ public final class ShadeLook {
 	public float toneB, toneBeta, inset, exposureRef;
 	public float starBrightness, moonPhaseAngle, borderRadius;
 	private float eyeSky = 1f;
+	/** (1.2.9, issue #66) How far the hour's and the weather's grade applies: 1 under the sky, 0 where no sky light reaches the eye. */
+	public float outdoor = 1f;
 	/** (1.2.7) The air around the camera gets neither sun nor sky this frame (caveAir in a cave): the air-mode god rays add nothing. */
 	public static volatile boolean caveAirOff;
 	/**
@@ -249,6 +251,21 @@ public final class ShadeLook {
 		this.mistSigma *= 1f + 4f * rainFog;
 		this.whiteBalance -= 10f * rain;
 		this.lightMul *= 1f - 0.1f * thunder;
+		// (1.2.9, issue #66; mcopt.shade.caveGrade, live) the grade of the hour and of the weather only as far as the sky lights the
+		// eye: in a cave or a sealed room it goes to the clear day's (the 45-degree keyframe), so the same torch-lit tunnel looks the
+		// same at noon, at night and in a storm. Before, night (white balance -20..-30 mired, contrast 1.30) and rain (-10 mired,
+		// contrast -0.08, saturation x0.75) cooled, flattened and lifted the caves too ("the brightness in the caves seems to
+		// increase, the colour gets a lot cooler"; "underground lights change colour when it's night"). eyeSky: the sky light at the
+		// eye smoothed over 1.5 s (last frame's); full grade from sky light 7.5 up, so a house with windows keeps the hour's look.
+		this.outdoor = Live.b("mcopt.shade.caveGrade", true) ? smooth(0f, 0.5f, this.eyeSky) : 1f;
+		if (this.outdoor < 1f) {
+			float[] day = keyframe(45f);
+			float in = 1f - this.outdoor;
+			this.whiteBalance += (day[K_WB] - this.whiteBalance) * in;
+			this.contrast += (day[K_CONTRAST] * PRESET_CONTRAST[look] - this.contrast) * in;
+			this.saturation += (day[K_SAT] + PRESET_SAT[look] - this.saturation) * in;
+			this.bloomMix += (day[K_BLOOM] * PRESET_BLOOM[look] - this.bloomMix) * in;
+		}
 		// (1.1) the player's settings (ShadeSettings / Live, 1 = as released): colour, contrast, bloom, the ground mist (user.mist;
 		// the haze has its own, user.haze, in the pack), the light's colour depth, the sun's and moon's strength, the sky's fill
 		this.saturation *= ShadeSettings.saturation();
@@ -287,7 +304,8 @@ public final class ShadeLook {
 		// exposure reference: M1's eye-adapted exposure (sky model + eye sky light), with the user's compensation
 		// overcast is darker than a clear day (rain palette, bible §3.3): -0.7 EV at full rain
 		// (1.1) user.nightEv: the player's night brightness, EV added in the dark (the same night weight as the grade's above)
-		this.exposureRef = f.exposure * (float) Math.pow(2, ShadeSettings.ev() + Live.f(U + "nightEv", 0f, -2f, 3f) * night - 0.7f * rain);
+		// (1.2.9, issue #66) the overcast's -0.7 EV only under the sky (outdoor, above)
+		this.exposureRef = f.exposure * (float) Math.pow(2, ShadeSettings.ev() + Live.f(U + "nightEv", 0f, -2f, 3f) * night - 0.7f * rain * this.outdoor);
 		this.eyeSky += (f.eyeSkyLight / 15f - this.eyeSky) * (1f - (float) Math.exp(-this.dt / 1.5f));
 		// night sky
 		this.starBrightness = f.starBrightness * (1f - rain) * Live.f(U + "stars", 1f, 0f, 4f); // (1.1) user.stars
@@ -432,6 +450,9 @@ public final class ShadeLook {
 			mcopt.metal.shade.water.ShadeWater.dhSwell, Live.f("mcopt.shade.water.swellRefl", 0.45f, 0f, 1f));
 		// x: daylight contrast strength 0..2. Zero preserves Current; 1 retains the original Natural look.
 		put4(b, USER3, f.naturalLighting, ShadePbr.strength("normal"), ShadePbr.strength("specular"), ShadePbr.strength("emission"));
+		// (1.2.9) x: the haze and the mist over the sky too (mcopt.shade.skyHaze, live; false = 1.2.8: none on the sky)
+		// y (issue #67): 1 = Minecraft's sun (the resource pack's texture) instead of the sky's own disc (mcopt.shade.sun=false, live)
+		put4(b, USER4, Live.b("mcopt.shade.skyHaze", true) ? 1f : 0f, Live.b("mcopt.shade.sun", true) ? 0f : 1f, 0f, 0f);
 		mcopt.metal.shade.weather.ShadeWeather.pack(b); // M3 weather: wet, wind, flash
 	}
 

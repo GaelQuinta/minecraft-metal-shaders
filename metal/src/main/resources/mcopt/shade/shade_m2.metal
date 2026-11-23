@@ -565,7 +565,7 @@ static float3 shadeSkyRadiance2(float3 dir, texture2d<half> lut, sampler s, cons
 		float rs = L.sunGeom.y;
 		float ang = acos(clamp(cosA, -1.0, 1.0));
 		float rho = ang / rs;
-		if (rho < 1.3) {
+		if (rho < 1.3 && L.user4.y < 0.5) { // (1.2.9, issue #67) user4.y 1: Minecraft's sun draws instead (celestial.vs.metal), the aureole stays
 			float w = 1.5 * pixelAngle / rs;
 			float mu = sqrt(saturate(1.0 - rho * rho));
 			float3 u = float3(0.40, 0.55, 0.70), v = float3(0.25, 0.20, 0.12);

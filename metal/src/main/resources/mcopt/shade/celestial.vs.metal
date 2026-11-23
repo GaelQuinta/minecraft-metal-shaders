@@ -19,14 +19,15 @@ vertex CelestialOut main0(CelestialIn in [[stage_in]], constant ShadeFrame& sf [
 	CelestialOut out;
 	out.texCoord0 = in.UV0;
 	float size = length(dt.ModelViewMat[0].xyz);
-	// the sun always, the moon too when the sky draws its own (M2 procedural moon)
-	if (sf.flags.x == SHADE_DIM_OVERWORLD && (abs(size - 30.0) < 1.0 || (abs(size - 20.0) < 1.0 && (sl.tier.y & SHADE_FEATURE_STARS) != 0))) {
+	// the sun while the sky draws its own disc (1.2.9, issue #67: mcopt.shade.sun=false keeps Minecraft's / the resource pack's sun,
+	// ShadeLook.user4.y), the moon too when the sky draws its own (M2 procedural moon)
+	if (sf.flags.x == SHADE_DIM_OVERWORLD && ((abs(size - 30.0) < 1.0 && sl.user4.y < 0.5) || (abs(size - 20.0) < 1.0 && (sl.tier.y & SHADE_FEATURE_STARS) != 0))) {
 		out.gl_Position = SHADE_DROPPED;
 		return out;
 	}
 	float4 viewPos = dt.ModelViewMat * float4(in.Position, 1.0);
 	if (sf.flags.x == SHADE_DIM_OVERWORLD && sf.sunPath.x != 0.0) {
-		// the moon follows the tilted sun path (mcopt.shade.sunTilt): to world, rotate about x, back to view
+		// the moon (and Minecraft's sun, when kept) follows the tilted sun path (mcopt.shade.sunTilt): to world, rotate about x, back to view
 		float3x3 v = float3x3(sf.view[0].xyz, sf.view[1].xyz, sf.view[2].xyz);
 		float3 w = transpose(v) * viewPos.xyz;
 		float s = sf.sunPath.x, c = sf.sunPath.y;

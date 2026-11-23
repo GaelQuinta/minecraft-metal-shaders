@@ -305,8 +305,10 @@ public final class ShadeOptions {
 			toggle(U + "moonPhases", "Fases de la luna", "Moon phases", "No = siempre luna llena.", "Off = always a full moon.", true),
 			pct(U + "sunSize", "Tamaño del sol", "Sun size", "Tamaño del disco del sol (las sombras no cambian).", "Size of the sun's disc (shadows don't change).", 30, 400, 100),
 			pct(U + "moonSize", "Tamaño de la luna", "Moon size", "Tamaño del disco de la luna.", "Size of the moon's disc.", 30, 400, 100),
-			toggle("mcopt.shade.stars", "Cielo propio", "Shader sky", "Sol, luna con fases, estrellas y Vía Láctea del shader. No = los de Minecraft.",
-				"The shader's sun, moon phases, stars and Milky Way. Off = Minecraft's.", true));
+			toggle("mcopt.shade.stars", "Cielo propio", "Shader sky", "Luna con fases, estrellas y Vía Láctea del shader. No = las de Minecraft.",
+				"The shader's moon with phases, stars and Milky Way. Off = Minecraft's.", true),
+			toggle("mcopt.shade.sun", "Sol del shader", "Shader sun", "El disco del sol del shader. No = el sol de Minecraft o de tu resource pack.",
+				"The shader's sun disc. Off = Minecraft's sun, or your resource pack's.", true));
 
 		page("Agua", "Water", "Color, olas, reflejos, espuma y vista bajo el agua.", "Colour, waves, reflections, foam and underwater view.",
 			choice("mcopt.shade.water.color", "Color", "Colour", "Natural: el color de cada bioma, como en Minecraft. Los demás: el mismo color en todo el mundo.",

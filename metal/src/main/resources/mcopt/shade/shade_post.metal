@@ -283,6 +283,24 @@ static inline float3 shadeWorldFromDepth(float2 uv, float d, constant ShadeFrame
 	return w.xyz / w.w;
 }
 
+// (1.2.9, mcopt.shade.skyHaze, ShadeLook.user4.x) The haze and the mist over the sky too, as far as the loaded terrain reaches along
+// the pixel's ray (the border fog's l4 radius; steep rays at most 4 radii, where the layers' depth has long converged), and the
+// terrain's own never from farther than that. Before, the sky got none (its LUT has the atmosphere) while terrain got all of its
+// distance's: a hill at the render distance, already faded into the sky by the border fog, still took the haze of ~250 blocks on
+// top (dimmed, plus a pale blue glow): a pale ghost with a hard outline in front of the clouds, and in the morning's mist far land
+// whiter than the sky behind it (Gael 2026-11-23: "a lo lejos el fog hace que las montañas se vean raras"). Now the land at the
+// border and the sky behind it get the same haze, so the land fades into it without an outline, and the low sky is hazy when
+// the land is (Photon puts its analytic fog in its sky map for the same reason; own code). Only with the border fog (fogMisc.z > 0):
+// with Distant Horizons the LODs fill the distance and fog themselves.
+static inline float shadeL4(float2 a) { float2 q = a * a; return sqrt(sqrt(dot(q, q))); }
+static inline float3 shadeHazeSkyEnd(float3 ray, constant ShadeLook &L) {
+	float3 v = normalize(ray);
+	return v * (L.fogMisc.z / max(shadeL4(v.xz), 0.25));
+}
+static inline float3 shadeHazeBorderClamp(float3 p, constant ShadeLook &L) {
+	return p * min(1.0, L.fogMisc.z / max(shadeL4(p.xz), 1e-3));
+}
+
 // Everything of the final pass before the display transform: the exposed scene colour (haze, the dimension fogs, camera
 // media, VL, bloom, Purkinje, vignette, vibrance). lum: the scene luminance before exposure (debug view 4).
 // DIMS (M3): compiled with the Nether/End fog, End sky, heat shimmer and camera media; the overworld variant (DIMS false)
@@ -351,6 +369,7 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 	float4 dkq = float4(1e4), wqq = float4(0.0);
 	// (FT2.12) the sunlit part of the haze glow added here (exposed): at most this much is what the VL air mode's shadows take out
 	float3 sunGlow = float3(0.0);
+	bool skyHaze = hazeOn && L.user4.x > 0.5 && L.fogMisc.z > 0.0; // (1.2.9, see shadeHazeSkyEnd)
 #ifdef SHADE_HAZE_EDGE
 	if (hazeOn) {
 		// FT1.3: the depth is this frame's jittered raster at the render scale and the colour the resolved (TAAU) image, so the
@@ -366,11 +385,14 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 			float3 Ts = 0.0, Ss = 0.0, Us = 0.0;
 			for (int k = 0; k < 4; k++) {
 				float3 Tk = float3(1.0), Sk = float3(0.0), Uk = float3(0.0);
+				uint2 tk = uint2(k & 1 ? t1.x : t0.x, k & 2 ? t1.y : t0.y);
 				if (dq[k] > 0.0) {
-					uint2 tk = uint2(k & 1 ? t1.x : t0.x, k & 2 ? t1.y : t0.y);
 					float3 pk = shadeWorldFromDepth((float2(tk) + 0.5) / dsize, dq[k], f);
-					if (dot(pk, pk) > hazeNear) Sk = shadeHazeInscatter(pk, f, L, 1.0, Tk, Uk);
 					dkq[k] = length(pk);
+					if (skyHaze) pk = shadeHazeBorderClamp(pk, L);
+					if (dot(pk, pk) > hazeNear) Sk = shadeHazeInscatter(pk, f, L, 1.0, Tk, Uk);
+				} else if (skyHaze) {
+					Sk = shadeHazeInscatter(shadeHazeSkyEnd(shadeViewRay((float2(tk) + 0.5) / dsize * 2.0 - 1.0, f.invViewProj), L), f, L, 1.0, Tk, Uk);
 				}
 				Ts += Tk * wq[k];
 				Ss += Sk * wq[k];
@@ -383,7 +405,12 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 			wqq = wq;
 		} else if (d > 0.0 && dot(wp, wp) > hazeNear) {
 			float3 U;
-			float3 S = shadeHazeInscatter(wp, f, L, 1.0, T, U);
+			float3 S = shadeHazeInscatter(skyHaze ? shadeHazeBorderClamp(wp, L) : wp, f, L, 1.0, T, U);
+			c = c * T + S * ex;
+			sunGlow = U * ex;
+		} else if (skyHaze && d <= 0.0) {
+			float3 U;
+			float3 S = shadeHazeInscatter(shadeHazeSkyEnd(shadeViewRay(uv * 2.0 - 1.0, f.invViewProj), L), f, L, 1.0, T, U);
 			c = c * T + S * ex;
 			sunGlow = U * ex;
 		}
@@ -392,10 +419,15 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 	if (d > 0.0 && hazeOn) {
 		if (dot(wp, wp) > hazeNear) {
 			float3 U;
-			float3 S = shadeHazeInscatter(wp, f, L, 1.0, T, U);
+			float3 S = shadeHazeInscatter(skyHaze ? shadeHazeBorderClamp(wp, L) : wp, f, L, 1.0, T, U);
 			c = c * T + S * ex;
 			sunGlow = U * ex;
 		}
+	} else if (skyHaze) {
+		float3 U;
+		float3 S = shadeHazeInscatter(shadeHazeSkyEnd(shadeViewRay(uv * 2.0 - 1.0, f.invViewProj), L), f, L, 1.0, T, U);
+		c = c * T + S * ex;
+		sunGlow = U * ex;
 	}
 #endif
 	// M3: the End's sky where vanilla drew none (the dragon fight), then the Nether's layered glowing haze / the End's violet
