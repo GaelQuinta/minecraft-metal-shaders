@@ -11,7 +11,9 @@
 // apart by size: SkyRenderer scales the sun's quad by 30, the moon's by 20 and the End flash's by 60 (the length of
 // ModelViewMat's first column, rotations leaving it unchanged).
 struct CelestialIn { float3 Position [[attribute(0)]]; float2 UV0 [[attribute(1)]]; };
-struct CelestialOut { float4 gl_Position [[position]]; float2 texCoord0 [[user(locn0)]]; };
+// (1.2.9, issue #67) sunK 1 on Minecraft's sun quad while it is kept (celestial.fs.metal draws it in HDR behind the clouds), 0 on
+// everything else (vanilla's fragment exactly); dir: its camera-relative world direction, for the clouds' lookup
+struct CelestialOut { float4 gl_Position [[position]]; float2 texCoord0 [[user(locn0)]]; float sunK [[user(locn1)]]; float3 dir [[user(locn2)]]; };
 
 vertex CelestialOut main0(CelestialIn in [[stage_in]], constant ShadeFrame& sf [[buffer(16)]], constant ShadeLook& sl [[buffer(17)]],
                           constant DynamicTransforms& dt [[buffer(MCOPT_SLOT_DynamicTransforms)]], constant Projection& pr [[buffer(MCOPT_SLOT_Projection)]])
@@ -19,6 +21,7 @@ vertex CelestialOut main0(CelestialIn in [[stage_in]], constant ShadeFrame& sf [
 	CelestialOut out;
 	out.texCoord0 = in.UV0;
 	float size = length(dt.ModelViewMat[0].xyz);
+	out.sunK = sf.flags.x == SHADE_DIM_OVERWORLD && abs(size - 30.0) < 1.0 ? 1.0 : 0.0;
 	// the sun while the sky draws its own disc (1.2.9, issue #67: mcopt.shade.sun=false keeps Minecraft's / the resource pack's sun,
 	// ShadeLook.user4.y), the moon too when the sky draws its own (M2 procedural moon)
 	if (sf.flags.x == SHADE_DIM_OVERWORLD && ((abs(size - 30.0) < 1.0 && sl.user4.y < 0.5) || (abs(size - 20.0) < 1.0 && (sl.tier.y & SHADE_FEATURE_STARS) != 0))) {
@@ -26,12 +29,14 @@ vertex CelestialOut main0(CelestialIn in [[stage_in]], constant ShadeFrame& sf [
 		return out;
 	}
 	float4 viewPos = dt.ModelViewMat * float4(in.Position, 1.0);
+	out.dir = transpose(float3x3(sf.view[0].xyz, sf.view[1].xyz, sf.view[2].xyz)) * viewPos.xyz;
 	if (sf.flags.x == SHADE_DIM_OVERWORLD && sf.sunPath.x != 0.0) {
 		// the moon (and Minecraft's sun, when kept) follows the tilted sun path (mcopt.shade.sunTilt): to world, rotate about x, back to view
 		float3x3 v = float3x3(sf.view[0].xyz, sf.view[1].xyz, sf.view[2].xyz);
 		float3 w = transpose(v) * viewPos.xyz;
 		float s = sf.sunPath.x, c = sf.sunPath.y;
 		w = float3(w.x, c * w.y - s * w.z, s * w.y + c * w.z);
+		out.dir = w;
 		viewPos.xyz = v * w;
 	}
 	out.gl_Position = pr.ProjMat * viewPos;

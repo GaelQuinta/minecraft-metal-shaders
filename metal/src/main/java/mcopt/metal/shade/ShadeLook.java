@@ -457,10 +457,11 @@ public final class ShadeLook {
 		// x: daylight contrast strength 0..2. Zero preserves Current; 1 retains the original Natural look.
 		put4(b, USER3, f.naturalLighting, ShadePbr.strength("normal"), ShadePbr.strength("specular"), ShadePbr.strength("emission"));
 		// (1.2.9) x: the haze and the mist over the sky too (mcopt.shade.skyHaze, live; false = 1.2.8: none on the sky)
-		// y (issue #67): 1 = Minecraft's sun (the resource pack's texture) instead of the sky's own disc (mcopt.shade.sun=false, live)
+		// y (issue #67): > 0 = Minecraft's sun (the resource pack's texture) instead of the sky's own disc (mcopt.shade.sun=false, live),
+		// its HDR gain over the sun's colour (mcopt.shade.sunTexGain, live; celestial.fs.metal; the sky's disc is x160 at its centre)
 		// z (1.2.9): how the border fog shows the clouds behind distant terrain (shade_m2.metal shadeFogAir2; mcopt.shade.clouds.fogBlend,
 		// live: 0 = FT2.10's late ramp, 1 = from the fog's start, 2 = late only toward a low sun)
-		put4(b, USER4, Live.b("mcopt.shade.skyHaze", true) ? 1f : 0f, Live.b("mcopt.shade.sun", true) ? 0f : 1f,
+		put4(b, USER4, Live.b("mcopt.shade.skyHaze", true) ? 1f : 0f, Live.b("mcopt.shade.sun", true) ? 0f : Live.f("mcopt.shade.sunTexGain", 40f, 1f, 400f),
 			Math.round(Live.f("mcopt.shade.clouds.fogBlend", 2f, 0f, 2f)), Live.f("mcopt.shade.mistSun", 1f, 0.25f, 4f));
 		mcopt.metal.shade.weather.ShadeWeather.pack(b); // M3 weather: wet, wind, flash
 	}

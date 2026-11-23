@@ -35,7 +35,7 @@ import mcopt.metal.shade.weather.ShadeWeather;
  * <li>(up to 1.1) sodium:pipeline/{solid,cutout,translucent}_terrain: Sodium's terrain with per-pixel lighting. Since the
  * mcopt 0.3 port the terrain is mcopt's own renderer's (own/terrain.metal), shaded through {@link #ownPrefix}.</li>
  * <li>minecraft:pipeline/sky: the atmosphere (sky.vs.metal, sky.fs.metal).</li>
- * <li>minecraft:pipeline/celestial: vanilla's sun quad dropped, moon kept (celestial.vs.metal).</li>
+ * <li>minecraft:pipeline/celestial: vanilla's sun quad dropped, moon kept (celestial.vs.metal); a kept sun in HDR (celestial.fs.metal).</li>
  * <li>minecraft:pipeline/sunrise_sunset: dropped in the overworld (sunrise_sunset.vs.metal).</li>
  * <li>minecraft:pipeline/clouds, flat_clouds: lit clouds (clouds.fs.metal).</li>
  * <li>minecraft:pipeline/weather: rain and snow re-lit (weather.metal, patched into the generated fragment).</li>
@@ -62,7 +62,7 @@ public final class ShadeMsl {
 	public static final String END_SKY = "minecraft:pipeline/end_sky";
 	public static final List<String> CLOUDS = List.of("minecraft:pipeline/clouds", "minecraft:pipeline/flat_clouds");
 
-	private static volatile String prelude, look, skyVertex, skyFragment, celestialVertex, sunriseVertex, starsVertex, cloudFragment, endSkyVertex, endSkyFragment;
+	private static volatile String prelude, look, skyVertex, skyFragment, celestialVertex, celestialFragment, sunriseVertex, starsVertex, cloudFragment, endSkyVertex, endSkyFragment;
 
 	private ShadeMsl() {
 	}
@@ -416,6 +416,7 @@ public final class ShadeMsl {
 		skyVertex = skyStage("sky.vs.metal");
 		skyFragment = skyStage("sky.fs.metal");
 		celestialVertex = skyStage("celestial.vs.metal");
+		celestialFragment = skyStage("celestial.fs.metal"); // (1.2.9, issue #67) Minecraft's kept sun in HDR behind the clouds
 		sunriseVertex = skyStage("sunrise_sunset.vs.metal");
 		starsVertex = skyStage("stars.vs.metal");
 		cloudFragment = prelude() + resource("clouds.fs.metal");
@@ -425,7 +426,8 @@ public final class ShadeMsl {
 		List<String> matrices = List.of("DynamicTransforms", "Projection");
 		MetalShaderRegistry.register(SKY, new MetalShaderRegistry.Variant(generated -> skyVertex, generated -> skyFragment,
 			List.of("DynamicTransforms", "Projection", "Fog")));
-		MetalShaderRegistry.register(CELESTIAL, new MetalShaderRegistry.Variant(generated -> celestialVertex, null, matrices));
+		MetalShaderRegistry.register(CELESTIAL, new MetalShaderRegistry.Variant(generated -> celestialVertex, generated -> celestialFragment,
+			List.of("DynamicTransforms", "Projection", "Sampler0")));
 		MetalShaderRegistry.register(SUNRISE, new MetalShaderRegistry.Variant(generated -> sunriseVertex, null, matrices));
 		for (String name : CLOUDS) MetalShaderRegistry.register(name, new MetalShaderRegistry.Variant(null, generated -> cloudFragment, List.of("CloudInfo")));
 		MetalShaderRegistry.register(WEATHER, new MetalShaderRegistry.Variant(ShadeWeather.MODULE && ShadeWeather.SLANT ? ShadeMsl::weatherVertex : null,
