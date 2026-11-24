@@ -433,7 +433,11 @@ static float3 shadeFogAir2(float3 radiance, float3 p, float vanillaFog, float ch
 					float glare = (1.0 - smoothstep(0.26, 0.5, ld.y)) *
 						smoothstep(-0.2, 0.5, dot(v.xz, ld.xz) * rsqrt(max(dot(v.xz, v.xz) * dot(ld.xz, ld.xz), 1e-8)));
 					float lateW = L.user4.z > 1.5 ? glare : (L.user4.z > 0.5 ? 0.0 : 1.0);
-					wc *= mix(smoothstep(0.015, 0.035, max(ap * 0.6, edge)), late * late, lateW);
+					// (1.2.9 candidate 3) in mode 2 the early blend follows the border fog's edge alone: the aerial blend's share (ap x 0.6,
+					// under 5 %) is too small to show a cloud, and with it every terrain pixel past ~75 blocks looked the clouds up
+					// (+0.21 ms on the perf spin at native resolution, run c2-attrib); now only the border band does
+					float earlyW = L.user4.z > 1.5 ? smoothstep(0.002, 0.03, edge) : smoothstep(0.015, 0.035, max(ap * 0.6, edge));
+					wc *= mix(earlyW, late * late, lateW);
 				}
 			}
 			if (shadeCloudDev(L, SHADE_CLOUD_DEV_NO_FOG)) wc = 0.0;

@@ -465,7 +465,9 @@ public final class ShadeLook {
 		// its HDR gain over the sun's colour (mcopt.shade.sunTexGain, live; celestial.fs.metal; the sky's disc is x160 at its centre)
 		// z (1.2.9): how the border fog shows the clouds behind distant terrain (shade_m2.metal shadeFogAir2; mcopt.shade.clouds.fogBlend,
 		// live: 0 = FT2.10's late ramp, 1 = from the fog's start, 2 = late only toward a low sun)
-		put4(b, USER4, Live.b("mcopt.shade.skyHaze", true) ? 1f : 0f, Live.b("mcopt.shade.sun", true) ? 0f : Live.f("mcopt.shade.sunTexGain", 15f, 1f, 400f),
+		// (candidate 3) mcopt.shade.skyHazeMode (live): 1 = the haze over the sky too (candidates 1-2, +0.23 ms), 2 = default: the
+		// terrain's haze fades out across the border fog instead (no cost on the sky); mcopt.shade.skyHaze=false = 1.2.8
+		put4(b, USER4, Live.b("mcopt.shade.skyHaze", true) ? Live.f("mcopt.shade.skyHazeMode", 2f, 0f, 2f) : 0f, Live.b("mcopt.shade.sun", true) ? 0f : Live.f("mcopt.shade.sunTexGain", 15f, 1f, 400f),
 			Math.round(Live.f("mcopt.shade.clouds.fogBlend", 2f, 0f, 2f)), Live.f("mcopt.shade.mistSun", 1f, 0.25f, 4f));
 		// (1.2.9 look pass, Look2) a: x the foliage sheen, y the side faces' extra darkening, z the sheen's share of the plant's hue (shade_m2.metal shadeLit2), w reserved; b: rgb the sky's gain (sky_lut.metal), w reserved
 		put4(b, LOOK2A, this.l2Sheen, this.l2Face, Look2.v("sheenHue", 0.75f, 0f, 1f), 0f);

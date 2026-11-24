@@ -300,6 +300,14 @@ static inline float3 shadeHazeSkyEnd(float3 ray, constant ShadeLook &L) {
 static inline float3 shadeHazeBorderClamp(float3 p, constant ShadeLook &L) {
 	return p * min(1.0, L.fogMisc.z / max(shadeL4(p.xz), 1e-3));
 }
+// (1.2.9 candidate 3, user4.x = 2, the default) The cheap way to the same end: the sky gets no haze (as in 1.2.8) and the terrain's
+// own fades out across the border fog's band, by the share of the terrain the border fog keeps (shadeFogAir2's edge without the
+// chunk fade), so the land already faded into the sky carries none. The sky's haze (user4.x = 1) cost +0.23 ms on the perf spin at
+// native resolution (run c2-attrib: every sky pixel of the output evaluates the layers and both phase functions).
+static inline float shadeHazeBorderKeep(float3 p, constant ShadeLook &L) {
+	float Rb = L.fogMisc.z;
+	return 1.0 - smoothstep(L.fogMisc.y * Rb, Rb, shadeL4(p.xz));
+}
 
 // Everything of the final pass before the display transform: the exposed scene colour (haze, the dimension fogs, camera
 // media, VL, bloom, Purkinje, vignette, vibrance). lum: the scene luminance before exposure (debug view 4).
@@ -369,7 +377,8 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 	float4 dkq = float4(1e4), wqq = float4(0.0);
 	// (FT2.12) the sunlit part of the haze glow added here (exposed): at most this much is what the VL air mode's shadows take out
 	float3 sunGlow = float3(0.0);
-	bool skyHaze = hazeOn && L.user4.x > 0.5 && L.fogMisc.z > 0.0; // (1.2.9, see shadeHazeSkyEnd)
+	bool skyHaze = hazeOn && L.user4.x > 0.5 && L.user4.x < 1.5 && L.fogMisc.z > 0.0; // (1.2.9, see shadeHazeSkyEnd)
+	bool hazeFade = hazeOn && L.user4.x > 1.5 && L.fogMisc.z > 0.0; // (1.2.9 candidate 3, see shadeHazeBorderKeep)
 #ifdef SHADE_HAZE_EDGE
 	if (hazeOn) {
 		// FT1.3: the depth is this frame's jittered raster at the render scale and the colour the resolved (TAAU) image, so the
@@ -391,6 +400,7 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 					dkq[k] = length(pk);
 					if (skyHaze) pk = shadeHazeBorderClamp(pk, L);
 					if (dot(pk, pk) > hazeNear) Sk = shadeHazeInscatter(pk, f, L, 1.0, Tk, Uk);
+					if (hazeFade) { float kk = shadeHazeBorderKeep(pk, L); Tk = mix(float3(1.0), Tk, kk); Sk *= kk; Uk *= kk; }
 				} else if (skyHaze) {
 					Sk = shadeHazeInscatter(shadeHazeSkyEnd(shadeViewRay((float2(tk) + 0.5) / dsize * 2.0 - 1.0, f.invViewProj), L), f, L, 1.0, Tk, Uk);
 				}
@@ -406,6 +416,7 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 		} else if (d > 0.0 && dot(wp, wp) > hazeNear) {
 			float3 U;
 			float3 S = shadeHazeInscatter(skyHaze ? shadeHazeBorderClamp(wp, L) : wp, f, L, 1.0, T, U);
+			if (hazeFade) { float kk = shadeHazeBorderKeep(wp, L); T = mix(float3(1.0), T, kk); S *= kk; U *= kk; }
 			c = c * T + S * ex;
 			sunGlow = U * ex;
 		} else if (skyHaze && d <= 0.0) {
@@ -420,6 +431,7 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 		if (dot(wp, wp) > hazeNear) {
 			float3 U;
 			float3 S = shadeHazeInscatter(skyHaze ? shadeHazeBorderClamp(wp, L) : wp, f, L, 1.0, T, U);
+			if (hazeFade) { float kk = shadeHazeBorderKeep(wp, L); T = mix(float3(1.0), T, kk); S *= kk; U *= kk; }
 			c = c * T + S * ex;
 			sunGlow = U * ex;
 		}
