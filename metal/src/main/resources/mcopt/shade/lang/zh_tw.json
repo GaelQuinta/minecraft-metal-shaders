@@ -429,7 +429,7 @@
   "Water quality": "水體品質",
   "Fast: lighter water, no scene reflections (more FPS on small Macs). Medium: reflects the sky and clouds but not the landscape. Auto: Fast on Macs with 8 or fewer GPU cores.": "快速：更輕量的水，沒有場景反射（小型 Mac 上幀數更高）。中等：反射天空和雲，但不反射地形。自動：GPU 核心數為 8 個或更少的 Mac 使用快速。",
   "Medium": "中等",
-  "New: golden afternoon light, deeper shade, darker evenings, higher clouds and clearer water. Classic: the 1.2.8 look.": "新：午後金色光線、更深的陰影、更暗的傍晚、更高的雲和更清澈的水。經典：1.2.8 的外觀。",
+  "New: golden afternoon light, deeper shade, darker evenings and higher clouds. Classic: the 1.2.8 look.": "新：午後金色光線、更深的陰影、更暗的傍晚和更高的雲。經典：1.2.8 的外觀。",
   "New": "新",
   "Classic (1.2.8)": "經典 (1.2.8)"
 }

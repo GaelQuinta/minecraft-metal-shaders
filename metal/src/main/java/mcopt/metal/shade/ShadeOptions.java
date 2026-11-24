@@ -61,8 +61,8 @@ public final class ShadeOptions {
 		new String[] {"epic", "storybook", "natural"}, new String[] {"Épico", "Cuento", "Natural"}, new String[] {"Epic", "Storybook", "Natural"}, () -> 0);
 	/** (1.2.9 look pass) The atmosphere: the new one (Look2) or 1.2.8's. Live. */
 	public static final ShadeOption ATMOSPHERE = choice(Look2.KEY, "Atmósfera", "Atmosphere",
-		"Nueva: luz dorada de tarde, sombras más profundas, atardeceres más oscuros, nubes más altas y agua más clara. Clásica: el look de la 1.2.8.",
-		"New: golden afternoon light, deeper shade, darker evenings, higher clouds and clearer water. Classic: the 1.2.8 look.",
+		"Nueva: luz dorada de tarde, sombras más profundas, atardeceres más oscuros y nubes más altas. Clásica: el look de la 1.2.8.",
+		"New: golden afternoon light, deeper shade, darker evenings and higher clouds. Classic: the 1.2.8 look.",
 		new String[] {"true", "false"}, new String[] {"Nueva", "Clásica (1.2.8)"}, new String[] {"New", "Classic (1.2.8)"}, () -> 0);
 
 	public static final List<Page> PAGES = new ArrayList<>();

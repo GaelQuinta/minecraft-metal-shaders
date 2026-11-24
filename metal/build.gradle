@@ -2,7 +2,7 @@ plugins {
 	id 'net.fabricmc.fabric-loom' version "${loom_version}"
 }
 
-version = '1.2.8-alpha'
+version = '2.0.0-alpha'
 
 dependencies {
 	minecraft "com.mojang:minecraft:${minecraft_version}"
