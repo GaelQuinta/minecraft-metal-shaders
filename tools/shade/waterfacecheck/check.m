@@ -1,0 +1,6 @@
+#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+int main(int argc,const char**argv){@autoreleasepool{
+ NSError*e=nil;id<MTLDevice>d=MTLCreateSystemDefaultDevice();NSString*s=[NSString stringWithContentsOfFile:@(argv[1]) encoding:NSUTF8StringEncoding error:&e];id<MTLLibrary>l=[d newLibraryWithSource:s options:nil error:&e];id<MTLComputePipelineState>p=l?[d newComputePipelineStateWithFunction:[l newFunctionWithName:@"classify"] error:&e]:nil;if(!p){fprintf(stderr,"%s\n",e.description.UTF8String);return 2;}
+ id<MTLBuffer>o=[d newBufferWithLength:16 options:0];float uniform[8]={0,0,0,0,0,0,0,1};id<MTLCommandQueue>q=[d newCommandQueue];id<MTLCommandBuffer>b=[q commandBuffer];id<MTLComputeCommandEncoder>c=[b computeCommandEncoder];[c setComputePipelineState:p];[c setBuffer:o offset:0 atIndex:0];[c setBytes:uniform length:32 atIndex:1];[c dispatchThreads:MTLSizeMake(4,1,1) threadsPerThreadgroup:MTLSizeMake(4,1,1)];[c endEncoding];[b commit];[b waitUntilCompleted];unsigned*v=o.contents;printf("still side %u, falling side %u, still top %u, falling top %u\n",v[0],v[1],v[2],v[3]);if(v[0]||!v[1]||v[2]||v[3]){puts("FAIL still water incorrectly gets the waterfall treatment");return 1;}puts("PASS waterfall treatment limited to tagged falling side faces");return 0;
+}}
