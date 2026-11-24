@@ -451,6 +451,27 @@ static float3 shadeFogAir2(float3 radiance, float3 p, float vanillaFog, float ch
 			if (shadeCloudDev(L, SHADE_CLOUD_DEV_NO_FOG)) wc = 0.0;
 			if (wc > 0.0) {
 				float4 cl = shadeCloudsScreen(v, L, R->cloudScreen);
+				// (1.2.9 candidate 6, fogBlend 3 = default) while the land is still mostly there it fades into a SOFT image of the clouds
+				// behind it (the reflection dome, 128 x 64 texels for the whole sky; four spread taps of the screen's clouds when the
+				// dome is off or toward the horizon), and into the sharp one only over the last quarter of the fade. With the sharp
+				// clouds from the start the half-faded mountain showed every cloud's outline through it ("como que las nubes
+				// atraviesan la montaña", Gael 2026-11-23); into a soft one it reads as haze thickening, and at the end the land is
+				// exactly the sky behind it (no ghost, as fogBlend 2). Only the border band reaches here (wc > 0).
+				if (L.user4.z > 2.5) {
+					float sharp = smoothstep(0.75, 1.0, edge);
+					if (sharp < 1.0) {
+						float4 soft;
+						if (L.clouds1.x > 0.5 && v.y > 0.03) {
+							soft = shadeCloudsDome(v, L, R->cloudDome);
+						} else {
+							float3 t1 = normalize(cross(v, float3(0.0, 1.0, 0.0)) + float3(1e-5, 0.0, 0.0));
+							float3 t2 = cross(v, t1);
+							soft = 0.25 * (shadeCloudsScreen(normalize(v + 0.07 * (t1 + t2)), L, R->cloudScreen) + shadeCloudsScreen(normalize(v + 0.07 * (t1 - t2)), L, R->cloudScreen)
+								+ shadeCloudsScreen(normalize(v - 0.07 * (t1 + t2)), L, R->cloudScreen) + shadeCloudsScreen(normalize(v - 0.07 * (t1 - t2)), L, R->cloudScreen));
+						}
+						cl = mix(soft, cl, sharp);
+					}
+				}
 				skyBehind = skyBehind * mix(1.0, cl.a, wc) + cl.rgb * wc;
 			}
 		}
