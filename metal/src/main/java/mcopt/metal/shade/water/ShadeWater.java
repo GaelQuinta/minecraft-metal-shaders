@@ -78,7 +78,7 @@ public final class ShadeWater {
 	 */
 	public static boolean fast() {
 		if (!ON) return false;
-		String q = mcopt.metal.shade.Live.s("mcopt.shade.water.quality", "auto");
+		String q = mcopt.metal.shade.Live.s("mcopt.shade.water.quality", "normal");
 		if ("fast".equalsIgnoreCase(q)) return true;
 		if (!"auto".equalsIgnoreCase(q)) return false;
 		int cores = mcopt.metal.Profile.gpuCores();
@@ -87,7 +87,7 @@ public final class ShadeWater {
 
 	/** (1.2.9) Water quality Medium: Normal without the scene and side reflections (compiled out: WOFF_SSR, WOFF_PANO), the sky's stays. */
 	public static boolean medium() {
-		return ON && "medium".equalsIgnoreCase(mcopt.metal.shade.Live.s("mcopt.shade.water.quality", "auto"));
+		return ON && "medium".equalsIgnoreCase(mcopt.metal.shade.Live.s("mcopt.shade.water.quality", "normal"));
 	}
 
 	static boolean fastNoCopy() {

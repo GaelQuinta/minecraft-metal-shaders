@@ -321,9 +321,9 @@ public final class ShadeOptions {
 				new String[] {"Natural", "Azul", "Turquesa", "Verde", "Cristalina"}, new String[] {"Natural", "Blue", "Turquoise", "Green", "Clear"}, () -> 0),
 			// (1.2.9, issue #68) ShadeWater.fast: Fast = its own lighter water variant; Auto = Fast on GPUs of 8 cores or fewer
 			choice("mcopt.shade.water.quality", "Calidad del agua", "Water quality",
-				"Rápida: agua más ligera, sin reflejo del paisaje (más FPS en Macs pequeñas). Media: refleja el cielo y las nubes, pero no el paisaje. Auto (de fábrica): Rápida en Macs con 8 núcleos de GPU o menos, Normal en las demás.",
-				"Fast: lighter water, no scene reflections (more FPS on small Macs). Medium: reflects the sky and clouds but not the landscape. Auto (default): Fast on Macs with 8 or fewer GPU cores, Normal on the rest.",
-				new String[] {"fast", "medium", "normal", "auto"}, new String[] {"Rápida", "Media", "Normal", "Auto"}, new String[] {"Fast", "Medium", "Normal", "Auto"}, () -> 3), // (candidate 5, Gael 2026-11-23) Auto by default
+				"Rápida: agua más ligera, sin reflejo del paisaje (más FPS en Macs pequeñas). Media: refleja el cielo y las nubes, pero no el paisaje. Auto: Rápida en Macs con 8 núcleos de GPU o menos.",
+				"Fast: lighter water, no scene reflections (more FPS on small Macs). Medium: reflects the sky and clouds but not the landscape. Auto: Fast on Macs with 8 or fewer GPU cores.",
+				new String[] {"fast", "medium", "normal", "auto"}, new String[] {"Rápida", "Media", "Normal", "Auto"}, new String[] {"Fast", "Medium", "Normal", "Auto"}, () -> 2),
 			pctInt("mcopt.shade.water.clarity", "Transparencia", "Clarity", "Qué tan lejos se ve dentro del agua.", "How far you can see into the water.", 25, 300, 100),
 			pct("mcopt.shade.waterWaves", "Olas", "Waves", "La altura de las olas.", "How high the waves are.", 0, 200, 100),
 			pct("mcopt.shade.water.swell", "Oleaje", "Swell", "Olas largas en mar abierto; lagos y ríos quedan tranquilos. 0 = como antes (más FPS mirando el mar).",
