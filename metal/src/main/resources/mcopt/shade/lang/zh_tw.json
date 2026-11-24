@@ -253,7 +253,9 @@
   "Moon size": "月亮大小",
   "Size of the moon's disc.": "月亮圓盤的大小。",
   "Shader sky": "光影天空",
-  "The shader's sun, moon phases, stars and Milky Way. Off = Minecraft's.": "光影自帶的太陽、月相、星星和銀河。關 = 使用原版天空。",
+  "The shader's moon with phases, stars and Milky Way. Off = Minecraft's.": "光影自帶的月相、星星和銀河。關 = 使用原版的。",
+  "Shader sun": "光影太陽",
+  "The shader's sun disc. Off = Minecraft's sun, or your resource pack's.": "光影自帶的太陽圓盤。關 = 使用原版或資源包的太陽。",
   "Water": "水",
   "Colour, waves, reflections, foam and underwater view.": "顏色、水波、反射、泡沫和水下視野。",
   "Natural: each biome's colour, as in Minecraft. The others: one colour everywhere.": "自然：與原版一樣隨生物群系變化。其他：所有地方統一顏色。",
@@ -423,5 +425,11 @@
   "Waving plants": "植物擺動",
   "How much grass, flowers and crops sway. 0 = still.": "草、花和農作物的擺動幅度。0 = 靜止。",
   "Plants make way": "植物避讓",
-  "Grass and flowers bend aside as you or a mob walk through.": "你或生物走過時，草和花會向兩側彎開。"
+  "Grass and flowers bend aside as you or a mob walk through.": "你或生物走過時，草和花會向兩側彎開。",
+  "Water quality": "水體品質",
+  "Fast: lighter water, no scene reflections (more FPS on small Macs). Medium: reflects the sky and clouds but not the landscape. Auto: Fast on Macs with 8 or fewer GPU cores.": "快速：更輕量的水，沒有場景反射（小型 Mac 上幀數更高）。中等：反射天空和雲，但不反射地形。自動：GPU 核心數為 8 個或更少的 Mac 使用快速。",
+  "Medium": "中等",
+  "New: golden afternoon light, deeper shade, darker evenings and higher clouds. Classic: the 1.2.8 look.": "新：午後金色光線、更深的陰影、更暗的傍晚和更高的雲。經典：1.2.8 的外觀。",
+  "New": "新",
+  "Classic (1.2.8)": "經典 (1.2.8)"
 }

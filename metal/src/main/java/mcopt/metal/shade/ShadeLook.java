@@ -33,7 +33,7 @@ import org.joml.Matrix4f;
  * Pure maths, no game types: tools can pack it too.
  */
 public final class ShadeLook {
-	public static final int SIZE = 1088;
+	public static final int SIZE = 1136;
 	// Byte offsets of struct ShadeLook (shade_look.metal).
 	public static final int VIEW_PROJ = 0, PREV_VIEW_PROJ = 64, CELESTIAL = 128, CLOUD_SHADOW_VP = 192, SUN_GEOM = 256, SUN_ART = 272, AMBIENT_ART = 288,
 		BOUNCE = 304, GRADE0 = 320, GRADE1 = 336, GRADE2 = 352, GRADE3 = 368, TONEMAP = 384, OUTPUT = 400, BLOOM = 416, FOG_R = 432, FOG_M = 448,
@@ -41,7 +41,9 @@ public final class ShadeLook {
 		EYE = 624, SKY_GOLD_H = 640, SKY_GOLD_Z = 656, NIGHT = 672, SSR = 688, CLOCK2 = 704, RENDER_SCALE = 720, EXPOSURE_CFG = 736, DIM_TINT = 752, FLASH = 768,
 		DT = 784, TIER = 800, GRADE_IN = 816, GRADE_OUT = 864, GRADE_IN_INV = 912, GRADE_OUT_INV = 960, EXPOSURE_REF = 1008,
 		// (1.1) the player's settings the shaders read (ShadeSettings / the settings screen; shade_look.metal user0..3)
-		USER0 = 1024, USER1 = 1040, USER2 = 1056, USER3 = 1072;
+		USER0 = 1024, USER1 = 1040, USER2 = 1056, USER3 = 1072, USER4 = 1088,
+		// (1.2.9 look pass, Look2) the new atmosphere's shader values (shade_look.metal look2a, look2b)
+		LOOK2A = 1104, LOOK2B = 1120;
 	/** (1.1) Prefix of the player's multipliers (Live: 1 = as released, unless a comment says otherwise). */
 	static final String U = "mcopt.shade.user.";
 
@@ -123,6 +125,8 @@ public final class ShadeLook {
 	public float toneB, toneBeta, inset, exposureRef;
 	public float starBrightness, moonPhaseAngle, borderRadius;
 	private float eyeSky = 1f;
+	/** (1.2.9, issue #66) How far the hour's and the weather's grade applies: 1 under the sky, 0 where no sky light reaches the eye. */
+	public float outdoor = 1f;
 	/** (1.2.7) The air around the camera gets neither sun nor sky this frame (caveAir in a cave): the air-mode god rays add nothing. */
 	public static volatile boolean caveAirOff;
 	/**
@@ -199,10 +203,15 @@ public final class ShadeLook {
 		// (the time uniforms me_fade, me_weight, time_sunrise, time_noon, time_sunset)
 		// (2026-11 clouds: 1.2 -> 1.0, Photon's own density. Gael wants Photon's golden hour; at 1.2, and 7 in the morning, the mist
 		// veiled the whole low sky and the clouds into one peach haze; the shafts stay, run at-e)
-		float gm = this.frames - this.vlAirFrame <= 2 ? Live.f("mcopt.shade.vl.goldenMist", 1.0f, 0f, 1.5f) : 0f;
+		// (1.2.9, Gael 2026-11-23 "the fog is excessive": 1.0 -> 0.5, and back to the day's by 30 degrees of sun instead of ~50, below;
+		// measured against Photon MIT at his lake: the near field keeps its contrast, the far land still melts into the morning haze)
+		float gm = this.frames - this.vlAirFrame <= 2 ? Live.f("mcopt.shade.vl.goldenMist", 0.5f, 0f, 1.5f) : 0f;
 		this.goldenMist = gm;
 		if (gm > 0f) {
-			float fade = sunY < 0.18f ? 0.37f + 1.2f * Math.max(0f, -sunY) : 1.7f;
+			// (1.2.9, Gael 2026-11-23 "the fog is excessive") mcopt.shade.vl.goldenMistEnd (live, degrees of sun, 12..90; 50.2 = Photon's
+			// me_fade, which reaches 0 at sin 0.768): where the golden-hour mist is back to the day's after its peak at ~10 degrees
+			float mistEnd = Live.f("mcopt.shade.vl.goldenMistEnd", 30f, 12f, 90f);
+			float fade = sunY < 0.18f ? 0.37f + 1.2f * Math.max(0f, -sunY) : 1f / ((float) Math.sin(Math.toRadians(mistEnd)) - 0.18f);
 			float me = Math.max(0f, Math.min(1f, 1f - fade * Math.abs(sunY - 0.18f)));
 			me *= me;
 			float blue = linearStep(0.05f, 1f, (float) Math.exp(-190.0 * (sunY + 0.07283) * (sunY + 0.07283)));
@@ -249,6 +258,21 @@ public final class ShadeLook {
 		this.mistSigma *= 1f + 4f * rainFog;
 		this.whiteBalance -= 10f * rain;
 		this.lightMul *= 1f - 0.1f * thunder;
+		// (1.2.9, issue #66; mcopt.shade.caveGrade, live) the grade of the hour and of the weather only as far as the sky lights the
+		// eye: in a cave or a sealed room it goes to the clear day's (the 45-degree keyframe), so the same torch-lit tunnel looks the
+		// same at noon, at night and in a storm. Before, night (white balance -20..-30 mired, contrast 1.30) and rain (-10 mired,
+		// contrast -0.08, saturation x0.75) cooled, flattened and lifted the caves too ("the brightness in the caves seems to
+		// increase, the colour gets a lot cooler"; "underground lights change colour when it's night"). eyeSky: the sky light at the
+		// eye smoothed over 1.5 s (last frame's); full grade from sky light 7.5 up, so a house with windows keeps the hour's look.
+		this.outdoor = Live.b("mcopt.shade.caveGrade", true) ? smooth(0f, 0.5f, this.eyeSky) : 1f;
+		if (this.outdoor < 1f) {
+			float[] day = keyframe(45f);
+			float in = 1f - this.outdoor;
+			this.whiteBalance += (day[K_WB] - this.whiteBalance) * in;
+			this.contrast += (day[K_CONTRAST] * PRESET_CONTRAST[look] - this.contrast) * in;
+			this.saturation += (day[K_SAT] + PRESET_SAT[look] - this.saturation) * in;
+			this.bloomMix += (day[K_BLOOM] * PRESET_BLOOM[look] - this.bloomMix) * in;
+		}
 		// (1.1) the player's settings (ShadeSettings / Live, 1 = as released): colour, contrast, bloom, the ground mist (user.mist;
 		// the haze has its own, user.haze, in the pack), the light's colour depth, the sun's and moon's strength, the sky's fill
 		this.saturation *= ShadeSettings.saturation();
@@ -264,6 +288,7 @@ public final class ShadeLook {
 		// Shared sunlight keeps water, shadow tint, clouds and surfaces in the same radiometric scale.
 		if (f.naturalLighting > 0f) lightK *= 1f + 0.35f * f.naturalLighting;
 		gradeLight(f.sky.light, f.sky.sunLight ? this.chromaGamma : 1f, this.lightMul * lightK);
+		look2Pre(f, rain); // (1.2.9 look pass) the new atmosphere's CPU items (Look2; nothing with mcopt.shade.look2=false)
 		// white balance (mired shift from D65: positive = the image warmer), partial strength
 		float mired = 1e6f / 6504f + this.whiteBalance;
 		float[] target = blackbody(1e6f / Math.max(mired, 20f)), d65 = blackbody(6504f);
@@ -287,7 +312,9 @@ public final class ShadeLook {
 		// exposure reference: M1's eye-adapted exposure (sky model + eye sky light), with the user's compensation
 		// overcast is darker than a clear day (rain palette, bible §3.3): -0.7 EV at full rain
 		// (1.1) user.nightEv: the player's night brightness, EV added in the dark (the same night weight as the grade's above)
-		this.exposureRef = f.exposure * (float) Math.pow(2, ShadeSettings.ev() + Live.f(U + "nightEv", 0f, -2f, 3f) * night - 0.7f * rain);
+		// (1.2.9, issue #66) the overcast's -0.7 EV only under the sky (outdoor, above)
+		this.exposureRef = f.exposure * (float) Math.pow(2, ShadeSettings.ev() + Live.f(U + "nightEv", 0f, -2f, 3f) * night - 0.7f * rain * this.outdoor
+			+ this.l2Ev * this.outdoor);
 		this.eyeSky += (f.eyeSkyLight / 15f - this.eyeSky) * (1f - (float) Math.exp(-this.dt / 1.5f));
 		// night sky
 		this.starBrightness = f.starBrightness * (1f - rain) * Live.f(U + "stars", 1f, 0f, 4f); // (1.1) user.stars
@@ -332,7 +359,7 @@ public final class ShadeLook {
 			(float) Math.toRadians(this.elevation));
 		float[] l = f.sky.light;
 		put4(b, SUN_ART, l[0], l[1], l[2], 1f);
-		put4(b, AMBIENT_ART, this.ambientTint[0], this.ambientTint[1], this.ambientTint[2], 0.06f * (1f - 0.7f * f.rain) * Live.f(U + "bounce", 1f, 0f, 4f));
+		put4(b, AMBIENT_ART, this.ambientTint[0], this.ambientTint[1], this.ambientTint[2], 0.06f * (1f - 0.7f * f.rain) * Live.f(U + "bounce", 1f, 0f, 4f) * this.l2Bounce);
 		put4(b, BOUNCE, 0.62f, 0.56f, 0.44f, 0f);
 		// w (1.1): the water's clarity (ShadeSettings: its absorption divided by it; 1 = as released; was the unused scene contrast)
 		put4(b, GRADE0, 0f, this.saturation, (ShadeSettings.look() == 1 ? 0.18f : 0.10f) * Live.f(U + "vibrance", 1f, 0f, 4f), ShadeSettings.clarity());
@@ -383,7 +410,8 @@ public final class ShadeLook {
 		put4(b, NIGHT, this.starBrightness, Live.f(U + "milkyWay", 1f, 0f, 4f), 0f, this.moonPhaseAngle); // (1.1) y: user.milkyWay
 		put4(b, RENDER_SCALE, f.renderScale, (float) (Math.log(f.mipScale) / Math.log(2)), f.width, f.height);
 		// at night the meter may brighten less (night stays night: the reference is already lifted for it)
-		float nightUp = EV_UP - (EV_UP - EV_UP_NIGHT) * (1f - smooth(-10f, -2f, this.elevation));
+		// (1.2.9, issue #66) only under the sky (outdoor): in a cave the night's tighter bound kept torch-lit tunnels ~1.4x darker than at noon
+		float nightUp = EV_UP - (EV_UP - EV_UP_NIGHT) * (1f - smooth(-10f, -2f, this.elevation)) * this.outdoor;
 		// (1.1) user.exposureSpeed: how fast the eye adapts (2 = twice as fast)
 		float speed = Live.f(U + "exposureSpeed", 1f, 0.2f, 5f);
 		float tauUp = TAU_UP, tauDown = TAU_DOWN;
@@ -415,7 +443,7 @@ public final class ShadeLook {
 		putRows(b, GRADE_OUT_INV, this.gradeOutInv);
 		// (1.1) live: mcopt.shade.exposure (auto | fixed) and user.autoExposure (how much of the metered scene the exposure follows)
 		boolean autoExposure = ShadeConfig.AUTO_EXPOSURE && !"fixed".equals(Live.s("mcopt.shade.exposure", "auto"));
-		float lambda = autoExposure ? Math.min(PRESET_LAMBDA[ShadeSettings.look()] * Live.f(U + "autoExposure", 1f, 0f, 2f), 1f) : 0f;
+		float lambda = autoExposure ? Math.min(PRESET_LAMBDA[ShadeSettings.look()] * Live.f(U + "autoExposure", 1f, 0f, 2f), 1f) * this.l2Lambda : 0f;
 		put4(b, EXPOSURE_REF, this.exposureRef, lambda, METER_KEY, this.snapExposure ? 1f : 0f);
 		this.snapExposure = false;
 		// (1.1) the player's settings for the shaders (shade_look.metal user0..3)
@@ -432,7 +460,131 @@ public final class ShadeLook {
 			mcopt.metal.shade.water.ShadeWater.dhSwell, Live.f("mcopt.shade.water.swellRefl", 0.45f, 0f, 1f));
 		// x: daylight contrast strength 0..2. Zero preserves Current; 1 retains the original Natural look.
 		put4(b, USER3, f.naturalLighting, ShadePbr.strength("normal"), ShadePbr.strength("specular"), ShadePbr.strength("emission"));
+		// (1.2.9) x: the haze and the mist over the sky too (mcopt.shade.skyHaze, live; false = 1.2.8: none on the sky)
+		// y (issue #67): > 0 = Minecraft's sun (the resource pack's texture) instead of the sky's own disc (mcopt.shade.sun=false, live),
+		// its HDR gain over the sun's colour (mcopt.shade.sunTexGain, live; celestial.fs.metal; the sky's disc is x160 at its centre)
+		// (candidate 6: 3 = default, as 2 but into a soft image of the clouds until the last quarter of the fade)
+		// z (1.2.9): how the border fog shows the clouds behind distant terrain (shade_m2.metal shadeFogAir2; mcopt.shade.clouds.fogBlend,
+		// live: 0 = FT2.10's late ramp, 1 = from the fog's start, 2 = late only toward a low sun)
+		// (candidate 3) mcopt.shade.skyHazeMode (live): 1 = the haze over the sky too (candidates 1-2, +0.23 ms), 2 = default: the
+		// terrain's haze fades out across the border fog instead (no cost on the sky); mcopt.shade.skyHaze=false = 1.2.8
+		put4(b, USER4, Live.b("mcopt.shade.skyHaze", true) ? Live.f("mcopt.shade.skyHazeMode", 2f, 0f, 2f) : 0f, Live.b("mcopt.shade.sun", true) ? 0f : Live.f("mcopt.shade.sunTexGain", 15f, 1f, 400f),
+			Math.round(Live.f("mcopt.shade.clouds.fogBlend", 3f, 0f, 3f)), Live.f("mcopt.shade.mistSun", 1f, 0.25f, 4f));
+		// (1.2.9 look pass, Look2) a: x the foliage sheen, y the side faces' extra darkening, z the sheen's share of the plant's hue (shade_m2.metal shadeLit2), w reserved; b: rgb the sky's gain (sky_lut.metal), w reserved
+		// w (candidate 4): the sheen and the side faces' darkening only near the camera (mcopt.shade.look2.nearEnd, live, blocks; 0 = everywhere)
+		put4(b, LOOK2A, this.l2Sheen, this.l2Face, Look2.v("sheenHue", 0.75f, 0f, 1f), Look2.v("nearEnd", 80f, 0f, 512f));
+		// w (candidate 8): the soft shadows' smallest penumbra, blocks (mcopt.shade.shadowMinBlur, live; 0 = 1.2.8's crisp contact shadows)
+		put4(b, LOOK2B, this.l2Sky[0], this.l2Sky[1], this.l2Sky[2], Live.f("mcopt.shade.shadowMinBlur", 0.1f, 0f, 0.5f));
 		mcopt.metal.shade.weather.ShadeWeather.pack(b); // M3 weather: wet, wind, flash
+	}
+
+	// ---- (1.2.9 look pass) the new atmosphere (Look2): all 1 / 0 with mcopt.shade.look2=false ---------------------------------
+	/** This frame's: bounce multiplier, exposure-reference EV, auto-exposure share multiplier, foliage sheen, sky gain. */
+	private float l2Bounce = 1f, l2Ev = 0f, l2Lambda = 1f, l2Sheen = 0f, l2Face = 0f;
+	private final float[] l2Sky = {1f, 1f, 1f}, l2Tint = new float[3];
+
+	/**
+	 * The new look's CPU items, after the light is graded and before the white balance, tone curve and grade matrices are built
+	 * (Look2): the low sun's tint, the shade's fill, the evening exposure and toe, the rain's colour, the sky's gain, the sheen.
+	 */
+	private void look2Pre(ShadeFrame f, float rain) {
+		this.l2Bounce = 1f;
+		this.l2Ev = 0f;
+		this.l2Lambda = 1f;
+		this.l2Sheen = 0f;
+		this.l2Face = 0f;
+		this.l2Sky[0] = this.l2Sky[1] = this.l2Sky[2] = 1f;
+		Look2.blueHour = 0f;
+		Look2.SKY_GAIN[0] = Look2.SKY_GAIN[1] = Look2.SKY_GAIN[2] = 1f;
+		// the new atmosphere is the overworld's only (the Nether and the End keep their own grade)
+		if (!Look2.on() || f.dimension != ShadeFrame.DIM_OVERWORLD) return;
+		float e = this.elevation, sunY = (float) Math.sin(Math.toRadians(e));
+		boolean sun = f.sky.sunLight;
+		// day weight: full above ~6 degrees of sun, none below -6 (nights keep 1.2.8's numbers)
+		float day = smooth(-6f, 6f, e);
+		// 1. light through the day: the pink-gold tint of a low sun (the clouds' light gets the same, CloudParams)
+		float kt = Look2.k("sunTint");
+		if (sun && kt > 0f) {
+			Look2.sunTint(sunY, kt * (1f - rain), this.l2Tint);
+			for (int i = 0; i < 3; i++) f.sky.light[i] *= this.l2Tint[i];
+		}
+		// and a slightly warmer, yellower noon sun (Photon's sunlit grass b* +43 vs ours +35): chroma power on the light
+		float kw = Look2.k("noonWarm");
+		if (sun && kw > 0f) gradeLight(f.sky.light, 1f + Look2.v("noonGamma", 0.25f, 0f, 0.8f) * kw * day * (1f - rain), 1f);
+		// 2. (with the weaker fill below) a stronger sun by day: the sunlit ground keeps its brightness, the shade loses it (Photon's
+		// noon grass in sun L* 59-62 against our 45-52 with the fill alone cut)
+		// (candidates 5-6 had option C of mediodia-opciones.jpg: daySun 1.4, dayWarm 34, dayEv 0.9, sunlit grass 67 -> 85 of 255. Playing it
+		// Gael found sunlight "excesivamente iluminado": candidate 7 is back to option A, 1.2 / 22 / 0.3)
+		float kd = Look2.k("shade") * day * (1f - rain);
+		if (sun && kd > 0f) for (int i = 0; i < 3; i++) f.sky.light[i] *= 1f + (Look2.v("daySun", 1.2f, 0.5f, 2f) - 1f) * kd;
+		// (and a warmer daylight white balance: Photon's noon grass is yellower, a* -20 b* +43 against our -24 / +35, and its zenith warmer)
+		if (kw > 0f) this.whiteBalance += Look2.v("dayWarm", 22f, -30f, 50f) * kw * day * (1f - rain) * this.outdoor;
+		// 2. deeper shade: the sky's fill and the bounce weaker by day (sun / shade luminance on grass 1.9-2.2 -> ~2.8)
+		float ks = Look2.k("shade") * day;
+		if (ks > 0f) {
+			float amb = 1f + (Look2.v("skyFill", 0.55f, 0.2f, 1f) - 1f) * ks;
+			// and a less blue fill (the keyframes' daytime ambient tint is 0.95, 1, 1.08: with Photon's yellower noon grass the fill is closer to neutral)
+			float[] warm = {Look2.v("fillR", 1.05f, 0.5f, 1.5f), 1f, Look2.v("fillB", 0.84f, 0.5f, 1.5f)};
+			for (int i = 0; i < 3; i++) this.ambientTint[i] *= amb * (1f + (warm[i] - 1f) * ks);
+			this.l2Bounce = 1f + (Look2.v("bounceFill", 0.6f, 0f, 1f) - 1f) * ks;
+			// side faces darker than tops (Photon's directional term: x0.8 on vertical faces; ours was x0.94 on x faces only)
+			this.l2Face = Look2.v("sideFace", 0.12f, 0f, 0.4f) * ks;
+		}
+		// 3. exposure: evenings darker (the reference down by up to evening EV from 35 degrees of sun to 3, held to -4 and back to the
+		// night's by -12; mornings a third of it), the meter following less of the scene meanwhile; a firmer toe by day
+		float kx = Look2.k("exposure");
+		if (kx > 0f) {
+			// (full from 3 degrees down to 2, half at -3 degrees, back to the night's by -8: the blue hour stops half way to Photon's)
+			float w = smooth(Look2.v("eveningFrom", 30f, 5f, 60f), 3f, e) * smooth(-8f, 2f, e) * (this.rising > 0f ? Look2.v("morning", 0f, 0f, 1f) : 1f) * kx;
+			this.l2Ev = -Look2.v("evening", 0.6f, 0f, 3f) * w * (1f - 0.5f * rain);
+			this.l2Lambda = 1f - Look2.v("eveningMeter", 0.5f, 0f, 1f) * Math.min(w, 1f);
+			this.contrast *= 1f + Look2.v("contrast", 0.03f, -0.2f, 0.3f) * kx * day * this.outdoor;
+			// by day the meter follows a little less of the scene: a forest floor or a shaded valley stays darker than open ground
+			// (forest interior L* 39 -> ~30; Photon 15, no auto exposure at all)
+			this.l2Lambda *= 1f - (1f - Look2.v("dayMeter", 0.5f, 0f, 1f)) * day * kx;
+			// with the meter following less and the fill weaker, open noon scenes would sit below 1.2.8's brightness: the reference up a little
+			// (high sun only: at 25-40 degrees the frames with the lake and the bright sky were already above 1.2.8's)
+			this.l2Ev += Look2.v("dayEv", 0.3f, -1f, 1f) * smooth(25f, 50f, e) * kx;
+			// the meter's changes only under the sky (issue #66: a sealed torch-lit room adapts as in 1.2.8 at any hour)
+			this.l2Lambda = 1f - (1f - this.l2Lambda) * this.outdoor;
+		}
+		// 8. rain: a blue-teal overcast instead of grey-lavender (half the rain's desaturation back, cooler)
+		float kr = Look2.k("rain") * rain * this.outdoor;
+		if (kr > 0f) {
+			this.saturation *= 1f + Look2.v("rainSat", 0.45f, 0f, 1.5f) * kr;
+			this.whiteBalance -= Look2.v("rainCool", 16f, -30f, 60f) * kr;
+			this.l2Ev -= Look2.v("rainEv", 0.35f, 0f, 1.5f) * kr; // and a little darker (Photon's overcast frame L* 41 against our 53)
+		}
+		// 6. sky: a deeper blue by day, a blue-violet blue hour (sun about -3 degrees) instead of orange; the gold and rose give way there
+		float ky = Look2.k("sky");
+		if (ky > 0f) {
+			float dw = smooth(8f, 25f, e) * (1f - rain) * ky;
+			float bh = (float) Math.exp(-Math.pow((e + Look2.v("blueHourAt", 3.5f, 0f, 10f)) / 2.8f, 2.0)) * (1f - rain) * ky;
+			float[] dg = {Look2.v("skyR", 0.86f, 0.3f, 1.5f), Look2.v("skyG", 0.78f, 0.3f, 1.5f), Look2.v("skyB", 0.74f, 0.3f, 1.5f)};
+			float[] bg = {Look2.v("blueR", 0.55f, 0.1f, 1.5f), Look2.v("blueG", 0.62f, 0.1f, 1.5f), Look2.v("blueB", 1.25f, 0.1f, 2f)};
+			for (int i = 0; i < 3; i++) this.l2Sky[i] = (1f + (dg[i] - 1f) * dw) * (1f + (bg[i] - 1f) * Math.min(bh, 1f));
+			this.skyRose *= 1f - Math.min(bh, 1f);
+			for (int c = 0; c < 6; c++) this.skyGold[c] = 1f + (this.skyGold[c] - 1f) * (1f - Math.min(bh, 1f));
+			// the horizon table the terrain's fog uses gets the same gain as the sky LUT
+			for (float[] h : f.sky.horizon) for (int i = 0; i < 3; i++) h[i] *= this.l2Sky[i];
+			Look2.blueHour = Math.min(bh, 1f);
+		}
+		for (int i = 0; i < 3; i++) Look2.SKY_GAIN[i] = this.l2Sky[i];
+		// 4. foliage sheen: grass, plants and leaves glow against the sun. A Henyey-Greenstein lobe (g 0.5) of the angle between the view
+		// and the light, gated off when the sun is behind the camera; for this frame's view axis (the screen's centre: one value for every
+		// pixel, the lobe is broad), times the sun's colour, shadow and sky gate per pixel in shadeLit2. After Photon Shaders by Benjamin
+		// Stott ("sixthsurge"), MIT License, commit 26c2906e: include/lighting/diffuse_lighting.glsl sss_approx (the sheen term:
+		// 0.8 x henyey_greenstein_phase(-LoV, 0.5) x linear_step(-0.8, -0.2, -LoV)); plants x1, leaves x0.5 as its material.glsl
+		float kh = Look2.k("sheen");
+		if (sun && kh > 0f) {
+			org.joml.Matrix4f vp = f.viewProj;
+			float fx = vp.m03(), fy = vp.m13(), fz = vp.m23(), fl = (float) Math.sqrt(fx * fx + fy * fy + fz * fz);
+			float[] ld = f.sky.lightDir;
+			float mu = fl > 0f ? (fx * ld[0] + fy * ld[1] + fz * ld[2]) / fl : 0f;
+			float g = Look2.v("sheenG", 0.5f, 0f, 0.9f), x = 1f + g * g - 2f * g * mu;
+			float hg = 0.0795775f * (1f - g * g) / (float) Math.pow(Math.max(x, 1e-4f), 1.5);
+			this.l2Sheen = Look2.v("sheenGain", 0.55f, 0f, 4f) * kh * hg * linearStep(-0.8f, -0.2f, mu) * (1f - rain) * smooth(-2f, 4f, e);
+		}
 	}
 
 	// ---- values for modules (volumetric light: its open-air medium follows E06's haze and mist) ---------------------------

@@ -80,8 +80,16 @@ static inline float3 shadeFinish2(float3 radiance, float vanillaFog, constant Sh
 // M1's directional sky light and foliage terms, plus: a slight wrap on the sun term, the art layer's ambient tint, a warm
 // fill in shadow (light bounced off the sunlit surroundings), a broader block-light curve (hot core, long tail) that fades a
 // little by day, a cool minimum light in caves, and a gentle east/west face separation for readability. Light levels 0..1.
+// (1.2.9 candidate 4) How much of the new look's two close-up terms (the foliage sheen and the side faces' darkening) a fragment at
+// camera-relative p gets: all of it up to half of look2a.w blocks, none past look2a.w (0 = everywhere, candidate 3). On far
+// hillsides the two made every terrace's sunlit top and its grass tufts stand out as bright lines over darkened sides ("el borde
+// superior de los bloques a lo lejos se ve como que brilla", Gael 2026-11-23: top/median luminance 1.52 against 1.34 in 1.2.8).
+static inline float shadeLook2Near(float3 p, constant ShadeLook &L) {
+	return L.look2a.w > 0.0 ? 1.0 - smoothstep(0.5 * L.look2a.w, L.look2a.w, length(p)) : 1.0;
+}
+
 static float3 shadeLit2(half3 albedo, half3 n, half sky, half block, half shadow, bool thin, bool foliage, constant ShadeFrame &f,
-                        constant ShadeLook &L) {
+                        constant ShadeLook &L, float look2Near = 1.0) {
 	if (!shadeFeature(L, SHADE_FEATURE_LIGHT_V2)) return shadeLit(albedo, n, sky, block, shadow, thin, foliage, f);
 	float3 Ld = f.lightDirWorld.xyz;
 	half nl = half(dot(float3(n), Ld));
@@ -127,7 +135,14 @@ static float3 shadeLit2(half3 albedo, half3 n, half sky, half block, half shadow
 		fill *= half3(0.3h, 0.55h, 0.7h);
 	}
 	half face = half(1.0) - half(0.06) * abs(n.x) * (half(1.0) - abs(n.y));
-	return float3(albedo) * float3((direct + ambient + fill + torch + minimum) * face);
+	if (L.look2a.y > 0.0 && !thin) face *= half(1.0 - L.look2a.y * look2Near * (1.0 - abs(float(n.y)))); // (1.2.9 look pass) side faces darker
+	float3 lit = float3(albedo) * float3((direct + ambient + fill + torch + minimum) * face);
+	// (1.2.9 look pass, Look2 sheen; ShadeLook.look2a.x, 0 = 1.2.8) plants and leaves against the sun: light scattered forward through
+	// the thin blades, in the light's colour partly tinted by the plant's own hue (look2a.z: a yellow-green glow), plants x1, leaves x0.5
+	if ((thin || foliage) && L.look2a.x > 0.0 && !SHADE_CAMERA_UNDERWATER(f))
+		lit += float3(sun) * mix(float3(1.0), saturate(float3(albedo) / max(dot(float3(albedo), float3(0.2126, 0.7152, 0.0722)), 0.02)) , L.look2a.z)
+			* (L.look2a.x * look2Near * float(shadow * gate) * (thin ? 1.0 : 0.5));
+	return lit;
 }
 
 // (1.2.8, issue #61) shadeLit2's sun term alone (the same terms: keep the two in step): what the caustics under water modulate.
@@ -254,7 +269,13 @@ static half shadeShadow2(depth2d_array<float> map, sampler cmp, constant ShadeFr
 		float count = dot(b0 + b1, float4(1.0));
 		if (count > 0.0) {
 			float zb = (dot(d0, b0) + dot(d1, b1)) / count;
-			float wTex = clamp((zb - c.z) * zBlocks * tanSun / blocksPerTexel, 0.6, searchTex);
+			// (1.2.9 candidate 8, ShadeLook.look2b.w = mcopt.shade.shadowMinBlur, blocks; 0 = before) a smallest penumbra: the shadow of
+			// something right on the ground (a tuft of grass, a flower) is all contact, so it stayed as sharp as the shadow map and
+			// showed the plant's cut-out texture as a jagged dark stain with holes (Gael 2026-11-24: "la sombra se sobrelapa sobre la
+			// textura del pasto y se ve raro"). With a floor on the blur its edge is soft and the thin blades and holes average out
+			// (a little lighter); shadows cast from higher up already have a wider penumbra and do not change.
+			float minTex = min(L.look2b.w / blocksPerTexel, searchTex);
+			float wTex = clamp((zb - c.z) * zBlocks * tanSun / blocksPerTexel, max(0.6, minTex), searchTex);
 			float s = 0.0;
 			for (int i = 0; i < SHADE_PCSS_TAPS; i++) s += map.sample_compare(cmp, uv + R * SHADE_VOGEL8[i] * (wTex * texelUv), 0u, c.z);
 			s *= 1.0 / float(SHADE_PCSS_TAPS);
@@ -331,9 +352,14 @@ static float3 shadeHazeInscatterFrom(float3 p, float yc, constant ShadeFrame &f,
 	float glow = 1.0 + L.fogMisc.w; // (ShadeLook: strength x exp(-((sun elevation in degrees + 1) / 2.5)^2), once per frame)
 	float aM = L.fogM.w;
 	float3 sR = (E * phR + sky) * (1.0 / (1.0 - 0.5));
-	float3 sM = (E * phM * glow + sky) * aM / (1.0 - 0.5 * aM);
+	// (1.2.9, mcopt.shade.mistSun, ShadeLook.user4.w; 1 = before) the mist's sunlit part times a multiple-scattering gain: Photon's
+	// air fog sums four octaves of the sun's scattering (1 + 1/2 + 1/4 + 1/8 = 1.875), so its low-sun mist is warm and sun-coloured,
+	// where ours was mostly the sky's blue-grey ambient. Adapted from Photon Shaders by Benjamin Stott ("sixthsurge"), MIT License,
+	// commit 26c2906e (LICENSES/MIT-Photon.txt): include/fog/air_fog_vl.glsl (the multiple scattering loop's total)
+	float msGain = L.user4.w > 0.0 ? L.user4.w : 1.0;
+	float3 sM = (E * phM * glow * msGain + sky) * aM / (1.0 - 0.5 * aM);
 	float3 w = (1.0 - T) / max(tau, 1e-6);
-	Ssun = w * E * (tauR * (phR * 2.0) + tauM * (phM * glow * aM / (1.0 - 0.5 * aM)));
+	Ssun = w * E * (tauR * (phR * 2.0) + tauM * (phM * glow * msGain * aM / (1.0 - 0.5 * aM)));
 	// (FT2.10) what the cave air scatters instead: neutral grey at a share of the minimum cave light (L.eye.x, BSL's "minimum light
 	// x 0.5" fog colour, Photon's faint dark cave fog), so far walls fade into the cave's darkness, never into a tint
 	float cave = (1.0 - airSun) * L.eye.x * f.ambientBlock.w;
@@ -411,12 +437,47 @@ static float3 shadeFogAir2(float3 radiance, float3 p, float vanillaFog, float ch
 					wc *= smoothstep(0.015, 0.035, max(ap * 0.6, edge));
 				} else {
 					float late = saturate(edge * 3.333333 - 2.333333);
-					wc *= late * late;
+					// (1.2.9, mcopt.shade.clouds.fogBlend, ShadeLook.user4.z: 0 FT2.10's late ramp everywhere, 1 the clouds from the
+					// fog's start everywhere, 2 = default: late only toward a low sun) With the late ramp the land at the border faded
+					// into the CLEAR sky while the sky next to it showed clouds: pale blue ghosts of hills, with a hard outline, in front
+					// of white clouds, at any hour (Gael 2026-11-23). The early blend fades the land into exactly what is behind it;
+					// the late one is kept only where it was needed: toward a sun under ~15-30 degrees, whose bright cloud edges
+					// showed through half-faded peaks (2026-10-10).
+					float3 ld = f.lightDirWorld.xyz;
+					float glare = (1.0 - smoothstep(0.26, 0.5, ld.y)) *
+						smoothstep(-0.2, 0.5, dot(v.xz, ld.xz) * rsqrt(max(dot(v.xz, v.xz) * dot(ld.xz, ld.xz), 1e-8)));
+					float lateW = L.user4.z > 1.5 ? glare : (L.user4.z > 0.5 ? 0.0 : 1.0);
+					// (1.2.9 candidate 3) in mode 2 the early blend follows the border fog's edge alone: the aerial blend's share (ap x 0.6,
+					// under 5 %) is too small to show a cloud, and with it every terrain pixel past ~75 blocks looked the clouds up
+					// (+0.21 ms on the perf spin at native resolution, run c2-attrib); now only the border band does
+					float earlyW = L.user4.z > 1.5 ? smoothstep(0.002, 0.03, edge) : smoothstep(0.015, 0.035, max(ap * 0.6, edge));
+					wc *= mix(earlyW, late * late, lateW);
 				}
 			}
 			if (shadeCloudDev(L, SHADE_CLOUD_DEV_NO_FOG)) wc = 0.0;
 			if (wc > 0.0) {
 				float4 cl = shadeCloudsScreen(v, L, R->cloudScreen);
+				// (1.2.9 candidate 6, fogBlend 3 = default) while the land is still mostly there it fades into a SOFT image of the clouds
+				// behind it (the reflection dome, 128 x 64 texels for the whole sky; four spread taps of the screen's clouds when the
+				// dome is off or toward the horizon), and into the sharp one only over the last quarter of the fade. With the sharp
+				// clouds from the start the half-faded mountain showed every cloud's outline through it ("como que las nubes
+				// atraviesan la montaña", Gael 2026-11-23); into a soft one it reads as haze thickening, and at the end the land is
+				// exactly the sky behind it (no ghost, as fogBlend 2). Only the border band reaches here (wc > 0).
+				if (L.user4.z > 2.5) {
+					float sharp = smoothstep(0.75, 1.0, edge);
+					if (sharp < 1.0) {
+						float4 soft;
+						if (L.clouds1.x > 0.5 && v.y > 0.03) {
+							soft = shadeCloudsDome(v, L, R->cloudDome);
+						} else {
+							float3 t1 = normalize(cross(v, float3(0.0, 1.0, 0.0)) + float3(1e-5, 0.0, 0.0));
+							float3 t2 = cross(v, t1);
+							soft = 0.25 * (shadeCloudsScreen(normalize(v + 0.07 * (t1 + t2)), L, R->cloudScreen) + shadeCloudsScreen(normalize(v + 0.07 * (t1 - t2)), L, R->cloudScreen)
+								+ shadeCloudsScreen(normalize(v - 0.07 * (t1 + t2)), L, R->cloudScreen) + shadeCloudsScreen(normalize(v - 0.07 * (t1 - t2)), L, R->cloudScreen));
+						}
+						cl = mix(soft, cl, sharp);
+					}
+				}
 				skyBehind = skyBehind * mix(1.0, cl.a, wc) + cl.rgb * wc;
 			}
 		}
@@ -565,7 +626,7 @@ static float3 shadeSkyRadiance2(float3 dir, texture2d<half> lut, sampler s, cons
 		float rs = L.sunGeom.y;
 		float ang = acos(clamp(cosA, -1.0, 1.0));
 		float rho = ang / rs;
-		if (rho < 1.3) {
+		if (rho < 1.3 && L.user4.y < 0.5) { // (1.2.9, issue #67) user4.y 1: Minecraft's sun draws instead (celestial.vs.metal), the aureole stays
 			float w = 1.5 * pixelAngle / rs;
 			float mu = sqrt(saturate(1.0 - rho * rho));
 			float3 u = float3(0.40, 0.55, 0.70), v = float3(0.25, 0.20, 0.12);

@@ -145,8 +145,10 @@ public final class ShadeFrame {
 		}
 		float target = ShadeSky.KEY / (float) Math.pow(Math.max(scene, 1e-4f), ShadeSky.ADAPTATION);
 		target *= 1f + 1.5f * this.nightVision;
-		target *= 1f - 0.3f * this.rain; // rain and storms read darker than a clear day, not adapted back up to it
-		target *= s.exposureBias();
+		// (1.2.9, issue #66) both only as far as the sky lights the eye: a cave is as bright in a storm or at sunset as at noon
+		float underSky = Live.b("mcopt.shade.caveGrade", true) ? eyeCurve : 1f;
+		target *= 1f - 0.3f * this.rain * underSky; // rain and storms read darker than a clear day, not adapted back up to it
+		target *= 1f + (s.exposureBias() - 1f) * underSky;
 		target = Math.min(Math.max(target, ShadeSky.EXPOSURE_MIN), ShadeSky.EXPOSURE_MAX * (1f + this.nightVision));
 		if (snap || !(this.exposure > 0f)) {
 			this.exposure = target;

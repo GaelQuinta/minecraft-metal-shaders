@@ -59,6 +59,11 @@ public final class ShadeOptions {
 	public static final ShadeOption STYLE = choice("mcopt.shade.look", "Estilo", "Style",
 		"Épico: colores intensos. Cuento: más suave y cálido. Natural: más realista.", "Epic: rich colours. Storybook: softer and warmer. Natural: more realistic.",
 		new String[] {"epic", "storybook", "natural"}, new String[] {"Épico", "Cuento", "Natural"}, new String[] {"Epic", "Storybook", "Natural"}, () -> 0);
+	/** (1.2.9 look pass) The atmosphere: the new one (Look2) or 1.2.8's. Live. */
+	public static final ShadeOption ATMOSPHERE = choice(Look2.KEY, "Atmósfera", "Atmosphere",
+		"Nueva: luz dorada de tarde, sombras más profundas, atardeceres más oscuros y nubes más altas. Clásica: el look de la 1.2.8.",
+		"New: golden afternoon light, deeper shade, darker evenings and higher clouds. Classic: the 1.2.8 look.",
+		new String[] {"true", "false"}, new String[] {"Nueva", "Clásica (1.2.8)"}, new String[] {"New", "Classic (1.2.8)"}, () -> 0);
 
 	public static final List<Page> PAGES = new ArrayList<>();
 
@@ -305,13 +310,20 @@ public final class ShadeOptions {
 			toggle(U + "moonPhases", "Fases de la luna", "Moon phases", "No = siempre luna llena.", "Off = always a full moon.", true),
 			pct(U + "sunSize", "Tamaño del sol", "Sun size", "Tamaño del disco del sol (las sombras no cambian).", "Size of the sun's disc (shadows don't change).", 30, 400, 100),
 			pct(U + "moonSize", "Tamaño de la luna", "Moon size", "Tamaño del disco de la luna.", "Size of the moon's disc.", 30, 400, 100),
-			toggle("mcopt.shade.stars", "Cielo propio", "Shader sky", "Sol, luna con fases, estrellas y Vía Láctea del shader. No = los de Minecraft.",
-				"The shader's sun, moon phases, stars and Milky Way. Off = Minecraft's.", true));
+			toggle("mcopt.shade.stars", "Cielo propio", "Shader sky", "Luna con fases, estrellas y Vía Láctea del shader. No = las de Minecraft.",
+				"The shader's moon with phases, stars and Milky Way. Off = Minecraft's.", true),
+			toggle("mcopt.shade.sun", "Sol del shader", "Shader sun", "El disco del sol del shader. No = el sol de Minecraft o de tu resource pack.",
+				"The shader's sun disc. Off = Minecraft's sun, or your resource pack's.", true));
 
 		page("Agua", "Water", "Color, olas, reflejos, espuma y vista bajo el agua.", "Colour, waves, reflections, foam and underwater view.",
 			choice("mcopt.shade.water.color", "Color", "Colour", "Natural: el color de cada bioma, como en Minecraft. Los demás: el mismo color en todo el mundo.",
 				"Natural: each biome's colour, as in Minecraft. The others: one colour everywhere.", new String[] {"natural", "blue", "turquoise", "green", "clear"},
 				new String[] {"Natural", "Azul", "Turquesa", "Verde", "Cristalina"}, new String[] {"Natural", "Blue", "Turquoise", "Green", "Clear"}, () -> 0),
+			// (1.2.9, issue #68) ShadeWater.fast: Fast = its own lighter water variant; Auto = Fast on GPUs of 8 cores or fewer
+			choice("mcopt.shade.water.quality", "Calidad del agua", "Water quality",
+				"Rápida: agua más ligera, sin reflejo del paisaje (más FPS en Macs pequeñas). Media: refleja el cielo y las nubes, pero no el paisaje. Auto: Rápida en Macs con 8 núcleos de GPU o menos.",
+				"Fast: lighter water, no scene reflections (more FPS on small Macs). Medium: reflects the sky and clouds but not the landscape. Auto: Fast on Macs with 8 or fewer GPU cores.",
+				new String[] {"fast", "medium", "normal", "auto"}, new String[] {"Rápida", "Media", "Normal", "Auto"}, new String[] {"Fast", "Medium", "Normal", "Auto"}, () -> 2),
 			pctInt("mcopt.shade.water.clarity", "Transparencia", "Clarity", "Qué tan lejos se ve dentro del agua.", "How far you can see into the water.", 25, 300, 100),
 			pct("mcopt.shade.waterWaves", "Olas", "Waves", "La altura de las olas.", "How high the waves are.", 0, 200, 100),
 			pct("mcopt.shade.water.swell", "Oleaje", "Swell", "Olas largas en mar abierto; lagos y ríos quedan tranquilos. 0 = como antes (más FPS mirando el mar).",
@@ -436,7 +448,7 @@ public final class ShadeOptions {
 
 	/** Every option on every page (and the main page's two). */
 	public static List<ShadeOption> all() {
-		List<ShadeOption> out = new ArrayList<>(List.of(PRESET, STYLE));
+		List<ShadeOption> out = new ArrayList<>(List.of(PRESET, STYLE, ATMOSPHERE));
 		for (Page p : PAGES) out.addAll(p.options());
 		return out;
 	}

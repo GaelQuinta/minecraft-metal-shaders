@@ -73,6 +73,12 @@ For reference, on the same Mac: Iris + Complementary Reimagined (OpenGL) at 3024
 
 ## Features
 
+- **New in 2.0: a new default atmosphere.** Golden light in the morning and afternoon, deeper shade, darker and more dramatic
+  sunsets with pink and orange clouds, a blue-violet dusk, higher and smaller clouds with darker undersides, and grass and
+  leaves that glow against the sun. Distant land at the edge of the render distance now melts into the sky behind it (no pale
+  ghosts around mountains), the morning mist is lighter, and grass shadows are soft. **Shaders... → Atmosphere: Classic (1.2.8)**
+  brings the old look back. Also new: **Water → Water quality** (Fast / Medium / Normal / Auto) for smaller Macs, where water
+  settings that are off now cost nothing, and **Night sky → Shader sun** to use your resource pack's sun.
 - **Shadows** from the sun and the moon (cascaded shadow maps, soft contact-hardening shadows), coloured shadows through
   stained glass, entity shadows.
 - **Lighting**: sky light, block light and bounce, held lights (a torch in your hand lights the world around you, around
@@ -246,6 +252,8 @@ Minecraft con volumen, luz y sombras), las normales del juego, o ninguna. **Gene
 **"Salida"** del menú de pausa, y la interna con **"Resolución"** (desde la 1.2.4, en % de la salida: 85, 75, 67, 59 o 50 %, o Auto; también en **Shaders... → Rendimiento**). Compatible con Distant Horizons 3.3.4 + Fabric API (opcional); desde la 1.2.2, en **Shaders... → Rendimiento → Distant Horizons** eliges presets de DH probados con los shaders (Rendimiento, Balanceado, Calidad, Ultra), y el agua lejana de DH siempre tiene los reflejos de los shaders. El preset gráfico **Fabulous** ya funciona (antes el agua se volvía invisible). Desde la 1.2.3, cuando estás alto (a la altura de las nubes o arriba de ellas), los bordes de las nubes ya no se ven a través de las lomas y los árboles que tienes enfrente; con DH, una nube detrás de una montaña lejana de DH, por debajo del horizonte, todavía puede verse encima de ella. Si con DH la mitad de
 abajo de la pantalla se ve oscura (versión 1.0-alpha): en `config/DistantHorizons.toml` pon `vanillaFadeMode = "NONE"` y
 reinicia el juego; desde la 1.0-alpha.2 el mod lo hace solo.
+
+**Novedades de la 2.0:** **atmósfera nueva de fábrica**: luz dorada en la mañana y la tarde, sombras más profundas, atardeceres más oscuros con nubes rosa y naranja, anochecer azul-violeta, nubes más altas y chicas, y pasto y hojas que brillan a contraluz; el terreno en el borde de la distancia de render se funde con el cielo de atrás (sin halos pálidos alrededor de las montañas), la neblina de la mañana es más ligera y las sombras del pasto son suaves. **Shaders... → Atmósfera: Clásica (1.2.8)** regresa al look anterior. También: **Agua → Calidad del agua** (Rápida / Media / Normal / Auto) para Macs chicas (y lo que apagues en el agua ya no cuesta nada), **Cielo de noche → Sol del shader** para usar el sol de tu resource pack, y las cuevas ya no cambian de color con la lluvia o de noche.
 
 **Novedades de la 1.2.8:** **luces de color** para las luces colocadas de un color muy distinto (antorchas y linternas de almas en azul, antorcha y mena de redstone en rojo, antorchas de cobre en verde, amatista, portal del Nether y obsidiana llorosa en morado, ranaluces, linternas marinas y conductos), del mismo color de cerca y de lejos (unos 384 bloques a tu alrededor) y sin atravesar paredes (**Iluminación → Luces de color**); cáusticas en el fondo vistas también desde dentro del agua, y desde fuera más fuertes y parejas (también bajo la sombra de una nube y a 1080p); nubes en el cielo visto desde dentro del agua; el pasto corto y los helechos vuelven a moverse en todos lados, y las plantas de los resource packs también; lluvia más transparente que ya no forma una cortina blanca a lo lejos (de metalnakls); arreglado: modelos estirados, movidos o invisibles (plantas, cadenas, ganchos, corales) después de cambiar de mundo o entrar a un servidor.
 

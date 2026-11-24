@@ -32,6 +32,7 @@ fragment half4 shade_lut_fs(ShadeLutOut in [[stage_in]], constant ShadeFrame &f 
 	float3 gain = mix(L.skyGoldH.rgb, L.skyGoldZ.rgb, smoothstep(0.02, 0.55, abs(dir.y)));
 	gain = mix(float3(1.0), max(gain, 0.0), art ? 0.15 + 0.85 * toward * toward : 0.55 + 0.45 * toward); // art: little gold away from the sun
 	sky *= gain;
+	sky *= L.look2b.rgb; // (1.2.9 look pass, Look2 sky: a deeper blue by day, a blue-violet blue hour; 1 = 1.2.8)
 	// M3: the evening sky's hue toward rose (upper sky, a little mauve) and peach (lower), at the same luminance: the warm
 	// pink-gold evening of the studied packs, our sun, rays and blue top kept (ShadeLook.skyGoldZ.w, 0 by day)
 	float rose = L.skyGoldZ.w;

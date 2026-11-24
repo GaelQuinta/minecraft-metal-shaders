@@ -35,7 +35,7 @@ import mcopt.metal.shade.weather.ShadeWeather;
  * <li>(up to 1.1) sodium:pipeline/{solid,cutout,translucent}_terrain: Sodium's terrain with per-pixel lighting. Since the
  * mcopt 0.3 port the terrain is mcopt's own renderer's (own/terrain.metal), shaded through {@link #ownPrefix}.</li>
  * <li>minecraft:pipeline/sky: the atmosphere (sky.vs.metal, sky.fs.metal).</li>
- * <li>minecraft:pipeline/celestial: vanilla's sun quad dropped, moon kept (celestial.vs.metal).</li>
+ * <li>minecraft:pipeline/celestial: vanilla's sun quad dropped, moon kept (celestial.vs.metal); a kept sun in HDR (celestial.fs.metal).</li>
  * <li>minecraft:pipeline/sunrise_sunset: dropped in the overworld (sunrise_sunset.vs.metal).</li>
  * <li>minecraft:pipeline/clouds, flat_clouds: lit clouds (clouds.fs.metal).</li>
  * <li>minecraft:pipeline/weather: rain and snow re-lit (weather.metal, patched into the generated fragment).</li>
@@ -62,7 +62,7 @@ public final class ShadeMsl {
 	public static final String END_SKY = "minecraft:pipeline/end_sky";
 	public static final List<String> CLOUDS = List.of("minecraft:pipeline/clouds", "minecraft:pipeline/flat_clouds");
 
-	private static volatile String prelude, look, skyVertex, skyFragment, celestialVertex, sunriseVertex, starsVertex, cloudFragment, endSkyVertex, endSkyFragment;
+	private static volatile String prelude, look, skyVertex, skyFragment, celestialVertex, celestialFragment, sunriseVertex, starsVertex, cloudFragment, endSkyVertex, endSkyFragment;
 
 	private ShadeMsl() {
 	}
@@ -131,11 +131,27 @@ public final class ShadeMsl {
 	/** Own-terrain-only variant bit: no PBR instructions/registers at all without a loaded material pack. */
 	public static final int PBR_MATERIALS = 1 << 8;
 
+	/**
+	 * (1.2.9, issue #68: water settings that are off must cost nothing) Own-terrain translucent-only variant bits from WOFF_SHIFT up
+	 * (ShadeLean.waterOff: the water settings the player turned off, the camera above water): each compiles its water code out
+	 * (water.metal SHADE_WOFF_*), so a disabled feature no longer weighs on every water pixel (the water shader is register-bound:
+	 * code that a uniform skips is still paid). Each define leaves the image exactly as the setting at 0 drew it.
+	 */
+	public static final int WOFF_SHIFT = 20, WOFF_SSR = 1, WOFF_REFL = 2, WOFF_SWELL = 4, WOFF_CAUSTICS = 8, WOFF_FOAM = 16, WOFF_PANO = 32,
+		WOFF_WSHADOW = 64, WOFF_RTR = 128, WOFF_GLINT = 256, WOFF_FAST = 512, WOFF_BITS = 10, WOFF_ALL = (1 << WOFF_BITS) - 1;
+	private static final String[] WOFF_NAMES = {"SSR", "REFL", "SWELL", "CAUSTICS", "FOAM", "PANO", "WSHADOW", "RTR", "GLINT", "FAST"};
+
+	static String waterOffDefines(int w) {
+		StringBuilder b = new StringBuilder();
+		for (int i = 0; i < WOFF_BITS; i++) if ((w & 1 << i) != 0) b.append("#define SHADE_WOFF_").append(WOFF_NAMES[i]).append(" 1\n");
+		return b.toString();
+	}
+
 	public static String ownFragmentSource(boolean translucent, int leanBits) {
 		return (ShadeConfig.HDR ? "#define MCOPT_HDR\n" : "") + (OWN_NONCE != null ? "#define SHADE_OWN_NONCE " + OWN_NONCE + "\n" : "")
 			+ ((leanBits & PBR_MATERIALS) != 0 ? "#define SHADE_PBR\n" : "")
-			+ leanDefines((leanBits & ~PBR_MATERIALS) << LEAN_SHIFT) + LEAN_TEST
-			+ (translucent ? "#define SHADE_OWN_TRANSLUCENT\n" : "")
+			+ leanDefines((leanBits & 255) << LEAN_SHIFT) + LEAN_TEST
+			+ (translucent ? "#define SHADE_OWN_TRANSLUCENT\n" + waterOffDefines(leanBits >>> WOFF_SHIFT) : "")
 			// (1.2.8) the opaque layers' caustics seen from under water (the water module's parameters are bound to every encoder)
 			+ (!translucent && ShadeWater.MODULE && ShadeWater.CAUSTICS ? "#define SHADE_UW_CAUSTICS\n" : "")
 			+ prelude() + ShadeWeather.prelude(translucent)
@@ -416,6 +432,7 @@ public final class ShadeMsl {
 		skyVertex = skyStage("sky.vs.metal");
 		skyFragment = skyStage("sky.fs.metal");
 		celestialVertex = skyStage("celestial.vs.metal");
+		celestialFragment = skyStage("celestial.fs.metal"); // (1.2.9, issue #67) Minecraft's kept sun in HDR behind the clouds
 		sunriseVertex = skyStage("sunrise_sunset.vs.metal");
 		starsVertex = skyStage("stars.vs.metal");
 		cloudFragment = prelude() + resource("clouds.fs.metal");
@@ -425,7 +442,8 @@ public final class ShadeMsl {
 		List<String> matrices = List.of("DynamicTransforms", "Projection");
 		MetalShaderRegistry.register(SKY, new MetalShaderRegistry.Variant(generated -> skyVertex, generated -> skyFragment,
 			List.of("DynamicTransforms", "Projection", "Fog")));
-		MetalShaderRegistry.register(CELESTIAL, new MetalShaderRegistry.Variant(generated -> celestialVertex, null, matrices));
+		MetalShaderRegistry.register(CELESTIAL, new MetalShaderRegistry.Variant(generated -> celestialVertex, generated -> celestialFragment,
+			List.of("DynamicTransforms", "Projection", "Sampler0")));
 		MetalShaderRegistry.register(SUNRISE, new MetalShaderRegistry.Variant(generated -> sunriseVertex, null, matrices));
 		for (String name : CLOUDS) MetalShaderRegistry.register(name, new MetalShaderRegistry.Variant(null, generated -> cloudFragment, List.of("CloudInfo")));
 		MetalShaderRegistry.register(WEATHER, new MetalShaderRegistry.Variant(ShadeWeather.MODULE && ShadeWeather.SLANT ? ShadeMsl::weatherVertex : null,
