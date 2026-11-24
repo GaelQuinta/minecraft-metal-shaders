@@ -512,12 +512,12 @@ public final class ShadeLook {
 		if (sun && kw > 0f) gradeLight(f.sky.light, 1f + Look2.v("noonGamma", 0.25f, 0f, 0.8f) * kw * day * (1f - rain), 1f);
 		// 2. (with the weaker fill below) a stronger sun by day: the sunlit ground keeps its brightness, the shade loses it (Photon's
 		// noon grass in sun L* 59-62 against our 45-52 with the fill alone cut)
-		// (candidate 5, Gael picked option C of mediodia-opciones.jpg: a brighter, warmer noon; daySun 1.2 -> 1.4, dayWarm 22 -> 34,
-		// dayEv 0.3 -> 0.9: sunlit grass luminance 67 -> 85 of 255 on his plain, Photon 96; sky and clouds 164 -> 178, Photon 150)
+		// (candidates 5-6 had option C of mediodia-opciones.jpg: daySun 1.4, dayWarm 34, dayEv 0.9, sunlit grass 67 -> 85 of 255. Playing it
+		// Gael found sunlight "excesivamente iluminado": candidate 7 is back to option A, 1.2 / 22 / 0.3)
 		float kd = Look2.k("shade") * day * (1f - rain);
-		if (sun && kd > 0f) for (int i = 0; i < 3; i++) f.sky.light[i] *= 1f + (Look2.v("daySun", 1.4f, 0.5f, 2f) - 1f) * kd;
+		if (sun && kd > 0f) for (int i = 0; i < 3; i++) f.sky.light[i] *= 1f + (Look2.v("daySun", 1.2f, 0.5f, 2f) - 1f) * kd;
 		// (and a warmer daylight white balance: Photon's noon grass is yellower, a* -20 b* +43 against our -24 / +35, and its zenith warmer)
-		if (kw > 0f) this.whiteBalance += Look2.v("dayWarm", 34f, -30f, 50f) * kw * day * (1f - rain) * this.outdoor;
+		if (kw > 0f) this.whiteBalance += Look2.v("dayWarm", 22f, -30f, 50f) * kw * day * (1f - rain) * this.outdoor;
 		// 2. deeper shade: the sky's fill and the bounce weaker by day (sun / shade luminance on grass 1.9-2.2 -> ~2.8)
 		float ks = Look2.k("shade") * day;
 		if (ks > 0f) {
@@ -543,7 +543,7 @@ public final class ShadeLook {
 			this.l2Lambda *= 1f - (1f - Look2.v("dayMeter", 0.5f, 0f, 1f)) * day * kx;
 			// with the meter following less and the fill weaker, open noon scenes would sit below 1.2.8's brightness: the reference up a little
 			// (high sun only: at 25-40 degrees the frames with the lake and the bright sky were already above 1.2.8's)
-			this.l2Ev += Look2.v("dayEv", 0.9f, -1f, 1f) * smooth(25f, 50f, e) * kx;
+			this.l2Ev += Look2.v("dayEv", 0.3f, -1f, 1f) * smooth(25f, 50f, e) * kx;
 			// the meter's changes only under the sky (issue #66: a sealed torch-lit room adapts as in 1.2.8 at any hour)
 			this.l2Lambda = 1f - (1f - this.l2Lambda) * this.outdoor;
 		}
