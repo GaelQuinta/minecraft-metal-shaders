@@ -291,7 +291,7 @@ public final class ShadeOptions {
 				"Water also mirrors clouds outside the screen.", true),
 			h("Calidad", "Quality"),
 			pctOf("mcopt.shade.clouds.scale", "Resolución", "Resolution", "Resolución de las nubes. Más alta = más nítidas y más lentas.",
-				"Cloud resolution. Higher = sharper and slower.", 20, 100, tier(40, 60, 60, 67), 1f),
+				"Cloud resolution. Higher = sharper and slower.", 20, 100, tier(40, 45, 50, 67), 1f),
 			choice("mcopt.shade.clouds.checker", "Píxeles", "Pixels", "Cuántos píxeles se calculan en cada cuadro (el resto se reutiliza).",
 				"How many pixels are traced each frame (the rest are reused).", new String[] {"1", "2", "3", "4"},
 				new String[] {"Todos", "1 de 4", "1 de 9", "1 de 16"}, new String[] {"All", "1 in 4", "1 in 9", "1 in 16"}, tier(2, 2, 1, 1)),

@@ -58,9 +58,9 @@ public final class CloudConfig {
 	public static final boolean M33 = flag("mcopt.shade.clouds.m33", true);
 	public static final boolean ENABLED = Shade.ENABLED && flag("mcopt.shade.clouds", true) && flag("mcopt.shade.hdr", true)
 		&& !Boolean.parseBoolean(System.getProperty("mcopt.lod", "false"));
-	// (1.2.9 candidate 8, Gael 2026-11-24: "60 se me hace un sweet spot mejor que 45") balanced 0.45 -> 0.6 and quality 0.5 -> 0.6;
-	// priced on the perf spin at native resolution, DRS off, one session (run c7-clouds): +0.43 ms of GPU (17.79 -> 18.22, about 2.4 %)
-	public static final float SCALE = clamp(floatProperty("mcopt.shade.clouds.scale", new float[] {0.4f, 0.6f, 0.6f, 0.67f}[TIER]), 0.2f, 1f);
+	// (candidate 8 had balanced and quality at 0.6: Gael finds 60 a better sweet spot than 45. From startup it cost ~3.5 % of FPS on the
+	// standard route (perfc8b.out: 75.7 -> 73 fps, +0.5 ms), so candidate 9 is back to 0.45 / 0.5 by default; 60 is a menu choice)
+	public static final float SCALE = clamp(floatProperty("mcopt.shade.clouds.scale", new float[] {0.4f, 0.45f, 0.5f, 0.67f}[TIER]), 0.2f, 1f);
 	/**
 	 * Checkerboard N: one pixel of each N x N block is marched per frame (P 3, B 3, Q 2, U 2; 1 = every pixel; M3.3: up to 4,
 	 * a 16-frame cycle with 44 % fewer march rays than 3).
