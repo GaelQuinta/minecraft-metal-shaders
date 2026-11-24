@@ -80,8 +80,16 @@ static inline float3 shadeFinish2(float3 radiance, float vanillaFog, constant Sh
 // M1's directional sky light and foliage terms, plus: a slight wrap on the sun term, the art layer's ambient tint, a warm
 // fill in shadow (light bounced off the sunlit surroundings), a broader block-light curve (hot core, long tail) that fades a
 // little by day, a cool minimum light in caves, and a gentle east/west face separation for readability. Light levels 0..1.
+// (1.2.9 candidate 4) How much of the new look's two close-up terms (the foliage sheen and the side faces' darkening) a fragment at
+// camera-relative p gets: all of it up to half of look2a.w blocks, none past look2a.w (0 = everywhere, candidate 3). On far
+// hillsides the two made every terrace's sunlit top and its grass tufts stand out as bright lines over darkened sides ("el borde
+// superior de los bloques a lo lejos se ve como que brilla", Gael 2026-11-23: top/median luminance 1.52 against 1.34 in 1.2.8).
+static inline float shadeLook2Near(float3 p, constant ShadeLook &L) {
+	return L.look2a.w > 0.0 ? 1.0 - smoothstep(0.5 * L.look2a.w, L.look2a.w, length(p)) : 1.0;
+}
+
 static float3 shadeLit2(half3 albedo, half3 n, half sky, half block, half shadow, bool thin, bool foliage, constant ShadeFrame &f,
-                        constant ShadeLook &L) {
+                        constant ShadeLook &L, float look2Near = 1.0) {
 	if (!shadeFeature(L, SHADE_FEATURE_LIGHT_V2)) return shadeLit(albedo, n, sky, block, shadow, thin, foliage, f);
 	float3 Ld = f.lightDirWorld.xyz;
 	half nl = half(dot(float3(n), Ld));
@@ -127,13 +135,13 @@ static float3 shadeLit2(half3 albedo, half3 n, half sky, half block, half shadow
 		fill *= half3(0.3h, 0.55h, 0.7h);
 	}
 	half face = half(1.0) - half(0.06) * abs(n.x) * (half(1.0) - abs(n.y));
-	if (L.look2a.y > 0.0 && !thin) face *= half(1.0 - L.look2a.y * (1.0 - abs(float(n.y)))); // (1.2.9 look pass) side faces darker
+	if (L.look2a.y > 0.0 && !thin) face *= half(1.0 - L.look2a.y * look2Near * (1.0 - abs(float(n.y)))); // (1.2.9 look pass) side faces darker
 	float3 lit = float3(albedo) * float3((direct + ambient + fill + torch + minimum) * face);
 	// (1.2.9 look pass, Look2 sheen; ShadeLook.look2a.x, 0 = 1.2.8) plants and leaves against the sun: light scattered forward through
 	// the thin blades, in the light's colour partly tinted by the plant's own hue (look2a.z: a yellow-green glow), plants x1, leaves x0.5
 	if ((thin || foliage) && L.look2a.x > 0.0 && !SHADE_CAMERA_UNDERWATER(f))
 		lit += float3(sun) * mix(float3(1.0), saturate(float3(albedo) / max(dot(float3(albedo), float3(0.2126, 0.7152, 0.0722)), 0.02)) , L.look2a.z)
-			* (L.look2a.x * float(shadow * gate) * (thin ? 1.0 : 0.5));
+			* (L.look2a.x * look2Near * float(shadow * gate) * (thin ? 1.0 : 0.5));
 	return lit;
 }
 

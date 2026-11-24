@@ -83,7 +83,7 @@ struct ShadeLook {
 	float4 user3;         // 1072 x Natural lighting daylight strength 0..2 (0 = Current, 1 = original Natural), y signed normal strength (negative flips Y), z specular, w emission (0 without PBR)
 	float4 user4;         // 1088 (1.2.9) x 1 = the haze and mist over the sky too, up to the border fog's radius (mcopt.shade.skyHaze; shade_post.metal shadeHazeSkyEnd), y > 0 = Minecraft's own sun texture instead of the sky's disc, at this HDR gain (issue #67, mcopt.shade.sun=false, mcopt.shade.sunTexGain; celestial.fs.metal), z the border fog's clouds behind terrain: 0 late ramp, 1 from the fog's start, 2 late only toward a low sun (mcopt.shade.clouds.fogBlend), w the mist's sunlit part's multiple-scattering gain (mcopt.shade.mistSun, 1 = before; shadeHazeInscatterFrom)
 	// (1.2.9 look pass, Look2.java; 0 / 1 with mcopt.shade.look2=false)
-	float4 look2a;        // 1104 x the foliage sheen against the sun (shade_m2.metal shadeLit2: x sun colour x shadow x sky gate on plants, half on leaves), y the side faces' extra darkening, z the sheen's share of the plant's hue, w reserved
+	float4 look2a;        // 1104 x the foliage sheen against the sun (shade_m2.metal shadeLit2: x sun colour x shadow x sky gate on plants, half on leaves), y the side faces' extra darkening, z the sheen's share of the plant's hue, w (candidate 4) the distance (blocks) past which the sheen and the side darkening are gone, faded from half of it (0 = everywhere)
 	float4 look2b;        // 1120 rgb the sky's gain (sky_lut.metal: the sky, its reflections and the fog into it), w reserved
 };
 

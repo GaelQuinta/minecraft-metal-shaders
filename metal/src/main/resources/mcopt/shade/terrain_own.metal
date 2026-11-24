@@ -220,7 +220,7 @@ static SO_OTHER_ATTR float3 shadeOwnOther(thread float &alpha, bool water, float
 		half3 wetAlbedo = albedo;
 #endif
 		// Nether/End (dims module): shadeLit2 without sky light and sun, plus the dimension's own light (shadeLitDimsExtra)
-		radiance = shadeLit2(wetAlbedo, materialN, dims ? half(0.0) : skyLight, blockLight, dims ? half(0.0) : shadow, thin, foliage, sf, sl);
+		radiance = shadeLit2(wetAlbedo, materialN, dims ? half(0.0) : skyLight, blockLight, dims ? half(0.0) : shadow, thin, foliage, sf, sl, shadeLook2Near(p, sl));
 		if (dims) radiance += shadeLitDimsExtra(wetAlbedo, materialN, shadow, thin, foliage, p, sf, sl);
 #ifdef SHADE_COLOR_LIGHT
 		// (1.2.8) placed lights of a colour of their own light in it (colorlight.metal, per vertex)
@@ -672,7 +672,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		if (water) radiance = shadeWater(float3(1.0), tint, shadeLumaH(half3(texel.rgb)), alpha, p, skyLight, shadow, skyLut, skyLutSmplr, sf).rgb;
 #endif
 #ifndef SHADE_PRICE_NONW
-		if (!water) radiance = shadeLit2(albedo, materialN, skyLight, blockLight, shadow, thin, foliage, sf, sl);
+		if (!water) radiance = shadeLit2(albedo, materialN, skyLight, blockLight, shadow, thin, foliage, sf, sl, shadeLook2Near(p, sl));
 #endif
 	} else
 #endif
