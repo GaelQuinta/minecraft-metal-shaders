@@ -269,7 +269,13 @@ static half shadeShadow2(depth2d_array<float> map, sampler cmp, constant ShadeFr
 		float count = dot(b0 + b1, float4(1.0));
 		if (count > 0.0) {
 			float zb = (dot(d0, b0) + dot(d1, b1)) / count;
-			float wTex = clamp((zb - c.z) * zBlocks * tanSun / blocksPerTexel, 0.6, searchTex);
+			// (1.2.9 candidate 8, ShadeLook.look2b.w = mcopt.shade.shadowMinBlur, blocks; 0 = before) a smallest penumbra: the shadow of
+			// something right on the ground (a tuft of grass, a flower) is all contact, so it stayed as sharp as the shadow map and
+			// showed the plant's cut-out texture as a jagged dark stain with holes (Gael 2026-11-24: "la sombra se sobrelapa sobre la
+			// textura del pasto y se ve raro"). With a floor on the blur its edge is soft and the thin blades and holes average out
+			// (a little lighter); shadows cast from higher up already have a wider penumbra and do not change.
+			float minTex = min(L.look2b.w / blocksPerTexel, searchTex);
+			float wTex = clamp((zb - c.z) * zBlocks * tanSun / blocksPerTexel, max(0.6, minTex), searchTex);
 			float s = 0.0;
 			for (int i = 0; i < SHADE_PCSS_TAPS; i++) s += map.sample_compare(cmp, uv + R * SHADE_VOGEL8[i] * (wTex * texelUv), 0u, c.z);
 			s *= 1.0 / float(SHADE_PCSS_TAPS);

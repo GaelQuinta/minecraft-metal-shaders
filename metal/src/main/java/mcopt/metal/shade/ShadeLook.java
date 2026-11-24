@@ -473,7 +473,8 @@ public final class ShadeLook {
 		// (1.2.9 look pass, Look2) a: x the foliage sheen, y the side faces' extra darkening, z the sheen's share of the plant's hue (shade_m2.metal shadeLit2), w reserved; b: rgb the sky's gain (sky_lut.metal), w reserved
 		// w (candidate 4): the sheen and the side faces' darkening only near the camera (mcopt.shade.look2.nearEnd, live, blocks; 0 = everywhere)
 		put4(b, LOOK2A, this.l2Sheen, this.l2Face, Look2.v("sheenHue", 0.75f, 0f, 1f), Look2.v("nearEnd", 80f, 0f, 512f));
-		put4(b, LOOK2B, this.l2Sky[0], this.l2Sky[1], this.l2Sky[2], 0f);
+		// w (candidate 8): the soft shadows' smallest penumbra, blocks (mcopt.shade.shadowMinBlur, live; 0 = 1.2.8's crisp contact shadows)
+		put4(b, LOOK2B, this.l2Sky[0], this.l2Sky[1], this.l2Sky[2], Live.f("mcopt.shade.shadowMinBlur", 0.1f, 0f, 0.5f));
 		mcopt.metal.shade.weather.ShadeWeather.pack(b); // M3 weather: wet, wind, flash
 	}
 
