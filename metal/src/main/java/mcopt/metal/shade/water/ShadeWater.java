@@ -173,14 +173,18 @@ public final class ShadeWater {
 	 */
 	public static final boolean EDGE_REFL = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.edgeRefl", "true"));
 	/**
-	 * FT2.6 (Gael's FT2.5 lake: white blocks in the mirrored forest, where rays passed behind trunks and leaves and fell back to
-	 * the clouds' dome): the SSR march's thickness in steps' depth extents (mcopt.shade.water.ssrThick, 3 as Photon MIT allows;
-	 * FT2.5 1) and, with no hit, the first crossing behind something instead of the sky (mcopt.shade.water.ssrBehind, true).
-	 * Lake p6 (bug-ssr3): pixels above 200/255 in the mirrored forest 0.88 % -> 0.05 %; open water (bug-ssrchk): ~1/255. With
-	 * -Dmcopt.shade.wdev=true, mcopt.shade.dev variants 2-5 switch them live.
+	 * FT2.6 (Gael's FT2.5 lake: white blocks in the mirrored forest on the old coarse 24-step march): the SSR march's thickness
+	 * in steps' depth extents ({@code mcopt.shade.water.ssrThick}) and, with no hit, the first crossing behind something instead
+	 * of the sky ({@code mcopt.shade.water.ssrBehind}).
+	 * <p>2.0.1d: with the exact per-pixel hierarchical march ({@link #SSR_EXACT}, 2-px steps), {@code ssrBehind=true} pinned rays
+	 * passing underneath overhanging tree canopies and roof eaves onto the bottom row of swaying leaves, drawing noisy flickering
+	 * vertical curtains all the way to the shoreline (Photon MIT, Spectrum, Complementary and BSL never accept unbounded behind-hits).
+	 * With {@link #SSR_EXACT}, {@code ssrBehind} now defaults to {@code false} and {@code ssrThick} to {@code 1.5} (every continuous
+	 * surface crossing lies within 1.0 step extent, while preventing wide-lake overhangs from smearing tens of blocks deep); the legacy
+	 * coarse march ({@code ssrExact=false}) keeps {@code ssrBehind=true} and {@code ssrThick=3.0}.
 	 */
-	public static final float SSR_THICK = Math.clamp(floatProperty("mcopt.shade.water.ssrThick", 3f), 0.5f, 8f);
-	public static final boolean SSR_BEHIND = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrBehind", "true"));
+	public static final float SSR_THICK = Math.clamp(floatProperty("mcopt.shade.water.ssrThick", SSR_EXACT ? 1.5f : 3f), 0.5f, 8f);
+	public static final boolean SSR_BEHIND = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrBehind", String.valueOf(!SSR_EXACT)));
 	/**
 	 * 1.2.7 (water.metal SHADE_SSR_TOP): how far past the top screen edge (NDC) the march goes on against the top row, fading to
 	 * nothing there (mcopt.shade.water.ssrTop, 0.15; 0 = candidate 3: the top edge ends it; candidate 4 went 0.5 at half weight and

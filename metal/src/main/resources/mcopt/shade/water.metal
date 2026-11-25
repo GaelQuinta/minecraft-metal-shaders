@@ -897,9 +897,10 @@ static float4 shadeSsrTrace(float3 s0, float3 ds, bool screenEnd, float yFloor, 
 	float wStart = B / max(s0.z + A, 1e-7);
 	// (2.0.1 fix) foreground occluders closer to camera than water (tall grass, piers) cannot be hit by a receding ray
 	float zFg = ds.z <= 0.0 ? (B / max(wStart - 0.15, 0.05) - A) : 2.0;
-	bool behind = SHADE_SSR_BEHIND != 0;
 	bool front = true; // the ray is in front of the scene where the walk stands
+#if SHADE_SSR_BEHIND
 	float tBack = -1.0;
+#endif
 	float2 dirO = d / max(length(d), 1e-6); // the ray on screen, and the pixels a block spans at depth 1 (shadeSsrhSmall)
 	float pxB = 0.5 * size.y * abs(f.proj[1][1]);
 	int budget = SHADE_SSRH_BUDGET;
@@ -931,12 +932,16 @@ static float4 shadeSsrTrace(float3 s0, float3 ds, bool screenEnd, float yFloor, 
 					float stepW = abs(wr - B / max(zr - ds.z * inv2 + A, 1e-7));
 					float thick = min(float(SHADE_SSRH_THICK), 0.25 * wh + 0.15) + 0.03 * wh + stepW * SHADE_SSR_THICK_K;
 					float zp = zs[max(k - 1, 0)];
+#if SHADE_SSR_BEHIND
 					bool big = true;
+#endif
 #ifdef SHADE_SSRH_THIN
 					float thin = shadeSsrhThin(wh, zp > 0.0 ? B / max(zp + A, 1e-7) : 1e9, stepW);
 					if (wr - wh > thin && wh < SHADE_SSRH_THIN_W && shadeSsrhSmall(depth, a + d * t, dirO, wh, pxB, top, A, B)) {
 						thick = thin;
+#if SHADE_SSR_BEHIND
 						big = false;
+#endif
 					}
 #endif
 					if (wr - wh < thick) {
@@ -951,7 +956,9 @@ static float4 shadeSsrTrace(float3 s0, float3 ds, bool screenEnd, float yFloor, 
 						float off = abs(sh.x) - 1.0, offT = sh.y - 1.0;
 						float fade = smoothstep(0.0, 0.07, uv.y) * mix(1.0, SHADE_SSR_SIDE_END, saturate(off / SHADE_SSR_SIDE) * saturate(off / SHADE_SSR_SIDE)) * (1.0 - smoothstep(0.0, SHADE_SSR_TOP, offT));
 						fade *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.72) * 5.0), saturate(max(off, offT) * 20.0));
-						if (!behind) fade *= 1.0 - smoothstep(0.6, 1.0, (wr - wh) / thick);
+#if !SHADE_SSR_BEHIND
+						fade *= 1.0 - smoothstep(0.6, 1.0, (wr - wh) / thick);
+#endif
 						uv.x = clamp(uv.x, 0.5 / size.x, 1.0 - 0.5 / size.x);
 						uv.y = min(uv.y, 1.0 - 0.5 / size.y);
 						if (!screenEnd) fade *= 1.0 - smoothstep(0.85, 1.0, wr / max(B / max(s0.z + ds.z + A, 1e-7), 1e-3));
@@ -962,8 +969,10 @@ static float4 shadeSsrTrace(float3 s0, float3 ds, bool screenEnd, float yFloor, 
 #endif
 						return float4(uv, fade, tH);
 					}
+#if SHADE_SSR_BEHIND
 					// it passed behind something: on, and the first such thing beyond the reflecting point stands in if nothing is hit
-					if (behind && big && tBack < 0.0 && wh > wStart) tBack = t;
+					if (big && tBack < 0.0 && wh > wStart) tBack = t;
+#endif
 				}
 				front = fr;
 			}
@@ -972,6 +981,7 @@ static float4 shadeSsrTrace(float3 s0, float3 ds, bool screenEnd, float yFloor, 
 #ifdef SHADE_SSRH_DEBUG
 	if (budget <= 0) shadeSsrhDebug.z = 1.0;
 #endif
+#if SHADE_SSR_BEHIND
 	if (tBack < 0.0) return float4(0.0, 0.0, 0.0, -1.0);
 	float3 sh = s0 + ds * tBack;
 	float2 uv = sh.xy * 0.5 + 0.5;
@@ -983,6 +993,9 @@ static float4 shadeSsrTrace(float3 s0, float3 ds, bool screenEnd, float yFloor, 
 	bf *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.72) * 5.0), saturate(max(off, offT) * 20.0));
 	if (!screenEnd) bf *= 1.0 - smoothstep(0.85, 1.0, wr / max(B / max(s0.z + ds.z + A, 1e-7), 1e-3));
 	return float4(clamp(uv.x, 0.5 / size.x, 1.0 - 0.5 / size.x), min(uv.y, 1.0 - 0.5 / size.y), bf, tBack);
+#else
+	return float4(0.0, 0.0, 0.0, -1.0);
+#endif
 }
 
 #ifdef SHADE_SSR_QUAD
@@ -1004,7 +1017,6 @@ static float4 shadeSsrTraceQuad(float3 s0, float3 ds, bool screenEnd, float yFlo
 	float inv0 = 1.0 / float(n0), inv1 = inv0 * 0.125, inv2 = inv1 * (1.0 / 11.0);
 	float wStart = B / max(s0.z + A, 1e-7);
 	float zFg = ds.z <= 0.0 ? (B / max(wStart - 0.15, 0.05) - A) : 2.0;
-	bool behind = SHADE_SSR_BEHIND != 0;
 	// the 128-pixel intervals: bit i of mF = the ray is in front of everything around interval i (or all of it is too low), of mB =
 	// behind everything around it
 	uint mF = 0u, mB = 0u;
@@ -1019,7 +1031,9 @@ static float4 shadeSsrTraceQuad(float3 s0, float3 ds, bool screenEnd, float yFlo
 	mB = shadeQuadOr(mB);
 	bool front = true; // the ray is in front of the scene where the walk stands
 	bool done = false;
+#if SHADE_SSR_BEHIND
 	float tBack = -1.0;
+#endif
 	float3 res = 0.0;
 	int budget = SHADE_SSRH_BUDGET;
 	for (int i = 0; i < n0 && !done && budget > 0; i++) {
@@ -1067,12 +1081,16 @@ static float4 shadeSsrTraceQuad(float3 s0, float3 ds, bool screenEnd, float yFlo
 						float wh = B / max(zk + A, 1e-7), wr = B / max(zr + A, 1e-7);
 						float stepW = abs(wr - B / max(zr - ds.z * inv2 + A, 1e-7));
 						float thick = min(float(SHADE_SSRH_THICK), 0.25 * wh + 0.15) + 0.03 * wh + stepW * SHADE_SSR_THICK_K;
+#if SHADE_SSR_BEHIND
 						bool big = true;
+#endif
 #ifdef SHADE_SSRH_THIN
 						float thin = shadeSsrhThin(wh, wh, stepW);
 						if (wr - wh > thin && wh < SHADE_SSRH_THIN_W && shadeSsrhSmall(depth, a + d * t, d / max(length(d), 1e-6), wh, 0.5 * size.y * abs(f.proj[1][1]), top, A, B)) {
 							thick = thin;
+#if SHADE_SSR_BEHIND
 							big = false;
+#endif
 						}
 #endif
 						if (wr - wh < thick) {
@@ -1089,22 +1107,31 @@ static float4 shadeSsrTraceQuad(float3 s0, float3 ds, bool screenEnd, float yFlo
 							float off = abs(sh.x) - 1.0, offT = sh.y - 1.0;
 							float fade = smoothstep(0.0, 0.07, uv.y) * mix(1.0, SHADE_SSR_SIDE_END, saturate(off / SHADE_SSR_SIDE) * saturate(off / SHADE_SSR_SIDE)) * (1.0 - smoothstep(0.0, SHADE_SSR_TOP, offT));
 							fade *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.72) * 5.0), saturate(max(off, offT) * 20.0));
-							if (!behind) fade *= 1.0 - smoothstep(0.6, 1.0, (wr - wh) / thick);
+#if !SHADE_SSR_BEHIND
+							fade *= 1.0 - smoothstep(0.6, 1.0, (wr - wh) / thick);
+#endif
 							if (!screenEnd) fade *= 1.0 - smoothstep(0.85, 1.0, wr / max(B / max(s0.z + ds.z + A, 1e-7), 1e-3));
 							ev = float4(clamp(uv.x, 0.5 / size.x, 1.0 - 0.5 / size.x), min(uv.y, 1.0 - 0.5 / size.y), fade, 1.0);
-						} else if (behind && big && wh > wStart) ev.w = 2.0;
+						}
+#if SHADE_SSR_BEHIND
+						else if (big && wh > wStart) ev.w = 2.0;
+#endif
 					}
 				}
 				ev = shadeQuadSum(ev);
 				if (ev.w > 0.5 && ev.w < 1.5) {
 					res = ev.xyz;
 					done = true;
-				} else if (ev.w > 1.5 && tBack < 0.0) tBack = t;
+				}
+#if SHADE_SSR_BEHIND
+				else if (ev.w > 1.5 && tBack < 0.0) tBack = t;
+#endif
 			}
 			front = ((mb >> 11u) & 1u) == 0u;
 		}
 	}
 	if (done) return float4(res, 1.0);
+#if SHADE_SSR_BEHIND
 	if (tBack < 0.0) return float4(0.0, 0.0, 0.0, -1.0);
 	float3 sh = s0 + ds * tBack;
 	float2 uv = sh.xy * 0.5 + 0.5;
@@ -1116,6 +1143,9 @@ static float4 shadeSsrTraceQuad(float3 s0, float3 ds, bool screenEnd, float yFlo
 	bf *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.72) * 5.0), saturate(max(off, offT) * 20.0));
 	if (!screenEnd) bf *= 1.0 - smoothstep(0.85, 1.0, wr / max(B / max(s0.z + ds.z + A, 1e-7), 1e-3));
 	return float4(clamp(uv.x, 0.5 / size.x, 1.0 - 0.5 / size.x), min(uv.y, 1.0 - 0.5 / size.y), bf, 11.0);
+#else
+	return float4(0.0, 0.0, 0.0, -1.0);
+#endif
 }
 
 #if defined(SHADE_SSRH_OWN) && defined(SHADE_SSRH_THIN)
@@ -1141,7 +1171,6 @@ static inline float4 shadeSsrhPast(float4 hit, float3 so, float3 dso, bool scree
 	if (hit.w > 5.0) return float4(0.0, 0.0, 0.0, -1.0); // (a small thing does not stand in)
 	float wStart = B / max(so.z + A, 1e-7);
 	float zFg = dso.z <= 0.0 ? (B / max(wStart - 0.15, 0.05) - A) : 2.0;
-	bool behind = SHADE_SSR_BEHIND != 0;
 	bool front = false; // behind the small thing
 	float t = hit.x, st = 8.0 / len;
 	for (int i = 0; i < 32; i++) {
@@ -1169,7 +1198,9 @@ static inline float4 shadeSsrhPast(float4 hit, float3 so, float3 dso, bool scree
 				float off = abs(sh.x) - 1.0, offT = sh.y - 1.0;
 				float fade = smoothstep(0.0, 0.07, sh.y * 0.5 + 0.5) * mix(1.0, SHADE_SSR_SIDE_END, saturate(off / SHADE_SSR_SIDE) * saturate(off / SHADE_SSR_SIDE)) * (1.0 - smoothstep(0.0, SHADE_SSR_TOP, offT));
 				fade *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.72) * 5.0), saturate(max(off, offT) * 20.0));
-				if (!behind) fade *= 1.0 - smoothstep(0.6, 1.0, (wr - wh) / thick);
+#if !SHADE_SSR_BEHIND
+				fade *= 1.0 - smoothstep(0.6, 1.0, (wr - wh) / thick);
+#endif
 				if (!screenEnd) fade *= 1.0 - smoothstep(0.85, 1.0, wr / max(B / max(so.z + dso.z + A, 1e-7), 1e-3));
 				return float4(hi, fade, 0.0, 1.0);
 			}
@@ -1215,7 +1246,6 @@ static float4 shadeSsrTraceQuadOwn(float3 s0, float3 ds, float3 so, float3 dso, 
 	// (2.0.1 fix) foreground occluders strictly closer to the eye than the water (grass blades, wooden piers) cannot be hit by a
 	// receding reflected ray: ignoring them prevents dark vertical silhouettes beneath foreground grass and pier edges
 	float zFg = dso.z <= 0.0 ? (B / max(wStart - 0.15, 0.05) - A) : 2.0;
-	bool behind = SHADE_SSR_BEHIND != 0;
 	uint mF = 0u, mB = 0u;
 	for (int i = c; i < n0; i += 4) {
 		float ta = float(i) * inv0, tm = ta + 0.5 * inv0;
@@ -1245,7 +1275,9 @@ static float4 shadeSsrTraceQuadOwn(float3 s0, float3 ds, float3 so, float3 dso, 
 	bool front = true;   // this pixel's ray is in front of the scene where the walk stands
 	bool done = !ownOk;  // this pixel has its answer
 	bool all = false;    // every pixel of the quad has
+#if SHADE_SSR_BEHIND
 	float tBack = -1.0;
+#endif
 	float3 res = 0.0;
 	int budget = SHADE_SSRH_BUDGET;
 	for (int i = 0; i < n0 && !all && budget > 0; i++) {
@@ -1368,13 +1400,17 @@ static float4 shadeSsrTraceQuadOwn(float3 s0, float3 ds, float3 so, float3 dso, 
 						float off = abs(sh.x) - 1.0, offT = sh.y - 1.0;
 						float fade = smoothstep(0.0, 0.07, sh.y * 0.5 + 0.5) * mix(1.0, SHADE_SSR_SIDE_END, saturate(off / SHADE_SSR_SIDE) * saturate(off / SHADE_SSR_SIDE)) * (1.0 - smoothstep(0.0, SHADE_SSR_TOP, offT));
 						fade *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.72) * 5.0), saturate(max(off, offT) * 20.0));
-						if (!behind) fade *= 1.0 - smoothstep(0.6, 1.0, (wr - wh) / thick);
+#if !SHADE_SSR_BEHIND
+						fade *= 1.0 - smoothstep(0.6, 1.0, (wr - wh) / thick);
+#endif
 						if (!screenEnd) fade *= 1.0 - smoothstep(0.85, 1.0, wr / max(B / max(so.z + dso.z + A, 1e-7), 1e-3));
 						res = float3(tH, fade, float(sus));
 						done = true;
 						break;
 					}
-					if (behind && tBack < 0.0 && wh > wStart) tBack = t;
+#if SHADE_SSR_BEHIND
+					if (tBack < 0.0 && wh > wStart) tBack = t;
+#endif
 				}
 				front = ((bh >> 7u) & 1u) == 0u;
 			}
@@ -1383,6 +1419,7 @@ static float4 shadeSsrTraceQuadOwn(float3 s0, float3 ds, float3 so, float3 dso, 
 	}
 	// x the hit's place on the pixel's segment (so + dso x), y its weight, z 1 = near-camera suspect or stand-in for shadeSsrhPast
 	if (done && ownOk) return float4(res, 1.0);
+#if SHADE_SSR_BEHIND
 	if (tBack < 0.0) return float4(0.0, 0.0, 0.0, -1.0);
 	float3 sh = so + dso * tBack;
 	float zh = depth.read(uint2(clamp(ao + dox * tBack, float2(0.0), top)));
@@ -1393,6 +1430,9 @@ static float4 shadeSsrTraceQuadOwn(float3 s0, float3 ds, float3 so, float3 dso, 
 	bf *= mix(1.0, saturate((wh / max(wr, 1e-3) - 0.72) * 5.0), saturate(max(off, offT) * 20.0));
 	if (!screenEnd) bf *= 1.0 - smoothstep(0.85, 1.0, wr / max(B / max(so.z + dso.z + A, 1e-7), 1e-3));
 	return float4(tBack, bf, float(wh < SHADE_SSRH_THIN_W), 11.0);
+#else
+	return float4(0.0, 0.0, 0.0, -1.0);
+#endif
 }
 #endif
 #endif
@@ -1888,7 +1928,11 @@ static float4 shadeSsrT(float3 p0, float3 r, float2 pixel, float maxDist, float 
 #endif
 	float4 raw = hit; // (as the march returned it: shadeSsrResolve's shadeSsrhPast)
 	// (2.0.1 opt) only unproject hitNdc when onRay is true (avoids wasted invViewProj matmul on every sky miss!)
+#if SHADE_SSR_BEHIND
 	bool onRay = hit.w >= 0.0 && hit.w < 5.0;
+#else
+	bool onRay = hit.w >= 0.0;
+#endif
 	float3 hitP = float3(0.0);
 	if (hit.w >= 0.0) {
 		float3 hitNdc = so + dso * hit.x;
@@ -1933,7 +1977,11 @@ static float4 shadeSsrT(float3 p0, float3 r, float2 pixel, float maxDist, float 
 	hit.w = hit.w * 1e-9 - 1.0; // (the march ran; nothing after it does)
 #endif
 #ifdef SHADE_SSRH_ONRAY
+#if SHADE_SSR_BEHIND
 	float mineT = hit.w < 0.0 ? -1.0 : onRay ? length(hitP - p0Own) : shadeSsrHitT(hit.xy, p0, f, depth);
+#else
+	float mineT = hit.w < 0.0 ? -1.0 : length(hitP - p0Own);
+#endif
 #else
 	float mineT = hit.w >= 0.0 ? shadeSsrHitT(hit.xy, p0, f, depth) : -1.0;
 #endif
