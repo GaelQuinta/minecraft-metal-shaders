@@ -89,7 +89,7 @@ public final class ShadePost {
 
 	private static final List<Ordered> BEFORE_TONEMAP = new ArrayList<>();
 	private static volatile Ordered[] beforeSnapshot = new Ordered[0];
-	private static final long[] TMP1 = new long[1], TMP2 = new long[2], TMP6 = new long[6];
+	private static final long[] TMP1 = new long[1], TMP2 = new long[2], TMP7 = new long[7];
 	private static final Matrix4f MOTION_PREV_VP = new Matrix4f();
 	private static final Vector4f MOTION_W = new Vector4f(), MOTION_OLD = new Vector4f();
 
@@ -728,35 +728,36 @@ public final class ShadePost {
 		// r: xy the live render size of depth (the final pass maps its output uv into that sub-rect), z sharpen (TAAU)
 		// w: a bit field (as an exact small float): 1 = Distant Horizons drew into this frame (its LODs are where the depth is
 		// empty: the Nether's fog leaves them); 2 (TAAU) = depth and the volumetric light read at the jittered raster's
-		// position of the pixel's scene point (M2.2, mcopt.shade.vl.unjitter)
+		// position of the pixel's scene point (M2.2, mcopt.shade.vl.unjitter); 4 (2.0.1c) = temporally resolved 2-layer TAA depth
+		// bound at texture(6) for jitter-free haze, VL, and airClamp silhouettes
+		boolean dimsPass = f.dimension != ShadeFrame.DIM_OVERWORLD || f.fogType == ShadeFrame.FOG_LAVA || f.fogType == ShadeFrame.FOG_POWDER_SNOW;
+		float edgeFix = vl && vlAirFloor > 0f ? mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.vl.edgeFix", 0f) : 0f;
+		boolean skyHazeActive = Live.b("mcopt.shade.skyHaze", true) && Math.round(Live.f("mcopt.shade.skyHazeMode", 2f, 0f, 2f)) == 1;
+		long taaDepthTex = taa != null && depth != 0 ? taa.historyDepth() : 0;
+		boolean useTaaDepth = taaDepthTex != 0 && !dimsPass && !skyHazeActive && (int) edgeFix == 0
+			&& mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.vl.taaDepth", 1f) > 0.5f;
 		params.putFloat(liveWidth).putFloat(liveHeight).putFloat(sharpen)
-			.putFloat((bridgeUsed ? 1f : 0f) + (taa != null && depth != 0 && VL_UNJITTER ? 2f : 0f));
+			.putFloat((bridgeUsed ? 1f : 0f) + (taa != null && depth != 0 && VL_UNJITTER ? 2f : 0f) + (useTaaDepth ? 4f : 0f));
 		// x: highlights = (1, peak, knee, range); full scene = (2, peak, curve b, curve beta)
 		boolean xdr = psoFinalXdr != 0 && mcopt.metal.shade.dims.ShadeXdr.highlights()
 			&& (!mcopt.metal.shade.dims.ShadeXdr.fullScene() || f.debug == 0f);
 		// (1.2.5) full scene without its passes (they failed to build): the SDR frame, not the highlights pass with full-scene params
 		if (xdr && mcopt.metal.shade.dims.ShadeXdr.fullScene() && !fullHdrReady()) xdr = false;
 		boolean fullHdr = xdr && mcopt.metal.shade.dims.ShadeXdr.fullSceneFrame();
-		// M3: the dims variant in the Nether / End and with the camera in lava or powder snow (anywhere)
-		boolean dimsPass = f.dimension != ShadeFrame.DIM_OVERWORLD || f.fogType == ShadeFrame.FOG_LAVA || f.fogType == ShadeFrame.FOG_POWDER_SNOW;
 		if (xdr) mcopt.metal.shade.dims.ShadeXdr.params(params);
 		else params.putFloat(0f).putFloat(1f).putFloat(1f).putFloat(1f);
 		// a (godrays v3): x the VL air mode's floor (0 = off: the light added is negative only over the sky, floored at 0.55)
 		// (a.y, FT2.7 audit idx 47: the air mode's VL read at the haze edge's own keys (1) and its fallbacks' shadowed part uncapped
-		// (2); mcopt.shade.vl.edgeFix, live; 0 by default: in Gael's autumn forest at sunrise (ft28-rim) no rim showed to fix and the
-		// edges moved both ways, a flicker risk in motion; kept for a pose where the rim shows)
+		// (2); mcopt.shade.vl.edgeFix, live; 0 by default)
 		// (a.z, FT2.12: mcopt.shade.vl.airClamp, live, 1; 0 = FT2.11) on surfaces the shadows take out at most the sunlit haze glow the
-		// final pass added to the pixel (all of it in full shadow) instead of at most 70 % of the pixel (airFloor): toward a sun behind
-		// a mountain 30 % of that glow stayed, an orange halo through the mountain (Gael 2026-10-11)
-		float edgeFix = vl && vlAirFloor > 0f ? mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.vl.edgeFix", 0f) : 0f;
+		// final pass added to the pixel (all of it in full shadow) instead of at most 70 % of the pixel (airFloor)
 		params.putFloat(vl ? vlAirFloor : 0f).putFloat(edgeFix)
 			.putFloat(vl && vlAirFloor > 0f && mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.vl.airClamp", 1f) > 0f ? 1f : 0f)
 			.putFloat(fullHdr ? mcopt.metal.shade.dims.ShadeXdr.sceneBrightness() : 0f);
 		params.flip();
-		// (v12-opt) the lean final pass while it computes the same: no debug view (p.w), the upsample's mode 1 (q.y), no edge fix
-		// (a.y, read as int(a.y) where a.x > 0), and skyHaze off (user4.x != 1): what shade_post.metal's LEAN variants hold constant
-		boolean skyHazeActive = Live.b("mcopt.shade.skyHaze", true) && Math.round(Live.f("mcopt.shade.skyHazeMode", 2f, 0f, 2f)) == 1;
-		boolean lean = !dimsPass && !skyHazeActive && f.debug == 0f && upMode == 1f && (int) edgeFix == 0 && Live.b("mcopt.shade.finalLean", true);
+		// (v12-opt + 2.0.1c) the lean final pass compiles with useTaaDepth=true as a constant (dead-code-eliminating depth.gather
+		// and shadeHazeEdgeSlow from the hot 5.9M-pixel path) alongside no debug view, upMode 1, edgeFix 0, and skyHaze off
+		boolean lean = useTaaDepth && !dimsPass && !skyHazeActive && f.debug == 0f && upMode == 1f && (int) edgeFix == 0 && Live.b("mcopt.shade.finalLean", true);
 		if (lean != loggedLean) {
 			loggedLean = lean;
 			System.out.println("[mcopt] shade: final pass " + (lean ? "lean (mcopt.shade.finalLean)" : "full"));
@@ -779,12 +780,13 @@ public final class ShadePost {
 			}
 			finalTarget = outScaled;
 		}
-		TMP6[0] = scene;
-		TMP6[1] = n > 1 ? bloomAccum[1] : scene;
-		TMP6[2] = depth;
-		TMP6[3] = n > 1 ? bloomLevels[0] : scene;
-		TMP6[4] = vl ? vlLight : scene;
-		TMP6[5] = vl ? vlDist : scene;
+		TMP7[0] = scene;
+		TMP7[1] = n > 1 ? bloomAccum[1] : scene;
+		TMP7[2] = depth;
+		TMP7[3] = n > 1 ? bloomLevels[0] : scene;
+		TMP7[4] = vl ? vlLight : scene;
+		TMP7[5] = vl ? vlDist : scene;
+		TMP7[6] = taaDepthTex != 0 ? taaDepthTex : scene;
 		if (xdr) {
 			int ow = targetW, oh = targetH;
 			int format = fullHdr ? ShadeRender.RGBA16F : ShadeRender.RG11B10F;
@@ -798,10 +800,10 @@ public final class ShadePost {
 			if (encoder != null && MetalBridge.tracing(encoder)) System.out.println("mcopt-metal trace: shade pass 'mcopt shade: final (XDR)'");
 			long finalPso = fullHdr ? (dimsPass && psoFinalHdrDims != 0 ? psoFinalHdrDims : lean ? psoFinalHdrLean : psoFinalHdr)
 				: (dimsPass && psoFinalXdrDims != 0 ? psoFinalXdrDims : lean ? psoFinalXdrLean : psoFinalXdr);
-			mcopt.metal.shade.dims.ShadeXdr.finalPass(enc, finalPso, finalTarget, xdrExcess, TMP6, params,
+			mcopt.metal.shade.dims.ShadeXdr.finalPass(enc, finalPso, finalTarget, xdrExcess, TMP7, params,
 				fullHdr ? "mcopt shade: final (full HDR)" : "mcopt shade: final (XDR)");
 		} else {
-			pass(dimsPass && psoFinalDims != 0 ? psoFinalDims : lean && psoFinalLean != 0 ? psoFinalLean : psoFinal, finalTarget, ShadeRender.DONT_CARE, TMP6,
+			pass(dimsPass && psoFinalDims != 0 ? psoFinalDims : lean && psoFinalLean != 0 ? psoFinalLean : psoFinal, finalTarget, ShadeRender.DONT_CARE, TMP7,
 				params, "mcopt shade: final");
 		}
 		if (upscale) {

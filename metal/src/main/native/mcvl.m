@@ -370,7 +370,7 @@ int mc_vl_render(Enc *enc, VlState *s, id<MTLTexture> color, id<MTLTexture> dept
 			if (s->temporalFold) {
 				s->odHist[0] = target(dev, MTLPixelFormatR16Float, vlWidth, vlHeight, 0, @"mcopt shade: VL scene dimming od history A");
 				s->odHist[1] = target(dev, MTLPixelFormatR16Float, vlWidth, vlHeight, 0, @"mcopt shade: VL scene dimming od history B");
-				s->lightT = target(dev, MTLPixelFormatRGBA16Float, vlWidth, vlHeight, 1, @"mcopt shade: VL light + T");
+				s->lightT = target(dev, MTLPixelFormatRGBA16Float, vlWidth, vlHeight, s->lossy, @"mcopt shade: VL light + T");
 			}
 			s->veilRan = 0;
 			s->width = vlWidth;

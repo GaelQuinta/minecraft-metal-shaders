@@ -153,9 +153,17 @@ static inline half3 taaCatmullRom(texture2d<half> tex, sampler s, float2 uv, flo
 	return max(c / wsum, 0.0h); // the spline's negative lobes can ring below 0 at hard edges
 }
 
+static inline bool taaSameLayer(float a, float b) {
+	bool sa = a > 60000.0, sb = b > 60000.0;
+	if (sa || sb) return sa == sb;
+	return abs(a - b) <= 0.15 * min(a, b) + 0.5;
+}
+
 struct TaaOut {
 	half4 color [[color(0)]];
-	half depth [[color(1)]];
+	// (2.0.1c) RGBA16Float: r = nearest view depth (blocks, 65000 = sky; unchanged for disocclusion & water SSR),
+	// g = temporally resolved near-layer coverage [0,1], b = near-layer view depth, a = far-layer view depth
+	half4 depth [[color(1)]];
 };
 
 // The resolve of output pixel centre q; debug (mcopt.shade.taaDebug views) gets the colour to show instead, so the
@@ -208,7 +216,8 @@ static inline TaaOut taauResolve(float2 q, constant TaaParams &p, constant float
 	// Camera motion from depth: this pixel's (nearest) surface in last frame's clip space
 	float2 ndc = q * p.output.zw * 2.0 - 1.0;
 	float4 v4 = float4(ndc, zmax, 1.0);
-	float iw = 1.0 / dot(float4(p.invCur[0].w, p.invCur[1].w, p.invCur[2].w, p.invCur[3].w), v4);
+	float4 invWRow = float4(p.invCur[0].w, p.invCur[1].w, p.invCur[2].w, p.invCur[3].w);
+	float iw = 1.0 / dot(invWRow, v4);
 	float viewDepth = iw;
 	float3 moved = float3(0.0);
 	// (2.0.1 opt) skip cur.read entirely on non-leaf pixels (leafCount == 0u covers ~90% of the screen!)
@@ -220,8 +229,14 @@ static inline TaaOut taauResolve(float2 q, constant TaaParams &p, constant float
 		la = cur.read(uint2(base + pick)).a;
 	}
 	bool leafMoved = la > 1.5h;
-	// (2.0.1 opt) still camera + no movers + non-swaying pixel (blend.w < -0.5): exact pixel-center identity reprojection, 1 hist.read instead of 5-tap Catmull-Rom
-	bool stillPx = p.blend.w < -0.5 && !leafMoved && p.misc.w < 0.5;
+	// (2.0.1c) camStill covers both blend.w == -1 (0 movers) and -2 (movers present, e.g. villagers/mobs): outside mover
+	// boxes, static pixels still use 1-read exact identity reprojection and avoid Halton-jittered depth disocclusion strobing
+	bool camStill = p.blend.w < -0.5 && p.misc.w < 0.5;
+	bool hasMovers = taaMoversOn && movers.count.x > 0u && zmax > 0.0;
+	if (camStill && !leafMoved && hasMovers) {
+		moved = taaMoverDelta((p.invCur * v4).xyz * iw, movers);
+	}
+	bool stillPx = camStill && !leafMoved && all(moved == float3(0.0));
 	float4 prev;
 	float2 uvPrev;
 	if (stillPx) {
@@ -229,8 +244,8 @@ static inline TaaOut taauResolve(float2 q, constant TaaParams &p, constant float
 		uvPrev = q * p.output.zw;
 	} else {
 		prev = (p.reproj * v4) * iw;
-		if (taaMoversOn && movers.count.x > 0u && zmax > 0.0) {
-			moved = taaMoverDelta((p.invCur * v4).xyz * iw, movers);
+		if (hasMovers) {
+			if (!camStill || leafMoved) moved = taaMoverDelta((p.invCur * v4).xyz * iw, movers);
 			prev -= p.prevVP * float4(moved, 0.0);
 		}
 		if (leafMoved) {
@@ -245,32 +260,98 @@ static inline TaaOut taauResolve(float2 q, constant TaaParams &p, constant float
 
 	TaaOut o;
 	bool skyNow = zmax <= 0.0;
-	o.depth = skyNow ? half(65000.0) : half(clamp(viewDepth, 0.0, 60000.0));
+	float vdNear = skyNow ? 65000.0 : clamp(viewDepth, 0.01, 60000.0);
+	float zmin = min(min(z4.x, z4.y), min(z4.z, z4.w));
 	bool valid = p.blend.w < 0.5 && prev.w > 0.0 && all(uvPrev > 0.0) && all(uvPrev < 1.0);
 	half age = 0.0h;
 	half3 history = current;
 	half disocclusion = 0.0h;
+	o.depth = half4(half(vdNear), 1.0h, half(vdNear), half(vdNear));
 	if (valid) {
 		uint2 hp = stillPx ? uint2(q) : uint2(min(uvPrev * p.output.xy, p.output.xy - 1.0));
-		float stored = float(histDepth.read(hp).r);
-		bool skyThen = stored > 60000.0;
-		float tolerance = 0.03 * prev.w + 0.1;
-		disocclusion = skyNow || skyThen ? half(skyNow != skyThen) : half(saturate((abs(stored - prev.w) - tolerance) / tolerance));
-		// (2.0.1 anti-flicker) 1-px alpha-cutout leaf holes flip skyNow != skyThen frame-to-frame under Halton jitter + sway,
-		// nuking 100% of TAAU history and strobing sunlit canopy holes. Preserve temporal history (still variance-clamped!)
-		// when the 3x3 is enclosed by waving leaves (leafCount >= 3) or mixed leaf/sky on a still camera; outer edges stay crisp.
-		if (skyNow != skyThen && leafCount > 0u) {
-			bool camStill = p.blend.w < -0.5 && p.misc.w < 0.5;
-			if (camStill) {
-				if (leafCount >= 3u) {
-					disocclusion = 0.0h;
-				} else {
-					float zmin = min(min(z4.x, z4.y), min(z4.z, z4.w));
-					if (skyNow || zmin <= 0.0) disocclusion = 0.0h;
+		half4 pd = histDepth.read(hp);
+		// (2.0.1c anti-flicker) on stillPx (still camera, outside mover boxes, non-swaying surface), depth jumps across
+		// static silhouettes come from Halton(2,3) jitter flipping zmax (especially on RG11B10F balanced/performance where
+		// leafCount is unavailable); color variance clipping handles real block edits cleanly, so keep disocclusion = 0.
+		if (!stillPx) {
+			float stored = float(pd.r);
+			bool skyThen = stored > 60000.0;
+			float tolerance = 0.03 * prev.w + 0.1;
+			disocclusion = skyNow || skyThen ? half(skyNow != skyThen) : half(saturate((abs(stored - prev.w) - tolerance) / tolerance));
+			// In motion (panning, walking), when z4 straddles a silhouette with low relative parallax (<1.5 output px, e.g.
+			// rotation or distant hills/horizon/leaves) and stored matches the far layer zmin, Halton jitter flipped zmax
+			// across the edge rather than exposing a true disocclusion — keep history (still variance-clamped!).
+			if (disocclusion > 0.0h && ((zmin <= 0.0 && zmax > 0.0) || (zmin > 0.0 && zmax > zmin * 1.15))) {
+				float4 vFar = float4(ndc, zmin, 1.0);
+				float iwFar = 1.0 / dot(invWRow, vFar);
+				float4 prevFar = (p.reproj * vFar) * iwFar;
+				float2 uvPrevFar = prevFar.xy / max(prevFar.w, 1e-4) * 0.5 + 0.5;
+				float2 parallax = (uvPrevFar - uvPrev) * p.output.xy;
+				if (dot(parallax, parallax) < 2.25) {
+					bool farMatch = (zmin <= 0.0) ? skyThen : (!skyThen && abs(stored - prevFar.w) < 0.05 * prevFar.w + 0.15);
+					if (farMatch) disocclusion = 0.0h;
 				}
-			} else if (leafCount >= 3u) {
-				disocclusion = 0.15h;
 			}
+			// Swaying alpha-cutout leaves (RGBA16F): preserve enclosed canopy-hole history under sway
+			if (disocclusion > 0.0h && skyNow != skyThen && leafCount > 0u) {
+				if (camStill) {
+					if (leafCount >= 3u) {
+						disocclusion = 0.0h;
+					} else if (skyNow || zmin <= 0.0) {
+						disocclusion = 0.0h;
+					}
+				} else if (leafCount >= 3u) {
+					disocclusion = min(disocclusion, 0.15h);
+				}
+			}
+		}
+		// (2.0.1c) Temporally resolved 2-layer depth computed here so all depth temporaries die BEFORE Catmull-Rom (no register spill!)
+		bool isEdgeNow = !skyNow && (zmin <= 0.0 || zmax > zmin * 1.25);
+		float pN = float(pd.b), pF = float(pd.a);
+		bool pTwo = pF > pN * 1.22 + 0.5;
+		if (isEdgeNow || pTwo || (disocclusion < 0.5h && !taaSameLayer(vdNear, pN))) {
+			float cN = vdNear, cF = vdNear, cCen = vdNear;
+			half curW = 1.0h;
+			if (isEdgeNow) {
+				cF = zmin <= 0.0 ? 65000.0 : clamp(1.0 / dot(invWRow, float4(ndc, zmin, 1.0)), 0.01, 60000.0);
+				float2 fg = fract(pin - 0.5);
+				float zCen = fg.y >= 0.5 ? (fg.x >= 0.5 ? z4.y : z4.x) : (fg.x >= 0.5 ? z4.z : z4.w);
+				float zSplit = zmin <= 0.0 ? 0.0 : sqrt(zmin * zmax);
+				bool cenIsNear = zCen > zSplit;
+				curW = cenIsNear ? 1.0h : 0.0h;
+				cCen = cenIsNear ? cN : cF;
+			}
+			float outN = cN, outF = cF;
+			half outW = curW;
+			if (disocclusion < 0.5h) {
+				half pW = pd.g;
+				half covA = stillPx ? 0.07h : 0.30h;
+				if (pTwo) {
+					bool mN = taaSameLayer(cCen, pN);
+					bool mF = !mN && taaSameLayer(cCen, pF);
+					if (mN || mF) {
+						outW = mix(pW, mN ? 1.0h : 0.0h, covA);
+						outN = mN ? mix(pN, cCen, 0.25) : pN;
+						outF = mF ? (pF > 60000.0 ? 65000.0 : mix(pF, cCen, 0.25)) : pF;
+						if (isEdgeNow) {
+							if (taaSameLayer(cN, outN)) outN = mix(outN, cN, 0.25);
+							if (taaSameLayer(cF, outF)) outF = cF > 60000.0 ? 65000.0 : mix(outF, cF, 0.25);
+						}
+						if (outW > 0.985h) { outF = outN; outW = 1.0h; }
+						else if (outW < 0.015h) { outN = outF; outW = 1.0h; }
+					}
+				} else if (isEdgeNow) {
+					if (taaSameLayer(pN, cN)) {
+						outN = mix(pN, cN, 0.25); outF = cF; outW = mix(1.0h, curW, covA);
+					} else if (taaSameLayer(pN, cF)) {
+						outN = cN; outF = cF > 60000.0 ? 65000.0 : mix(pN, cF, 0.25); outW = mix(0.0h, curW, covA);
+					}
+				} else {
+					if (cN < pN) { outN = cN; outF = pN; outW = covA; }
+					else { outN = pN; outF = cN; outW = 1.0h - covA; }
+				}
+			}
+			o.depth = half4(half(vdNear), outW, half(outN), half(outF));
 		}
 		// (2.0.1 opt) skip 5-tap Catmull-Rom on full disocclusion, use exact 1-read on still pixels, and use 1 bilinear tap
 		// on flat low-variance gradients (sky, smooth clouds, calm ocean) where bilinear and Catmull-Rom are mathematically equal
@@ -388,7 +469,7 @@ fragment TaaOut taau_fs(TaaVOut in [[stage_in]], constant TaaParams &p [[buffer(
 // mcopt.shade.taaDebug: the same resolve, plus the debug view straight into the destination (no output pass).
 struct TaaDebugOut {
 	half4 color [[color(0)]];
-	half depth [[color(1)]];
+	half4 depth [[color(1)]];
 	half4 view [[color(2)]];
 };
 

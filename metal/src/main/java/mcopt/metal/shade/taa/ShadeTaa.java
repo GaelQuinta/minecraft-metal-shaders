@@ -431,8 +431,8 @@ public final class ShadeTaa {
 			put4(p + 144, this.width, this.height, TaaConfig.flickerHold(), TaaConfig.flickerHoldSensitivity());
 			put4(p + 160, this.outWidth, this.outHeight, 1f / this.outWidth, 1f / this.outHeight);
 			put4(p + 176, this.jittered ? this.jitterX : 0, this.jittered ? this.jitterY : 0, (float) this.width / this.outWidth, (float) this.height / this.outHeight);
-			// (2.0.1 opt) blend.w == -1 signals still camera with 0 movers so taa.metal uses 1-read identity reprojection (0/1 unchanged for taatest)
-			put4(p + 192, TaaConfig.alphaMin(), TaaConfig.clipGamma(still), 32, cut ? 1f : (still && this.motion.count == 0 ? -1f : 0f));
+			// (2.0.1c) blend.w: 1 = cut, -1 = still camera + 0 movers (1-read identity), -2 = still camera + movers (identity outside mover boxes)
+			put4(p + 192, TaaConfig.alphaMin(), TaaConfig.clipGamma(still), 32, cut ? 1f : (still ? (this.motion.count == 0 ? -1f : -2f) : 0f));
 			put4(p + 208, this.historyRescale, TaaConfig.boostFrom(), reactive != 0 ? 0.85f : 0f, TaaConfig.DEBUG); // no mask: the shader skips its read
 			put4(p + 224, sharpen, TaaConfig.motionAlpha(), TaaConfig.antiFlicker(), TaaConfig.floorCentre());
 			this.combinedD.set(this.reprojection).mul(this.invD.set(this.invViewProj));

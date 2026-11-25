@@ -327,6 +327,43 @@ static __attribute__((noinline)) float3 shadeAerialSunGlowCold(float3 wp, textur
 	return shadeAerialSunGlow(wp, skyLut, lutS, f, L);
 }
 
+static __attribute__((noinline)) void shadeHazeTwoLayerCold(float2 uv, float d, float3 wp, float vlFarD, float vlNearW, float hazeNear,
+                                                            bool hazeFade, constant ShadeFrame &f, constant ShadeLook &L,
+                                                            thread float3 &T, thread float3 &S, thread float3 &U) {
+	float3 Tn = float3(1.0), Sn = float3(0.0), Un = float3(0.0);
+	if (d > 0.0 && dot(wp, wp) > hazeNear) {
+		Sn = shadeHazeInscatter(wp, f, L, 1.0, Tn, Un);
+		if (hazeFade) { float kk = shadeHazeBorderKeep(wp, L); Tn = mix(float3(1.0), Tn, kk); Sn *= kk; Un *= kk; }
+	}
+	float3 Tf = float3(1.0), Sf = float3(0.0), Uf = float3(0.0);
+	if (vlFarD > 0.0) {
+		float3 pf = shadeWorldFromDepth(uv, vlFarD, f);
+		if (dot(pf, pf) > hazeNear) {
+			Sf = shadeHazeInscatter(pf, f, L, 1.0, Tf, Uf);
+			if (hazeFade) { float kk = shadeHazeBorderKeep(pf, L); Tf = mix(float3(1.0), Tf, kk); Sf *= kk; Uf *= kk; }
+		}
+	}
+	T = mix(Tf, Tn, vlNearW);
+	S = mix(Sf, Sn, vlNearW);
+	U = mix(Uf, Un, vlNearW);
+}
+
+static __attribute__((noinline)) half4 shadeVlTwoLayerCold(texture2d<half> vlT, texture2d<half> vlD, float2 uv, float3 pNear, float vlFarD,
+                                                           float vlNearW, float maxD, float2 vlScale, float upMode, float tolScale,
+                                                           bool airOn, bool airNegSky, constant ShadeFrame &f, thread float3 &pFar) {
+	float distNear = length(pNear);
+	bool farSky = vlFarD <= 0.0;
+	float distFar = 1e4;
+	pFar = float3(0.0);
+	if (!farSky) {
+		pFar = shadeWorldFromDepth(uv, vlFarD, f);
+		distFar = length(pFar);
+	}
+	half4 vNear = shadeVlUpsample(vlT, vlD, uv, distNear, maxD, vlScale, upMode, tolScale, airOn);
+	half4 vFar = shadeVlUpsample(vlT, vlD, uv, distFar, maxD, vlScale, upMode, tolScale, airOn && (!farSky || airNegSky));
+	return mix(vFar, vNear, half(vlNearW));
+}
+
 #ifdef SHADE_HAZE_EDGE
 static __attribute__((noinline)) void shadeHazeEdgeSlow(float2 uv, float2 dsize, uint2 t0, float4 dq, float4 wq, float hazeNear,
                                                         bool skyHaze, bool hazeFade, constant ShadeFrame &f, constant ShadeLook &L,
@@ -393,7 +430,7 @@ static __attribute__((noinline)) void shadeHazeEdgeSlow(float2 uv, float2 dsize,
 // constants: the same image, without the code those settings never run (and the edge fix's per-texel keys it kept live).
 template <bool DIMS, bool LEAN = false>
 static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<half> bloom, depth2d<float> depth, texture2d<half> bloom0,
-                              texture2d<half> vlT, texture2d<half> vlD, constant ShadeFinalParams &P, constant ShadeFrame &f,
+                              texture2d<half> vlT, texture2d<half> vlD, texture2d<half> taaDepth, constant ShadeFinalParams &P, constant ShadeFrame &f,
                               constant ShadeLook &L, constant ShadeGpu &g, constant ShadeResources &sr, thread float &lum,
                               texture2d<half> skyLut, sampler lutS) {
 	uint2 px = uint2(in.position.xy);
@@ -407,21 +444,47 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 	// scene point jitter.xy / 2 (uv) further on; reading them at in.uv moved them against the steady resolved image by up to
 	// half a render pixel every frame (god rays wobbling at their edges and at the leaves)
 	float2 uv = (rw & 2) != 0 ? clamp(in.uv + 0.5 * f.jitter.xy, 0.0, 1.0) : in.uv;
+	const bool skyHaze = !LEAN && (L.tier.y & SHADE_FEATURE_HAZE) != 0 && f.flags.x == SHADE_DIM_OVERWORLD && f.fogColor.a < 0.5
+		&& L.user4.x > 0.5 && L.user4.x < 1.5 && L.fogMisc.z > 0.0; // (1.2.9, see shadeHazeSkyEnd)
+	// (2.0.1c) r.w bit 4 (or compile-time constant in LEAN): temporally resolved 2-layer TAA depth eliminates post-TAAU Halton
+	// depth-jitter strobing AND lets LEAN dead-code-eliminate depth.gather + shadeHazeEdgeSlow completely
+	const bool useTaaDepth = LEAN || (!DIMS && !skyHaze && (rw & 4) != 0);
+	float d = 0.0;
+	float vlNearW = 1.0;
+	float vlNearD = 0.0;
+	float vlFarD = 0.0;
 #ifdef SHADE_HAZE_EDGE
-	// the 2x2 depth texels around uv (the haze's edge test below) in one gather, and this pixel's own (nearest) texel picked
-	// from them: one fetch instead of five, the same values (tp <= dsize - 1.001 keeps t0 + 1 inside the live rect; the
-	// nearest texel floor(uv * dsize) is t0 + (fw >= 0.5) per axis; gather order: (t0.x, t1.y) (t1.x, t1.y) (t1.x, t0.y) (t0.x, t0.y))
-	float2 tp = clamp(uv * dsize - 0.5, float2(0.0), dsize - 1.001);
-	uint2 t0 = uint2(tp);
-	float2 fw = tp - float2(t0);
-	constexpr sampler gatherClamp(coord::normalized, address::clamp_to_edge, filter::nearest);
-	float4 dg = depth.gather(gatherClamp, (float2(t0) + 1.0) / float2(depth.get_width(), depth.get_height()));
-	float4 dq = float4(dg.w, dg.z, dg.x, dg.y); // t0, (t1.x, t0.y), (t0.x, t1.y), t1
-	float d = fw.y >= 0.5 ? (fw.x >= 0.5 ? dq.w : dq.z) : (fw.x >= 0.5 ? dq.y : dq.x);
-#else
-	uint2 dpx = min(uint2(uv * dsize), uint2(dsize) - 1u);
-	float d = depth.read(dpx);
+	uint2 t0 = uint2(0);
+	float2 fw = float2(0.0);
+	float4 dq = float4(0.0);
 #endif
+	if (useTaaDepth) {
+		half4 td = taaDepth.read(px);
+		float vN = float(td.b), vF = float(td.a);
+		float wN = float(td.g);
+		bool nSky = vN > 60000.0;
+		bool fSky = vF > 60000.0;
+		float pz = f.proj[3][2], p2 = f.proj[2][2];
+		vlNearD = nSky ? 0.0 : (pz > 0.0 ? max(pz / max(vN, 0.01) - p2, 1e-6) : 0.0);
+		vlFarD = fSky ? 0.0 : (pz > 0.0 ? max(pz / max(vF, 0.01) - p2, 1e-6) : 0.0);
+		bool twoL = !nSky && wN > 0.015 && wN < 0.985 && (fSky || (vF > 8.0 && vF > vN * 1.20 + 0.5));
+		vlNearW = twoL ? wN : 1.0;
+		d = vlNearD;
+	} else {
+#ifdef SHADE_HAZE_EDGE
+		float2 tp = clamp(uv * dsize - 0.5, float2(0.0), dsize - 1.001);
+		t0 = uint2(tp);
+		fw = tp - float2(t0);
+		constexpr sampler gatherClamp(coord::normalized, address::clamp_to_edge, filter::nearest);
+		float4 dg = depth.gather(gatherClamp, (float2(t0) + 1.0) / float2(depth.get_width(), depth.get_height()));
+		dq = float4(dg.w, dg.z, dg.x, dg.y); // t0, (t1.x, t0.y), (t0.x, t1.y), t1
+		d = fw.y >= 0.5 ? (fw.x >= 0.5 ? dq.w : dq.z) : (fw.x >= 0.5 ? dq.y : dq.x);
+#else
+		uint2 dpx = min(uint2(uv * dsize), uint2(dsize) - 1u);
+		d = depth.read(dpx);
+#endif
+		vlNearD = d;
+	}
 	bool dims = DIMS && (L.tier.y & SHADE_FEATURE_DIMS) != 0 && L.dimTint.x > 0.0 && f.flags.x != SHADE_DIM_OVERWORLD;
 	uint2 sp = px;
 	if (dims && (L.tier.y & SHADE_FEATURE_SHIMMER) != 0 && shadeDimKind(L) == 1 && d > 0.0) {
@@ -452,71 +515,79 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 	float4 dkq = float4(1e4), wqq = float4(0.0);
 	// (FT2.12) the sunlit part of the haze glow added here (exposed): at most this much is what the VL air mode's shadows take out
 	float3 sunGlow = float3(0.0);
-	// (2.0.1 anti-flicker) on 2x2 sky/foreground silhouette pixels (1-px leaf holes, canopy rims), blend VL, dark-ray clamp,
-	// and bloom fog weight continuously by the same bilinear terrain coverage wTerr used for haze (instead of binary nearest depth d)
-	bool vlSkyEdge = false;
-	float vlTerrW = d > 0.0 ? 1.0 : 0.0;
-	float3 vlTerrWp = wp;
-	const bool skyHaze = !LEAN && hazeOn && L.user4.x > 0.5 && L.user4.x < 1.5 && L.fogMisc.z > 0.0; // (1.2.9, see shadeHazeSkyEnd)
 	bool hazeFade = hazeOn && L.user4.x > 1.5 && L.fogMisc.z > 0.0; // (1.2.9 candidate 3, see shadeHazeBorderKeep)
 #ifdef SHADE_HAZE_EDGE
 	if (hazeOn) {
-		// FT1.3: the depth is this frame's jittered raster at the render scale and the colour the resolved (TAAU) image, so the
-		// nearest depth texel switched the haze on and off pixel by pixel along a silhouette that is antialiased in the colour:
-		// far terrain against the sky (sunset, toward the sun) got a rim of bright and dark dots (Gael). The 2x2 texels around:
-		// where they agree (almost everywhere) one evaluation as before; along an edge each terrain texel's haze is weighted
-		// bilinearly (the sky's texels add none), so the haze fades across the edge as the colour does
-		// (dq, t0, fw: read above with the pixel's own depth)
-		float dlo = min(min(dq.x, dq.y), min(dq.z, dq.w)), dhi = max(max(dq.x, dq.y), max(dq.z, dq.w));
-		// (2.0.1 opt) skip near-field (<12 blocks) terrain-vs-terrain depth edges where haze differs by <0.2%, and unify
-		// single-surface sky silhouettes into 1 haze eval instead of up to 3; push multi-depth 4-corner fallback out-of-line
-		float nearCut = f.proj[3][2] > 0.0 ? (f.proj[3][2] * (1.0 / 12.0) - f.proj[2][2]) : 1.0;
-		if (dhi > 0.0 && (dlo <= 0.0 || (dlo <= nearCut && dhi > dlo * 1.25))) {
-			float4 wq = float4((1.0 - fw.x) * (1.0 - fw.y), fw.x * (1.0 - fw.y), (1.0 - fw.x) * fw.y, fw.x * fw.y);
-			float dMinPos = min(min(dq.x > 0.0 ? dq.x : 2.0, dq.y > 0.0 ? dq.y : 2.0),
-			                    min(dq.z > 0.0 ? dq.z : 2.0, dq.w > 0.0 ? dq.w : 2.0));
-			if (dlo <= 0.0 && !skyHaze && (LEAN || P.a.x <= 0.0 || (int(P.a.y) & 1) == 0) && dhi <= dMinPos * 1.25) {
-				float wTerr = (dq.x > 0.0 ? wq.x : 0.0) + (dq.y > 0.0 ? wq.y : 0.0)
-				            + (dq.z > 0.0 ? wq.z : 0.0) + (dq.w > 0.0 ? wq.w : 0.0);
-				float3 pRep = d > 0.0 ? wp : shadeWorldFromDepth(uv, dhi, f);
-				vlSkyEdge = wTerr > 0.02 && wTerr < 0.98;
-				vlTerrW = wTerr;
-				vlTerrWp = pRep;
-				if (dot(pRep, pRep) > hazeNear) {
-					float3 Tk, Uk;
-					float3 Sk = shadeHazeInscatter(pRep, f, L, 1.0, Tk, Uk);
-					if (hazeFade) { float kk = shadeHazeBorderKeep(pRep, L); Tk = mix(float3(1.0), Tk, kk); Sk *= kk; Uk *= kk; }
-					T = mix(float3(1.0), Tk, wTerr);
-					c = c * T + Sk * (wTerr * ex);
-					sunGlow = Uk * (wTerr * ex);
-				}
-			} else {
-				float3 Ts, Ss, Us;
-				shadeHazeEdgeSlow(uv, dsize, t0, dq, wq, hazeNear, skyHaze, hazeFade, f, L, Ts, Ss, Us, dkq);
-				T = Ts;
-				c = c * Ts + Ss * ex;
-				sunGlow = Us * ex;
-				hazeEdge = true;
-				wqq = wq;
-				if (dlo <= 0.0) {
-					float wT = (dq.x > 0.0 ? wq.x : 0.0) + (dq.y > 0.0 ? wq.y : 0.0)
-					         + (dq.z > 0.0 ? wq.z : 0.0) + (dq.w > 0.0 ? wq.w : 0.0);
-					vlSkyEdge = wT > 0.02 && wT < 0.98;
-					vlTerrW = wT;
-					vlTerrWp = d > 0.0 ? wp : shadeWorldFromDepth(uv, dhi, f);
-				}
+		if (useTaaDepth) {
+			if (vlNearW < 0.985) {
+				float3 S, U;
+				shadeHazeTwoLayerCold(uv, d, wp, vlFarD, vlNearW, hazeNear, hazeFade, f, L, T, S, U);
+				c = c * T + S * ex;
+				sunGlow = U * ex;
+			} else if (d > 0.0 && dot(wp, wp) > hazeNear) {
+				float3 U;
+				float3 S = shadeHazeInscatter(wp, f, L, 1.0, T, U);
+				if (hazeFade) { float kk = shadeHazeBorderKeep(wp, L); T = mix(float3(1.0), T, kk); S *= kk; U *= kk; }
+				c = c * T + S * ex;
+				sunGlow = U * ex;
 			}
-		} else if (d > 0.0 && dot(wp, wp) > hazeNear) {
-			float3 U;
-			float3 S = shadeHazeInscatter(skyHaze ? shadeHazeBorderClamp(wp, L) : wp, f, L, 1.0, T, U);
-			if (hazeFade) { float kk = shadeHazeBorderKeep(wp, L); T = mix(float3(1.0), T, kk); S *= kk; U *= kk; }
-			c = c * T + S * ex;
-			sunGlow = U * ex;
-		} else if (skyHaze && d <= 0.0) {
-			float3 U;
-			float3 S = shadeHazeInscatter(shadeHazeSkyEnd(shadeViewRay(uv * 2.0 - 1.0, f.invViewProj), L), f, L, 1.0, T, U);
-			c = c * T + S * ex;
-			sunGlow = U * ex;
+		} else {
+			// FT1.3: fallback when TAA depth is unavailable (dims, skyHaze, edgeFix, or TAAU off)
+			float dlo = min(min(dq.x, dq.y), min(dq.z, dq.w)), dhi = max(max(dq.x, dq.y), max(dq.z, dq.w));
+			float nearCut = f.proj[3][2] > 0.0 ? (f.proj[3][2] * (1.0 / 8.0) - f.proj[2][2]) : 1.0;
+			if (dhi > 0.0 && (dlo <= 0.0 || (dlo <= nearCut && dhi > dlo * 1.25))) {
+				float4 wq = float4((1.0 - fw.x) * (1.0 - fw.y), fw.x * (1.0 - fw.y), (1.0 - fw.x) * fw.y, fw.x * fw.y);
+				float dMinPos = min(min(dq.x > 0.0 ? dq.x : 2.0, dq.y > 0.0 ? dq.y : 2.0),
+				                    min(dq.z > 0.0 ? dq.z : 2.0, dq.w > 0.0 ? dq.w : 2.0));
+				if (dlo <= 0.0 && !skyHaze && (LEAN || P.a.x <= 0.0 || (int(P.a.y) & 1) == 0) && dhi <= dMinPos * 1.25) {
+					float wTerr = 0.0, dTerr = 0.0;
+					if (dq.x > 0.0) { wTerr += wq.x; dTerr += dq.x * wq.x; }
+					if (dq.y > 0.0) { wTerr += wq.y; dTerr += dq.y * wq.y; }
+					if (dq.z > 0.0) { wTerr += wq.z; dTerr += dq.z * wq.z; }
+					if (dq.w > 0.0) { wTerr += wq.w; dTerr += dq.w * wq.w; }
+					float dRep = wTerr > 1e-4 ? dTerr / wTerr : dhi;
+					vlNearW = wTerr;
+					vlNearD = dRep;
+					vlFarD = 0.0;
+					float3 pRep = shadeWorldFromDepth(uv, dRep, f);
+					if (dot(pRep, pRep) > hazeNear) {
+						float3 Tk, Uk;
+						float3 Sk = shadeHazeInscatter(pRep, f, L, 1.0, Tk, Uk);
+						if (hazeFade) { float kk = shadeHazeBorderKeep(pRep, L); Tk = mix(float3(1.0), Tk, kk); Sk *= kk; Uk *= kk; }
+						T = mix(float3(1.0), Tk, wTerr);
+						c = c * T + Sk * (wTerr * ex);
+						sunGlow = Uk * (wTerr * ex);
+					}
+				} else {
+					float3 Ts, Ss, Us;
+					shadeHazeEdgeSlow(uv, dsize, t0, dq, wq, hazeNear, skyHaze, hazeFade, f, L, Ts, Ss, Us, dkq);
+					T = Ts;
+					c = c * Ts + Ss * ex;
+					sunGlow = Us * ex;
+					hazeEdge = true;
+					wqq = wq;
+					float dSplit = dlo <= 0.0 ? 0.0 : sqrt(dlo * dhi);
+					float wN = 0.0, dN = 0.0, wF = 0.0, dF = 0.0;
+					if (dq.x > dSplit) { wN += wq.x; dN += dq.x * wq.x; } else { wF += wq.x; dF += dq.x * wq.x; }
+					if (dq.y > dSplit) { wN += wq.y; dN += dq.y * wq.y; } else { wF += wq.y; dF += dq.y * wq.y; }
+					if (dq.z > dSplit) { wN += wq.z; dN += dq.z * wq.z; } else { wF += wq.z; dF += dq.z * wq.z; }
+					if (dq.w > dSplit) { wN += wq.w; dN += dq.w * wq.w; } else { wF += wq.w; dF += dq.w * wq.w; }
+					vlNearW = wN;
+					vlNearD = wN > 1e-4 ? dN / wN : dhi;
+					vlFarD = dlo <= 0.0 ? 0.0 : (wF > 1e-4 ? dF / wF : dlo);
+				}
+			} else if (d > 0.0 && dot(wp, wp) > hazeNear) {
+				float3 U;
+				float3 S = shadeHazeInscatter(skyHaze ? shadeHazeBorderClamp(wp, L) : wp, f, L, 1.0, T, U);
+				if (hazeFade) { float kk = shadeHazeBorderKeep(wp, L); T = mix(float3(1.0), T, kk); S *= kk; U *= kk; }
+				c = c * T + S * ex;
+				sunGlow = U * ex;
+			} else if (skyHaze && d <= 0.0) {
+				float3 U;
+				float3 S = shadeHazeInscatter(shadeHazeSkyEnd(shadeViewRay(uv * 2.0 - 1.0, f.invViewProj), L), f, L, 1.0, T, U);
+				c = c * T + S * ex;
+				sunGlow = U * ex;
+			}
 		}
 	}
 #else
@@ -555,23 +626,28 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 	if (DIMS && (L.tier.y & SHADE_FEATURE_MEDIA) != 0 && (f.flags.y == 2 || f.flags.y == 3)) c = shadeMedia(c, in.uv, d > 0.0 ? length(wp) : 1e4, f, sr.milkyWay);
 	// volumetric light (god rays, canopy mist; VL module): its medium is the air near the camera, in front of the haze
 	float tv = 1.0;
+	bool vlEdge = vlNearW > 0.015 && vlNearW < 0.985;
+	bool vlFarSky = vlFarD <= 0.0;
 	if (P.v.x > 0.5) {
 		float2 vlScale = P.v.z > 0.0 ? P.v.zw : float2(1.0);
-		// (FT2.7, audit idx 47; a.y bits, mcopt.shade.vl.edgeFix: 1 the haze edge's keys, 2 the fallback's negative part uncapped)
+		// (FT2.7, audit idx 47; a.y bits, mcopt.shade.vl.edgeFix: 1 the haze edge's keys, 2 the fallback's negative part uncapped on sky too)
 		const int edgeFix = LEAN ? 0 : (P.a.x > 0.0 ? int(P.a.y) : 0);
 		const float upMode = LEAN ? 1.0 : P.q.y;
+		const bool airOn = P.a.x > 0.0;
+		const bool airNegSky = !LEAN && (edgeFix & 2) != 0;
+		float3 pNear = wp, pFar = float3(0.0);
+		if (vlEdge && !useTaaDepth) pNear = shadeWorldFromDepth(uv, vlNearD, f);
 		half4 v;
 		if (hazeEdge && (edgeFix & 1) != 0) {
+			if (vlEdge && !vlFarSky) pFar = shadeWorldFromDepth(uv, vlFarD, f);
 			v = 0.0h;
 			for (int k = 0; k < 4; k++) {
-				if (wqq[k] > 0.0) v += shadeVlUpsample(vlT, vlD, uv, dkq[k], P.v.y, vlScale, upMode, P.q.z, (edgeFix & 2) != 0) * half(wqq[k]);
+				if (wqq[k] > 0.0) v += shadeVlUpsample(vlT, vlD, uv, dkq[k], P.v.y, vlScale, upMode, P.q.z, airOn && (dkq[k] < 9000.0 || airNegSky)) * half(wqq[k]);
 			}
-		} else if (vlSkyEdge) {
-			half4 vSky = shadeVlUpsample(vlT, vlD, uv, 1e4, P.v.y, vlScale, upMode, P.q.z, (edgeFix & 2) != 0);
-			half4 vTerr = shadeVlUpsample(vlT, vlD, uv, length(vlTerrWp), P.v.y, vlScale, upMode, P.q.z, (edgeFix & 2) != 0);
-			v = mix(vSky, vTerr, half(vlTerrW));
+		} else if (vlEdge) {
+			v = shadeVlTwoLayerCold(vlT, vlD, uv, pNear, vlFarD, vlNearW, P.v.y, vlScale, upMode, P.q.z, airOn, airNegSky, f, pFar);
 		} else {
-			v = shadeVlUpsample(vlT, vlD, uv, d > 0.0 ? length(wp) : 1e4, P.v.y, vlScale, upMode, P.q.z, (edgeFix & 2) != 0);
+			v = shadeVlUpsample(vlT, vlD, uv, d > 0.0 ? length(wp) : 1e4, P.v.y, vlScale, upMode, P.q.z, airOn && (d > 0.0 || airNegSky));
 		}
 		tv = P.v.x > 1.5 ? 1.0 : float(v.a); // (v.x 2: vlT is the history, a = distance; no medium dims the scene: FT2.8 idx 2)
 		// v.rgb < 0 on the sky: the crepuscular shadows (dark rays), floored at 55 % of the pixel
@@ -591,12 +667,22 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 		// (the aerial blend's glow around the sun too, which the air mode's shadows now take out as well: shadeAerialSunGlow; looked up
 		// only where the light taken out exceeds the haze's glow, the bound's only use: else lit + add is above the bound anyway)
 		float3 loSky = lit * 0.55;
-		float3 lo = (P.a.x > 0.0 && (d > 0.0 || vlSkyEdge)) ? lit * P.a.x : loSky;
-		if (P.a.z > 0.0 && P.a.x > 0.0 && (d > 0.0 || vlSkyEdge)) {
+		bool hasTerr = d > 0.0 || vlEdge;
+		float3 lo = (airOn && hasTerr) ? lit * P.a.x : loSky;
+		if (P.a.z > 0.0 && airOn && hasTerr) {
 			lo = max(lit - sunGlow * tv, 0.0);
-			if (any(add < -sunGlow * tv)) lo = max(lo - shadeAerialSunGlowCold(vlTerrWp, skyLut, lutS, f, L) * (ex * tv * vlTerrW), 0.0);
+			if (any(add < -sunGlow * tv)) {
+				float3 apG;
+				if (vlEdge) {
+					apG = shadeAerialSunGlowCold(pNear, skyLut, lutS, f, L) * vlNearW;
+					if (!vlFarSky) apG += shadeAerialSunGlowCold(pFar, skyLut, lutS, f, L) * (1.0 - vlNearW);
+				} else {
+					apG = shadeAerialSunGlowCold(wp, skyLut, lutS, f, L);
+				}
+				lo = max(lo - apG * (ex * tv), 0.0);
+			}
 		}
-		if (vlSkyEdge) lo = mix(loSky, lo, vlTerrW);
+		if (vlEdge && vlFarSky) lo = mix(loSky, lo, vlNearW);
 		c = max(lit + add, lo);
 	}
 	if (P.p.y > 0.5) {
@@ -604,7 +690,7 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 		// fog glow: the haze and the canopy mist both soften what is behind them
 		float mSky = L.bloom.z * (0.25 + 0.75 * (1.0 - tv));
 		float mTerr = L.bloom.z * (1.0 - shadeLuma(T) * tv);
-		float m = L.bloom.x + (vlSkyEdge ? mix(mSky, mTerr, vlTerrW) : (d > 0.0 ? mTerr : mSky));
+		float m = L.bloom.x + ((vlEdge && vlFarSky) ? mix(mSky, mTerr, vlNearW) : (d > 0.0 ? mTerr : mSky));
 		c = mix(c, b, saturate(m));
 	}
 	// (2.0.1 opt) Purkinje, vignette, vibrance in FP16 on Apple9 dual-issue ALUs (luma/ex kept FP32 for debug/threshold precision)
@@ -657,22 +743,22 @@ static inline float3 shadeFinalEncode(float3 y, float4 position, constant ShadeF
 
 #define SHADE_FINAL_ARGS ShadeFsOut in [[stage_in]], texture2d<half> scene [[texture(0)]], texture2d<half> bloom [[texture(1)]], \
 	depth2d<float> depth [[texture(2)]], texture2d<half> bloom0 [[texture(3)]], texture2d<half> vlT [[texture(4)]], \
-	texture2d<half> vlD [[texture(5)]], constant ShadeFinalParams &P [[buffer(0)]], constant ShadeFrame &f [[buffer(16)]], \
+	texture2d<half> vlD [[texture(5)]], texture2d<half> taaDepth [[texture(6)]], constant ShadeFinalParams &P [[buffer(0)]], constant ShadeFrame &f [[buffer(16)]], \
 	constant ShadeLook &L [[buffer(17)]], constant ShadeGpu &g [[buffer(18)]], constant ShadeResources &sr [[buffer(19)]], \
 	texture2d<half> skyLut [[texture(17)]], sampler lutS [[sampler(13)]]
 
 template <bool DIMS, bool LEAN = false>
 static inline float4 shadeFinalSdr(ShadeFsOut in, texture2d<half> scene, texture2d<half> bloom, depth2d<float> depth, texture2d<half> bloom0,
-                                   texture2d<half> vlT, texture2d<half> vlD, constant ShadeFinalParams &P, constant ShadeFrame &f,
+                                   texture2d<half> vlT, texture2d<half> vlD, texture2d<half> taaDepth, constant ShadeFinalParams &P, constant ShadeFrame &f,
                                    constant ShadeLook &L, constant ShadeGpu &g, constant ShadeResources &sr, texture2d<half> skyLut, sampler lutS) {
 	float lum;
-	float3 c = shadeFinalScene<DIMS, LEAN>(in, scene, bloom, depth, bloom0, vlT, vlD, P, f, L, g, sr, lum, skyLut, lutS);
+	float3 c = shadeFinalScene<DIMS, LEAN>(in, scene, bloom, depth, bloom0, vlT, vlD, taaDepth, P, f, L, g, sr, lum, skyLut, lutS);
 	return float4(shadeFinalEncode<LEAN>(shadeDisplay(c, L), in.position, P, L, lum), 1.0);
 }
 
-fragment float4 shade_final(SHADE_FINAL_ARGS) { return shadeFinalSdr<false>(in, scene, bloom, depth, bloom0, vlT, vlD, P, f, L, g, sr, skyLut, lutS); }
-fragment float4 shade_final_dims(SHADE_FINAL_ARGS) { return shadeFinalSdr<true>(in, scene, bloom, depth, bloom0, vlT, vlD, P, f, L, g, sr, skyLut, lutS); }
-fragment float4 shade_final_lean(SHADE_FINAL_ARGS) { return shadeFinalSdr<false, true>(in, scene, bloom, depth, bloom0, vlT, vlD, P, f, L, g, sr, skyLut, lutS); }
+fragment float4 shade_final(SHADE_FINAL_ARGS) { return shadeFinalSdr<false>(in, scene, bloom, depth, bloom0, vlT, vlD, taaDepth, P, f, L, g, sr, skyLut, lutS); }
+fragment float4 shade_final_dims(SHADE_FINAL_ARGS) { return shadeFinalSdr<true>(in, scene, bloom, depth, bloom0, vlT, vlD, taaDepth, P, f, L, g, sr, skyLut, lutS); }
+fragment float4 shade_final_lean(SHADE_FINAL_ARGS) { return shadeFinalSdr<false, true>(in, scene, bloom, depth, bloom0, vlT, vlD, taaDepth, P, f, L, g, sr, skyLut, lutS); }
 
 // M3 XDR (E23; mcxdr.m composes at present): main gets the same SDR image with alpha 0 (what later draws -- hand, GUI --
 // cover gets alpha > 0), the second target the highlights' brightness above it, in linear Rec.709 (>= 0): the SDR curve
@@ -682,11 +768,11 @@ struct ShadeFinalXdrOut { float4 sdr [[color(0)]]; half4 excess [[color(1)]]; };
 
 template <bool DIMS, bool LEAN = false>
 static inline ShadeFinalXdrOut shadeFinalXdr(ShadeFsOut in, texture2d<half> scene, texture2d<half> bloom, depth2d<float> depth,
-                                             texture2d<half> bloom0, texture2d<half> vlT, texture2d<half> vlD, constant ShadeFinalParams &P,
+                                             texture2d<half> bloom0, texture2d<half> vlT, texture2d<half> vlD, texture2d<half> taaDepth, constant ShadeFinalParams &P,
                                              constant ShadeFrame &f, constant ShadeLook &L, constant ShadeGpu &g, constant ShadeResources &sr,
                                              texture2d<half> skyLut, sampler lutS) {
 	float lum;
-	float3 c = shadeFinalScene<DIMS, LEAN>(in, scene, bloom, depth, bloom0, vlT, vlD, P, f, L, g, sr, lum, skyLut, lutS);
+	float3 c = shadeFinalScene<DIMS, LEAN>(in, scene, bloom, depth, bloom0, vlT, vlD, taaDepth, P, f, L, g, sr, lum, skyLut, lutS);
 	float3 y = shadeDisplay(c, L);
 	// (FT2.8, audit idx 39) only above the knee with a peak over SDR white: elsewhere h, boost and the excess are 0
 	float lc = shadeLuma(c), h = 0.0, boost = 0.0;
@@ -718,11 +804,11 @@ static inline float3 shadeFullHdr(float3 scene, constant ShadeLook &L, constant 
 
 template <bool DIMS, bool LEAN = false>
 static inline ShadeFinalXdrOut shadeFinalHdr(ShadeFsOut in, texture2d<half> scene, texture2d<half> bloom, depth2d<float> depth,
-                                             texture2d<half> bloom0, texture2d<half> vlT, texture2d<half> vlD,
+                                             texture2d<half> bloom0, texture2d<half> vlT, texture2d<half> vlD, texture2d<half> taaDepth,
                                              constant ShadeFinalParams &P, constant ShadeFrame &f, constant ShadeLook &L,
                                              constant ShadeGpu &g, constant ShadeResources &sr, texture2d<half> skyLut, sampler lutS) {
 	float lum;
-	float3 c = shadeFinalScene<DIMS, LEAN>(in, scene, bloom, depth, bloom0, vlT, vlD, P, f, L, g, sr, lum, skyLut, lutS);
+	float3 c = shadeFinalScene<DIMS, LEAN>(in, scene, bloom, depth, bloom0, vlT, vlD, taaDepth, P, f, L, g, sr, lum, skyLut, lutS);
 	ShadeFinalXdrOut o;
 	// Compatibility image, with alpha reserved for subsequent hand/HUD coverage.
 	o.sdr = float4(shadeFinalEncode<LEAN>(shadeDisplay(c, L), in.position, P, L, lum), 0.0);
@@ -731,13 +817,13 @@ static inline ShadeFinalXdrOut shadeFinalHdr(ShadeFsOut in, texture2d<half> scen
 	return o;
 }
 
-fragment ShadeFinalXdrOut shade_final_hdr(SHADE_FINAL_ARGS) { return shadeFinalHdr<false>(in, scene, bloom, depth, bloom0, vlT, vlD, P, f, L, g, sr, skyLut, lutS); }
-fragment ShadeFinalXdrOut shade_final_hdr_dims(SHADE_FINAL_ARGS) { return shadeFinalHdr<true>(in, scene, bloom, depth, bloom0, vlT, vlD, P, f, L, g, sr, skyLut, lutS); }
-fragment ShadeFinalXdrOut shade_final_hdr_lean(SHADE_FINAL_ARGS) { return shadeFinalHdr<false, true>(in, scene, bloom, depth, bloom0, vlT, vlD, P, f, L, g, sr, skyLut, lutS); }
+fragment ShadeFinalXdrOut shade_final_hdr(SHADE_FINAL_ARGS) { return shadeFinalHdr<false>(in, scene, bloom, depth, bloom0, vlT, vlD, taaDepth, P, f, L, g, sr, skyLut, lutS); }
+fragment ShadeFinalXdrOut shade_final_hdr_dims(SHADE_FINAL_ARGS) { return shadeFinalHdr<true>(in, scene, bloom, depth, bloom0, vlT, vlD, taaDepth, P, f, L, g, sr, skyLut, lutS); }
+fragment ShadeFinalXdrOut shade_final_hdr_lean(SHADE_FINAL_ARGS) { return shadeFinalHdr<false, true>(in, scene, bloom, depth, bloom0, vlT, vlD, taaDepth, P, f, L, g, sr, skyLut, lutS); }
 
-fragment ShadeFinalXdrOut shade_final_xdr(SHADE_FINAL_ARGS) { return shadeFinalXdr<false>(in, scene, bloom, depth, bloom0, vlT, vlD, P, f, L, g, sr, skyLut, lutS); }
-fragment ShadeFinalXdrOut shade_final_xdr_dims(SHADE_FINAL_ARGS) { return shadeFinalXdr<true>(in, scene, bloom, depth, bloom0, vlT, vlD, P, f, L, g, sr, skyLut, lutS); }
-fragment ShadeFinalXdrOut shade_final_xdr_lean(SHADE_FINAL_ARGS) { return shadeFinalXdr<false, true>(in, scene, bloom, depth, bloom0, vlT, vlD, P, f, L, g, sr, skyLut, lutS); }
+fragment ShadeFinalXdrOut shade_final_xdr(SHADE_FINAL_ARGS) { return shadeFinalXdr<false>(in, scene, bloom, depth, bloom0, vlT, vlD, taaDepth, P, f, L, g, sr, skyLut, lutS); }
+fragment ShadeFinalXdrOut shade_final_xdr_dims(SHADE_FINAL_ARGS) { return shadeFinalXdr<true>(in, scene, bloom, depth, bloom0, vlT, vlD, taaDepth, P, f, L, g, sr, skyLut, lutS); }
+fragment ShadeFinalXdrOut shade_final_xdr_lean(SHADE_FINAL_ARGS) { return shadeFinalXdr<false, true>(in, scene, bloom, depth, bloom0, vlT, vlD, taaDepth, P, f, L, g, sr, skyLut, lutS); }
 
 // ---- bridge for mods that draw display-referred colours over the HDR world (Distant Horizons) ---------------------------
 fragment float4 shade_bridge_encode(ShadeFsOut in [[stage_in]], texture2d<half> scene [[texture(0)]], constant ShadeLook &L [[buffer(17)]]) {

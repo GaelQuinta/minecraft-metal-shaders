@@ -1063,6 +1063,7 @@ static inline half4 vlTemporalFoldCore(VlOut in, constant ShadeFrame &f, constan
 	float dPrev = sky ? 1e4 : length(dir * d + p.camDelta.xyz);
 	float tol = 0.08 * dPrev + 0.6;
 	half4 h;
+	half odH = 0.0h;
 	bool valid;
 	bool odValid = false;
 	if ((int(p.sunPx.w) & 2) != 0) {
@@ -1073,27 +1074,53 @@ static inline half4 vlTemporalFoldCore(VlOut in, constant ShadeFrame &f, constan
 			h = history.sample(lin, huv);
 			valid = true;
 			odValid = true;
+			if (doOd && odHistOk) odH = odPrev.sample(lin, huv).r;
 		} else {
 			int2 hb = int2(hfl), hhi = int2(hs * hdim + 0.5) - 1;
 			half4 acc = 0.0h;
 			half wacc = 0.0h;
+			half odAcc = 0.0h;
 			for (int j = 0; j <= 1; j++) {
 				for (int i = 0; i <= 1; i++) {
-					half4 s = history.read(uint2(clamp(hb + int2(i, j), int2(0), hhi)));
+					uint2 q = uint2(clamp(hb + int2(i, j), int2(0), hhi));
+					half4 s = history.read(q);
 					half bw = half((i == 0 ? 1.0 - hfr.x : hfr.x) * (j == 0 ? 1.0 - hfr.y : hfr.y) + 1e-4);
 					if (abs(float(s.a) - dPrev) < tol) {
 						acc += s * bw;
 						wacc += bw;
+						if (doOd && odHistOk) odAcc += odPrev.read(q).r * bw;
+					}
+				}
+			}
+			// (2.0.1c anti-flicker) when Halton jitter flips a 1-VL-texel silhouette so all 4 corners of the 2x2 held the
+			// opposite depth last frame (<1% of VL pixels), probe the 4 immediate outer edge-adjacent texels before dropping history
+			if (wacc <= 0.0h) {
+				int ox = hfr.x >= 0.5 ? 2 : -1;
+				int oy = hfr.y >= 0.5 ? 2 : -1;
+				int ny = hfr.y >= 0.5 ? 1 : 0;
+				int nx = hfr.x >= 0.5 ? 1 : 0;
+				const int2 ext[4] = {int2(ox, ny), int2(nx, oy), int2(ox, 1 - ny), int2(1 - nx, oy)};
+				for (int k = 0; k < 4; k++) {
+					uint2 q = uint2(clamp(hb + ext[k], int2(0), hhi));
+					half4 s = history.read(q);
+					if (abs(float(s.a) - dPrev) < tol) {
+						half bw = k < 2 ? 1.0h : 0.6h;
+						acc += s * bw;
+						wacc += bw;
+						if (doOd && odHistOk) odAcc += odPrev.read(q).r * bw;
 					}
 				}
 			}
 			valid = wacc > 0.0h;
 			h = acc / max(wacc, 1e-4h);
+			odValid = valid;
+			if (doOd && odHistOk && valid) odH = odAcc / max(wacc, 1e-4h);
 		}
 	} else {
 		h = history.sample(lin, huv);
 		valid = abs(float(h.a) - dPrev) < tol;
 		odValid = valid;
+		if (doOd && odHistOk && valid) odH = odPrev.sample(lin, huv).r;
 	}
 	if (!valid) return half4(curDisocc, half(d));
 	// (2.0.1 anti-flicker) keep modest temporal noise allowance during smooth walking/panning and on isolated canopy-hole
@@ -1112,10 +1139,9 @@ static inline half4 vlTemporalFoldCore(VlOut in, constant ShadeFrame &f, constan
 	half3 hc = clamp(h.rgb, mid - ext, mid + ext);
 	half tw = half(p.temporal.x);
 	if (doOd && odHistOk && odValid) {
-		half oh = odPrev.sample(lin, huv).r;
 		half omid = 0.5h * (odMn + odMx), oext = 0.5h * (odMx - odMn) * 1.45h + 0.002h * (abs(omid) + 0.001h);
 		if (still > 0.0h) oext += still * (abs(omid) + 0.5h * (odMx - odMn));
-		odOut = float(max(mix(odCur, clamp(oh, omid - oext, omid + oext), tw), 0.0h));
+		odOut = float(max(mix(odCur, clamp(odH, omid - oext, omid + oext), tw), 0.0h));
 	}
 	return half4(mix(cur, hc, tw), half(d));
 }
