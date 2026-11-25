@@ -182,19 +182,23 @@ static inline TaaOut taauResolve(float2 q, constant TaaParams &p, constant float
 	half3 ox = half3(off.x - 1.0h, off.x, off.x + 1.0h), oy = half3(off.y - 1.0h, off.y, off.y + 1.0h);
 	half3 wx = exp2(-3.30377h * ox * ox), wy = exp2(-3.30377h * oy * oy);
 	half3 sum = 0.0h, m1 = 0.0h, m2 = 0.0h;
+	uint leafCount = 0u;
 	constexpr sampler texel(coord::pixel, filter::nearest, address::clamp_to_edge);
 	float2 centre = float2(base) + 0.5;
 	for (int dy = 0; dy < 3; dy++) {
 		half3 row = 0.0h;
 		for (int dx = 0; dx < 3; dx++) { // immediate texel offsets: no address maths per tap
 			// (1.2.4, issue #8) an Inf from a shader's own maths would compress to NaN: at most 60000 (NaN: 0, outweighed by its neighbours)
-			half3 c = taaCompress(clamp(cur.sample(texel, centre, int2(dx - 1, dy - 1)).rgb, 0.0h, 60000.0h));
+			half4 s = cur.sample(texel, centre, int2(dx - 1, dy - 1));
+			leafCount += uint(s.a > 1.5h);
+			half3 c = taaCompress(clamp(s.rgb, 0.0h, 60000.0h));
 			row += c * wx[dx];
 			m1 += c;
 			m2 += c * c;
 		}
 		sum += row * wy[dy];
 	}
+	if (p.leafCam.w <= 0.5) leafCount = 0u;
 	half wsum = (wx.x + wx.y + wx.z) * (wy.x + wy.y + wy.z);
 	half wnear = max3(wx.x, wx.y, wx.z) * max3(wy.x, wy.y, wy.z);
 	half3 current = sum / wsum;
@@ -207,9 +211,9 @@ static inline TaaOut taauResolve(float2 q, constant TaaParams &p, constant float
 	float iw = 1.0 / dot(float4(p.invCur[0].w, p.invCur[1].w, p.invCur[2].w, p.invCur[3].w), v4);
 	float viewDepth = iw;
 	float3 moved = float3(0.0);
-	// (2.0.1 opt) read leaf-sway alpha from L1-hot 3x3 footprint only on non-sky pixels when leafMotion is enabled (keeps 3x3 loop branchless)
+	// (2.0.1 opt) skip cur.read entirely on non-leaf pixels (leafCount == 0u covers ~90% of the screen!)
 	half la = 0.0h;
-	if (p.leafCam.w > 0.5 && zmax > 0.0) {
+	if (leafCount > 0u && zmax > 0.0) {
 		int dx0 = off.x > 0.0h ? -1 : 0, dx1 = dx0 + 1;
 		int dy0 = off.y > 0.0h ? -1 : 0, dy1 = dy0 + 1;
 		int2 pick = z4.x == zmax ? int2(dx0, dy1) : z4.y == zmax ? int2(dx1, dy1) : z4.z == zmax ? int2(dx1, dy0) : int2(dx0, dy0);
@@ -252,6 +256,22 @@ static inline TaaOut taauResolve(float2 q, constant TaaParams &p, constant float
 		bool skyThen = stored > 60000.0;
 		float tolerance = 0.03 * prev.w + 0.1;
 		disocclusion = skyNow || skyThen ? half(skyNow != skyThen) : half(saturate((abs(stored - prev.w) - tolerance) / tolerance));
+		// (2.0.1 anti-flicker) 1-px alpha-cutout leaf holes flip skyNow != skyThen frame-to-frame under Halton jitter + sway,
+		// nuking 100% of TAAU history and strobing sunlit canopy holes. Preserve temporal history (still variance-clamped!)
+		// when the 3x3 is enclosed by waving leaves (leafCount >= 3) or mixed leaf/sky on a still camera; outer edges stay crisp.
+		if (skyNow != skyThen && leafCount > 0u) {
+			bool camStill = p.blend.w < -0.5 && p.misc.w < 0.5;
+			if (camStill) {
+				if (leafCount >= 3u) {
+					disocclusion = 0.0h;
+				} else {
+					float zmin = min(min(z4.x, z4.y), min(z4.z, z4.w));
+					if (skyNow || zmin <= 0.0) disocclusion = 0.0h;
+				}
+			} else if (leafCount >= 3u) {
+				disocclusion = 0.15h;
+			}
+		}
 		// (2.0.1 opt) skip 5-tap Catmull-Rom on full disocclusion, use exact 1-read on still pixels, and use 1 bilinear tap
 		// on flat low-variance gradients (sky, smooth clouds, calm ocean) where bilinear and Catmull-Rom are mathematically equal
 		if (disocclusion < 1.0h || p.misc.w >= 0.5) {

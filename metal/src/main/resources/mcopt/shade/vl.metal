@@ -792,8 +792,8 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 			// painted the previous viewport's rectangle into the sunlight on a camera turn.
 			float m = 1.0;
 			if (maskValid && all(q >= 0.0) && all(q < liveV)) {
-				m = smoothTaps ? float(prevSky.sample(maskLin, clamp(q, 0.5, liveV - 0.5) * maskTexel).r)
-				               : float(prevSky.read(uint2(q)).r);
+				// (2.0.1 anti-flicker) always use hardware bilinear filtering on the R8 sky mask to prevent discrete texel popping in crepuscular rays
+				m = float(prevSky.sample(maskLin, clamp(q, 0.5, liveV - 0.5) * maskTexel).r);
 				// Fade measured occlusion at the live mask boundary; don't extend an edge
 				// tree/cloud into newly exposed sky or read unused dynamic-resolution texels.
 				float2 edge = min(q, liveV - q);
@@ -982,9 +982,10 @@ static inline half4 vlTemporalFoldCore(VlOut in, constant ShadeFrame &f, constan
 	half4 c = raw.read(uint2(px));
 	float d = float(c.a);
 	float invTol = 1.0 / (0.03 * d + 0.3);
-	half3 sum = c.rgb * 2.0h;
-	half wsum = 2.0h;
+	half3 sumN = 0.0h;
+	half wsumN = 0.0h;
 	half3 mn = c.rgb, mx = c.rgb;
+	int nBox = 1;
 	half odSum = 0.0h, odWsum = 2.0h, odMn = 60000.0h, odMx = -60000.0h;
 	if (doOd) {
 		half oc = odRaw.read(uint2(px)).r;
@@ -998,12 +999,12 @@ static inline half4 vlTemporalFoldCore(VlOut in, constant ShadeFrame &f, constan
 		uint2 q = uint2(clamp(px + taps[k], int2(0), hi));
 		half4 s = raw.read(q);
 		half w = exp2(half(-1.442695 * abs(float(s.a) - d) * invTol));
-		half ws = w * spatial;
-		sum += s.rgb * ws;
-		wsum += ws;
+		sumN += s.rgb * w;
+		wsumN += w;
 		if (w > 0.35h) {
 			mn = min(mn, s.rgb);
 			mx = max(mx, s.rgb);
+			nBox++;
 		}
 		if (doOd) {
 			half os = odRaw.read(q).r;
@@ -1025,6 +1026,7 @@ static inline half4 vlTemporalFoldCore(VlOut in, constant ShadeFrame &f, constan
 			if (box3 && dd < 1.05) {
 				mn = min(mn, s.rgb);
 				mx = max(mx, s.rgb);
+				nBox++;
 			}
 			if (doOd) {
 				half w = exp2(half(-1.442695 * dd));
@@ -1038,7 +1040,9 @@ static inline half4 vlTemporalFoldCore(VlOut in, constant ShadeFrame &f, constan
 			}
 		}
 	}
-	half3 cur = sum / wsum;
+	half3 cur = (c.rgb * 2.0h + sumN * spatial) / (2.0h + wsumN * spatial);
+	// (2.0.1 anti-flicker) zero-extra-read full bilateral spatial fallback for disoccluded VL texels (leaf holes / screen edges)
+	half3 curDisocc = (c.rgb + sumN) / (1.0h + wsumN);
 	half odCur = doOd ? odSum / odWsum : 0.0h;
 	odOut = float(odCur);
 	float2 scale = p.size.zw / p.size.xy;
@@ -1049,9 +1053,9 @@ static inline half4 vlTemporalFoldCore(VlOut in, constant ShadeFrame &f, constan
 	if (p.temporal.y > 0.5) return half4(cur, half(d));
 	bool sky = d >= 9000.0;
 	float4 pc = sky ? f.prevViewProj * float4(dir, 0.0) : f.prevViewProj * float4(shadeEye(f.invViewProj) + dir * d, 1.0);
-	if (pc.w <= 1e-4) return half4(cur, half(d));
+	if (pc.w <= 1e-4) return half4(curDisocc, half(d));
 	float2 puv = (pc.xy / pc.w) * 0.5 + 0.5;
-	if (any(puv < 0.0) || any(puv > 1.0)) return half4(cur, half(d));
+	if (any(puv < 0.0) || any(puv > 1.0)) return half4(curDisocc, half(d));
 	float2 hs = p.carve.z > 0.0 ? p.carve.zw : float2(1.0);
 	float2 hdim = float2(history.get_width(), history.get_height());
 	float2 hTexel = 0.5 / hdim;
@@ -1091,19 +1095,25 @@ static inline half4 vlTemporalFoldCore(VlOut in, constant ShadeFrame &f, constan
 		valid = abs(float(h.a) - dPrev) < tol;
 		odValid = valid;
 	}
-	if (!valid) return half4(cur, half(d));
+	if (!valid) return half4(curDisocc, half(d));
+	// (2.0.1 anti-flicker) keep modest temporal noise allowance during smooth walking/panning and on isolated canopy-hole
+	// VL texels (nBox <= 3, where few same-depth neighbors exist so mx-mn collapses) without ghosting on fast turns
 	half still = 0.0h;
 	if (p.sunPx.z > 0.0) {
 		float2 moved = puv * p.size.zw / scale - in.position.xy;
-		still = half((1.0 - smoothstep(0.75, 2.0, length(moved))) * p.sunPx.z);
+		float moveLen = length(moved);
+		float stillK = 1.0 - smoothstep(0.75, 2.5, moveLen);
+		float motionFloor = mix(0.22, 0.06, smoothstep(2.0, 10.0, moveLen));
+		if (nBox <= 3) motionFloor = max(motionFloor, 0.30);
+		still = half(max(stillK, motionFloor) * p.sunPx.z);
 	}
-	half3 mid = 0.5h * (mn + mx), ext = 0.5h * (mx - mn) * 1.35h + 0.002h * (abs(mid) + 0.001h);
+	half3 mid = 0.5h * (mn + mx), ext = 0.5h * (mx - mn) * 1.45h + 0.002h * (abs(mid) + 0.001h);
 	if (still > 0.0h) ext += still * (abs(mid) + 0.5h * (mx - mn));
 	half3 hc = clamp(h.rgb, mid - ext, mid + ext);
 	half tw = half(p.temporal.x);
 	if (doOd && odHistOk && odValid) {
 		half oh = odPrev.sample(lin, huv).r;
-		half omid = 0.5h * (odMn + odMx), oext = 0.5h * (odMx - odMn) * 1.35h + 0.002h * (abs(omid) + 0.001h);
+		half omid = 0.5h * (odMn + odMx), oext = 0.5h * (odMx - odMn) * 1.45h + 0.002h * (abs(omid) + 0.001h);
 		if (still > 0.0h) oext += still * (abs(omid) + 0.5h * (odMx - odMn));
 		odOut = float(max(mix(odCur, clamp(oh, omid - oext, omid + oext), tw), 0.0h));
 	}

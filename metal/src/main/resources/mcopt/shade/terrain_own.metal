@@ -228,9 +228,8 @@ static SO_OTHER_ATTR float3 shadeOwnOther(thread float &alpha, bool water, float
 		radiance += float3(wetAlbedo) * sf.ambientBlock.xyz * float3(shadeColor);
 #endif
 #if defined(SHADE_UW_CAUSTICS) && !defined(SHADE_OWN_TRANSLUCENT) && !defined(SHADE_LEAN_ABOVE)
-		// (1.2.8, issue #61: "caustics don't render underwater") the camera under water: the sunlit bottom and walls below the
-		// surface get the caustics the water's surface draws on them when seen from above (water.metal), on the sun's term only
-		if (SHADE_CAMERA_UNDERWATER(sf) && !dims && wph.tune.w > 0.0) {
+		// (1.2.8, issue #61; 2.0.1, issue #68) underwater caustics belong on solid floors/walls (!thin), not stacked double-sided kelp/seagrass fronds
+		if (!thin && SHADE_CAMERA_UNDERWATER(sf) && !dims && wph.tune.w > 0.0) {
 			float dy = wph.state.y - p.y; // depth under the surface above the eye
 			if (dy > 0.05 && dy < 18.0) {
 				float2 lod = shadeCausticLod(max(length(dpx), length(dpy))); // fine lines alias far away: softened, then faded

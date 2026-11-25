@@ -83,6 +83,9 @@ abstract class OwnIntBlockEntitiesMixin {
 			List<BlockEntity> renderableBlockEntities = section.getSectionMesh().getRenderableBlockEntities();
 			if (!renderableBlockEntities.isEmpty() && !(section.getVisibility(Util.getMillis(), chunkFadeDuration) < 0.3F)) {
 				for (BlockEntity blockEntity : renderableBlockEntities) {
+					if (mcopt.metal.shade.ShadeEntityCull.ON && mcopt.metal.shade.ShadeEntityCull.isBlockEntityOccluded(this.level, blockEntity, camX, camY, camZ)) {
+						continue;
+					}
 					BlockPos blockPos = blockEntity.getBlockPos();
 					SortedSet<BlockDestructionProgress> progresses = this.level.destructionProgress().get(blockPos.asLong());
 					ModelFeatureRenderer.CrumblingOverlay breakProgress;

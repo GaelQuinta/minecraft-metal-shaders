@@ -244,23 +244,28 @@ static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, fl
 		}
 		return mix(ratio / bsum, mean, smoothstep(0.0h, 0.08h, wsum));
 	}
-	if (wsum > 0.02) return sum / half(wsum);
-	// Issue #19: the low-resolution footprint may see only foreground leaves while this full-resolution pixel sees sky.
-	// Find an observation at the actual depth before falling back; don't magnify a leaf's signed haze correction into a
-	// sky-sized rectangle. The common four-depth gather above still handles smooth areas with one filtered fetch.
-	// 1.2.7 (audit C2): the probes for every mode. They were only in mode 0, but the HDR pass always runs mode 1, where a sky
-	// pixel in a leaf gap took the leaves' value magnified by the depth ratio (VL-texel blocks in canopy gaps); mode 1 keeps its
-	// air-ratio estimate below as the fallback when no probe sees this pixel's depth.
-	{
-		// Four outer cardinal probes, not a wide blur: only discontinuities pay these depth reads, and the first
-		// same-surface observation is enough. This keeps the repair inside the post pass's bandwidth budget.
+	// (2.0.1 anti-flicker) Fast path for normal edges where at least one of the 2x2 VL texels matches this pixel's depth.
+	// On thin 1-3 px leaf holes (wsum < 0.15h, <2% of screen), replace the old binary wsum>0.02 and first-hit probe cliffs
+	// with smooth cubic depth-weighted probes (faded continuously from wsum=0.15h) and a smooth blend into the air-ratio fallback.
+	if (wsum >= 0.15h) return sum / wsum;
+	half probeFade = 1.0h - smoothstep(0.06h, 0.15h, wsum);
+	if (probeFade > 0.0h) {
 		const int2 probes[4] = {int2(-1, 0), int2(2, 1), int2(0, 2), int2(1, -1)};
 		for (int k = 0; k < 4; k++) {
 			uint2 q = uint2(clamp(base + probes[k], int2(0), hi));
-			if (abs(float(vlD.read(q).a) - hd) < tolerance) return vlT.read(q);
+			float diff = abs(float(vlD.read(q).a) - hd);
+			half x = half(min(diff / tolerance, 32.0));
+			half w = (0.45h * probeFade) / (1.0h + x * x * (1.0h + x));
+			if (w > 1e-4h) {
+				sum += vlT.read(q) * w;
+				wsum += w;
+			}
 		}
-		if (mode < 0.5 && hd > bestD + tolerance) return half4(0.0h, 0.0h, 0.0h, 1.0h);
+		if (wsum >= 0.15h) return sum / wsum;
 	}
+	half4 mean = wsum > 1e-4h ? sum / wsum : bestC;
+	half blendMean = smoothstep(0.0h, 0.15h, wsum);
+	if (mode < 0.5 && hd > bestD + tolerance) return mix(half4(0.0h, 0.0h, 0.0h, 1.0h), mean, blendMean);
 	float mD = maxD;
 	if (mode > 0.5) { // the four by their bilinear weights, each scaled by its own air ratio
 		half4 acc = 0.0h;
@@ -274,9 +279,9 @@ static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, fl
 				bsum += bw;
 			}
 		}
-		return acc / bsum;
+		return mix(acc / bsum, mean, blendMean);
 	}
-	return half4(shadeVlScaled(bestC.rgb, half((min(hd, mD) + 0.5) / (min(bestD, mD) + 0.5)), airNeg), bestC.a);
+	return mix(half4(shadeVlScaled(bestC.rgb, half((min(hd, mD) + 0.5) / (min(bestD, mD) + 0.5)), airNeg), bestC.a), mean, blendMean);
 }
 
 // Camera-relative world position of the pixel at uv = (pixel + 0.5) / size with reversed-Z depth d. Targets hold GL row
@@ -447,6 +452,11 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 	float4 dkq = float4(1e4), wqq = float4(0.0);
 	// (FT2.12) the sunlit part of the haze glow added here (exposed): at most this much is what the VL air mode's shadows take out
 	float3 sunGlow = float3(0.0);
+	// (2.0.1 anti-flicker) on 2x2 sky/foreground silhouette pixels (1-px leaf holes, canopy rims), blend VL, dark-ray clamp,
+	// and bloom fog weight continuously by the same bilinear terrain coverage wTerr used for haze (instead of binary nearest depth d)
+	bool vlSkyEdge = false;
+	float vlTerrW = d > 0.0 ? 1.0 : 0.0;
+	float3 vlTerrWp = wp;
 	const bool skyHaze = !LEAN && hazeOn && L.user4.x > 0.5 && L.user4.x < 1.5 && L.fogMisc.z > 0.0; // (1.2.9, see shadeHazeSkyEnd)
 	bool hazeFade = hazeOn && L.user4.x > 1.5 && L.fogMisc.z > 0.0; // (1.2.9 candidate 3, see shadeHazeBorderKeep)
 #ifdef SHADE_HAZE_EDGE
@@ -469,6 +479,9 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 				float wTerr = (dq.x > 0.0 ? wq.x : 0.0) + (dq.y > 0.0 ? wq.y : 0.0)
 				            + (dq.z > 0.0 ? wq.z : 0.0) + (dq.w > 0.0 ? wq.w : 0.0);
 				float3 pRep = d > 0.0 ? wp : shadeWorldFromDepth(uv, dhi, f);
+				vlSkyEdge = wTerr > 0.02 && wTerr < 0.98;
+				vlTerrW = wTerr;
+				vlTerrWp = pRep;
 				if (dot(pRep, pRep) > hazeNear) {
 					float3 Tk, Uk;
 					float3 Sk = shadeHazeInscatter(pRep, f, L, 1.0, Tk, Uk);
@@ -485,6 +498,13 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 				sunGlow = Us * ex;
 				hazeEdge = true;
 				wqq = wq;
+				if (dlo <= 0.0) {
+					float wT = (dq.x > 0.0 ? wq.x : 0.0) + (dq.y > 0.0 ? wq.y : 0.0)
+					         + (dq.z > 0.0 ? wq.z : 0.0) + (dq.w > 0.0 ? wq.w : 0.0);
+					vlSkyEdge = wT > 0.02 && wT < 0.98;
+					vlTerrW = wT;
+					vlTerrWp = d > 0.0 ? wp : shadeWorldFromDepth(uv, dhi, f);
+				}
 			}
 		} else if (d > 0.0 && dot(wp, wp) > hazeNear) {
 			float3 U;
@@ -546,6 +566,10 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 			for (int k = 0; k < 4; k++) {
 				if (wqq[k] > 0.0) v += shadeVlUpsample(vlT, vlD, uv, dkq[k], P.v.y, vlScale, upMode, P.q.z, (edgeFix & 2) != 0) * half(wqq[k]);
 			}
+		} else if (vlSkyEdge) {
+			half4 vSky = shadeVlUpsample(vlT, vlD, uv, 1e4, P.v.y, vlScale, upMode, P.q.z, (edgeFix & 2) != 0);
+			half4 vTerr = shadeVlUpsample(vlT, vlD, uv, length(vlTerrWp), P.v.y, vlScale, upMode, P.q.z, (edgeFix & 2) != 0);
+			v = mix(vSky, vTerr, half(vlTerrW));
 		} else {
 			v = shadeVlUpsample(vlT, vlD, uv, d > 0.0 ? length(wp) : 1e4, P.v.y, vlScale, upMode, P.q.z, (edgeFix & 2) != 0);
 		}
@@ -566,17 +590,21 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 		// stayed: an orange halo through the mountain (Gael 2026-10-11, a snowy canyon at sunset)
 		// (the aerial blend's glow around the sun too, which the air mode's shadows now take out as well: shadeAerialSunGlow; looked up
 		// only where the light taken out exceeds the haze's glow, the bound's only use: else lit + add is above the bound anyway)
-		float3 lo = lit * (P.a.x > 0.0 && d > 0.0 ? P.a.x : 0.55);
-		if (P.a.z > 0.0 && P.a.x > 0.0 && d > 0.0) {
+		float3 loSky = lit * 0.55;
+		float3 lo = (P.a.x > 0.0 && (d > 0.0 || vlSkyEdge)) ? lit * P.a.x : loSky;
+		if (P.a.z > 0.0 && P.a.x > 0.0 && (d > 0.0 || vlSkyEdge)) {
 			lo = max(lit - sunGlow * tv, 0.0);
-			if (any(add < -sunGlow * tv)) lo = max(lo - shadeAerialSunGlowCold(wp, skyLut, lutS, f, L) * (ex * tv), 0.0);
+			if (any(add < -sunGlow * tv)) lo = max(lo - shadeAerialSunGlowCold(vlTerrWp, skyLut, lutS, f, L) * (ex * tv * vlTerrW), 0.0);
 		}
+		if (vlSkyEdge) lo = mix(loSky, lo, vlTerrW);
 		c = max(lit + add, lo);
 	}
 	if (P.p.y > 0.5) {
 		float3 b = float3(bloom.sample(shadeLinearClamp, in.uv).rgb + bloom0.sample(shadeLinearClamp, in.uv).rgb * half(P.q.x)) * P.p.x;
 		// fog glow: the haze and the canopy mist both soften what is behind them
-		float m = L.bloom.x + (d > 0.0 ? L.bloom.z * (1.0 - shadeLuma(T) * tv) : L.bloom.z * (0.25 + 0.75 * (1.0 - tv)));
+		float mSky = L.bloom.z * (0.25 + 0.75 * (1.0 - tv));
+		float mTerr = L.bloom.z * (1.0 - shadeLuma(T) * tv);
+		float m = L.bloom.x + (vlSkyEdge ? mix(mSky, mTerr, vlTerrW) : (d > 0.0 ? mTerr : mSky));
 		c = mix(c, b, saturate(m));
 	}
 	// (2.0.1 opt) Purkinje, vignette, vibrance in FP16 on Apple9 dual-issue ALUs (luma/ex kept FP32 for debug/threshold precision)
