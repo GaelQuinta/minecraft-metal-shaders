@@ -1148,8 +1148,9 @@ final class OwnFrag {
 		return m;
 	}
 
-	/** (every 5 s while a1Exact or a2Exact is requested) the effective mode, from the native telemetry (mco_frag_exact_telemetry). */
+	/** (every 5 s while a1Exact or a2Exact is requested and -Dmcopt.own.frag.exactLog=true) the effective mode, from the native telemetry. */
 	private void exactLog() {
+		if (!Boolean.getBoolean("mcopt.own.frag.exactLog")) return;
 		long now = System.nanoTime();
 		if (!(this.a1Req || this.a2Req) || now - this.exactLogAt < 5_000_000_000L) return;
 		this.exactLogAt = now;

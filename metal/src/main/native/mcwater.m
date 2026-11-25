@@ -48,7 +48,8 @@ typedef struct {
 	id<MTLTexture> dummyColor, dummyDepth;  // bound until the first capture
 	id<MTLTexture> waves;                   // the baked wave field (RGBA16F 512^2 or 1024^2 by preset, mipmapped), rendered by ShadeWater.bake
 	id<MTLTexture> detail;                  // M2.1: the fine-ripple layer (same format, the waves baked faster), texture(22)
-	int detailBaked;                        // detail was rendered this frame (else texture(22) falls back to waves)
+	id<MTLTexture> swell;                   // (2.0.1 opt) baked sea swell (RGBA16F 256^2, mipmapped), published as ShadeResources.waterSwell (15)
+	int detailBaked, swellBaked;            // detail / swell rendered this frame
 	id<MTLTexture> hz, dummyHz;             // the SSR march's half-size nearest depth (R32F reversed-Z), made after each copy
 	id<MTLRenderPipelineState> hzPso;       // water.metal shade_water_hz_fs (set by ShadeWater; no coarse depth without it)
 	// (1.2.7 candidate 8, SHADE_SSR_HIER) the exact march's depth pyramid instead: one RG16F texture (nearest and farthest reversed-Z
@@ -105,6 +106,7 @@ void mc_water_free(WaterState *s) {
 	[s->dummyDepth release];
 	[s->waves release];
 	[s->detail release];
+	[s->swell release];
 	[s->hz release];
 	[s->dummyHz release];
 	[s->hzPso release];
@@ -396,6 +398,7 @@ static id<MTLTexture> wavesTexture(Ctx *ctx, int size, NSString *label) {
 
 id<MTLTexture> mc_water_waves(Ctx *ctx, WaterState *s, int size) {
 	if (!s->waves) s->waves = wavesTexture(ctx, size, @"mcopt shade water: baked waves");
+	s->swellBaked = 0;
 	return s->waves;
 }
 
@@ -407,7 +410,14 @@ id<MTLTexture> mc_water_waves_detail(Ctx *ctx, WaterState *s, int size) {
 	return s->detail;
 }
 
-// After the bake pass wrote mip 0: the mip chain (one blit), and the shaders may sample it this frame (state.w).
+// (2.0.1 opt) baked sea swell (RGBA16F 256^2, mipmapped), published as ShadeResources.waterSwell (15); far.w signals valid.
+id<MTLTexture> mc_water_waves_swell(Ctx *ctx, WaterState *s, int size) {
+	if (!s->swell) s->swell = wavesTexture(ctx, size, @"mcopt shade water: baked swell");
+	s->swellBaked = 1;
+	return s->swell;
+}
+
+// After the bake pass wrote mip 0: the mip chain (one blit), and the shaders may sample it this frame (state.w / far.w).
 void mc_water_waves_done(Enc *enc, WaterState *s) {
 	if (!s->waves) return;
 	@autoreleasepool {
@@ -416,14 +426,17 @@ void mc_water_waves_done(Enc *enc, WaterState *s) {
 		b.label = @"mcopt shade water: wave mips";
 		[b generateMipmapsForTexture:s->waves];
 		if (s->detailBaked && s->detail) [b generateMipmapsForTexture:s->detail];
+		if (s->swellBaked && s->swell) [b generateMipmapsForTexture:s->swell];
 		[b endEncoding];
 	}
 	s->params.state[3] = 1.0f;
+	s->params.far[3] = (s->swellBaked && s->swell) ? 1.0f : 0.0f;
 }
 
 // (1.2.9 pricing, -Dmcopt.shade.water.devNoBake) last bake's waves stay bound this frame, without a bake
 void mc_water_waves_keep(WaterState *s) {
 	if (s->waves) s->params.state[3] = 1.0f;
+	if (s->swellBaked && s->swell) s->params.far[3] = 1.0f;
 }
 
 id<MTLTexture> mc_water_scene_copy(WaterState *s) { return s->color; }

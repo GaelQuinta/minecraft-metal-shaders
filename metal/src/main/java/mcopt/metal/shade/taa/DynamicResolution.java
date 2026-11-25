@@ -69,7 +69,8 @@ public final class DynamicResolution {
 	private double targetSeconds;
 	private float scale;
 	private double average, lastEnd;
-	private int samples, sinceChange, skip, pinned;
+	private int samples, sinceChange, skip, pinned, outlierStreak;
+	private volatile boolean paused;
 	/** M3.3 (mcopt.shade.drsLog): a status line about once a second: what the controller sees, frames and changes since. */
 	private long statusStart;
 	private int statusFrames, statusChanges;
@@ -119,15 +120,28 @@ public final class DynamicResolution {
 		return this.average * 1e3;
 	}
 
+	/** (2.0.1 fix) Pause DRS timing updates while unfocused (e.g. macOS screenshot overlay) so focus hitches don't tank scale. */
+	public void setPaused(boolean paused) {
+		if (paused && !this.paused) this.skip = Math.max(this.skip, IN_FLIGHT + 2);
+		else if (!paused && this.paused) this.skip = Math.max(this.skip, IN_FLIGHT + 2);
+		this.paused = paused;
+	}
+
 	/** A retired frame's command buffer GPU times (seconds; 0 when unknown). */
 	public void frame(double gpuStart, double gpuEnd) {
 		if (!(gpuEnd > 0) || !(gpuStart > 0) || gpuEnd < gpuStart) return;
 		double busy = gpuEnd - Math.max(gpuStart, this.lastEnd);
 		this.lastEnd = Math.max(this.lastEnd, gpuEnd);
-		if (busy <= 0 || busy > 0.5) return; // overlapped entirely, or a stall (loading, a hitch): not the steady cost
+		if (this.paused || busy <= 0 || busy > 0.5) return; // unfocused, overlapped entirely, or a stall (loading, a hitch): not the steady cost
 		if (this.skip > 0) {
 			this.skip--;
 			return;
+		}
+		// (2.0.1 fix) reject single-frame OS/screenshot/GC spikes (>2.5x EMA and >35 ms) unless sustained for 3 frames
+		if (this.samples >= 4 && busy > Math.max(this.average * 2.5, 0.035)) {
+			if (++this.outlierStreak < 3) return;
+		} else {
+			this.outlierStreak = 0;
 		}
 		this.average = this.samples == 0 ? busy : this.average + (busy - this.average) / AVERAGE_FRAMES;
 		this.samples++;

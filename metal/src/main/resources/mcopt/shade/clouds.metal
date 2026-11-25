@@ -591,17 +591,22 @@ static inline float3 cloudSampleLight(float tauL, float dUp, float d, float st, 
 	// (diffuse light: much less extinct than the direct beam)
 	float tauUp = (dUp * 0.7 + d * 0.3) * sigma * above * c.art.z;
 	float tauDown = d * sigma * (y - c.layer.x) * c.art.z * 0.75;
-	// multiple scattering: 4 octaves (Wrenninge): each dimmer, far less extinct and more isotropic (the light that
-	// diffuses through a thick cloud: lit sides near white, bases grey, not black)
-	float a1 = c.art.x, b1 = c.art.y;
-	float ms = exp(-tauL) * ph0 + a1 * exp(-b1 * tauL) * ph1 + a1 * a1 * exp(-b1 * b1 * tauL) * ph2
-		+ a1 * a1 * a1 * exp(-b1 * b1 * b1 * tauL) * ph3;
-	// powder: the thin skin of a cloud scatters less light toward the eye than its depths (dark creases on the sunlit
-	// side), gone when looking toward the light (Schneider's "beer-powder", shaped after Photon's)
-	float powder = 1.0 - pw * exp(-st * 28.0);
-	ms *= mix(powder, 1.0, saturate(mu * 1.5));
-	float3 direct = c.light.rgb * ms;
-	float3 amb = (c.ambTop.rgb * exp(-tauUp) * (0.55 + 0.45 * h) + c.ambBottom.rgb * exp(-tauDown)) * c.ambBottom.w;
+	float eDown = exp(-tauDown);
+	float3 direct = float3(0.0), amb = float3(0.0);
+	// (2.0.1 opt) skip Wrenninge octaves when Photon octaves have full weight (art2.w >= 0.999): saves 5 exp() per cloud sample, identical math
+	if (c.art2.w < 0.999) {
+		// multiple scattering: 4 octaves (Wrenninge): each dimmer, far less extinct and more isotropic (the light that
+		// diffuses through a thick cloud: lit sides near white, bases grey, not black)
+		float a1 = c.art.x, b1 = c.art.y;
+		float ms = exp(-tauL) * ph0 + a1 * exp(-b1 * tauL) * ph1 + a1 * a1 * exp(-b1 * b1 * tauL) * ph2
+			+ a1 * a1 * a1 * exp(-b1 * b1 * b1 * tauL) * ph3;
+		// powder: the thin skin of a cloud scatters less light toward the eye than its depths (dark creases on the sunlit
+		// side), gone when looking toward the light (Schneider's "beer-powder", shaped after Photon's)
+		float powder = 1.0 - pw * exp(-st * 28.0);
+		ms *= mix(powder, 1.0, saturate(mu * 1.5));
+		direct = c.light.rgb * ms;
+		amb = (c.ambTop.rgb * exp(-tauUp) * (0.55 + 0.45 * h) + c.ambBottom.rgb * eDown) * c.ambBottom.w;
+	}
 	if (c.art2.w > 0.0) {
 		// (2026-11, art2.w) Photon's octaves, adapted from Photon Shaders by Benjamin Stott ("sixthsurge"), MIT License, commit 26c2906e
 		// (include/sky/clouds/common.glsl clouds_powder_effect, cumulus.glsl clouds_cumulus_scattering): each octave's weight grows by
@@ -621,8 +626,10 @@ static inline float3 cloudSampleLight(float tauL, float dUp, float d, float st, 
 			ex *= 0.4;
 			P = mix(P, sqrt(P), 0.5);
 		}
-		direct = mix(direct, c.light.rgb * (dP * 0.5), c.art2.w);
-		amb = mix(amb, (c.ambTop.rgb * aP * (0.55 + 0.45 * h) * 0.5 + c.ambBottom.rgb * exp(-tauDown)) * c.ambBottom.w, c.art2.w);
+		float3 dPh = c.light.rgb * (dP * 0.5);
+		float3 aPh = (c.ambTop.rgb * aP * (0.55 + 0.45 * h) * 0.5 + c.ambBottom.rgb * eDown) * c.ambBottom.w;
+		direct = c.art2.w >= 0.999 ? dPh : mix(direct, dPh, c.art2.w);
+		amb = c.art2.w >= 0.999 ? aPh : mix(amb, aPh, c.art2.w);
 	}
 	return direct + amb;
 }
@@ -1108,7 +1115,10 @@ static CloudResult cloudSky(float3 dir, int steps, int lsteps, int q, float jitt
                             texture2d<half> weather, texture3d<half> noise, texture2d<half> lut, sampler lutS, float foot) {
 	// (M3.3 CLOUD_MODE_BATCH: the cirrus' first fetch and the sky LUT are fetched before the cumulus march and wait alongside
 	// it; the march is latency-bound, a fetch more costs less than one more wait after it)
-	CloudResult ci, cu;
+	CloudResult ci, cu, al;
+	ci.S = 0.0; ci.T = 1.0; ci.dist = -1.0;
+	al.S = 0.0; al.T = 1.0; al.dist = -1.0;
+	bool aboveAlto = c.layer.z > c.alto.y + 0.5 * c.alto.z;
 	bool batch = cloudMode(c, CLOUD_MODE_BATCH);
 	float3 skyPre = 0.0;
 	if (batch) {
@@ -1121,17 +1131,14 @@ static CloudResult cloudSky(float3 dir, int steps, int lsteps, int q, float jitt
 			|| cloudSegment(rs, c.layer.x, c.layer.y, c.misc.z, c.march.z, s0, s1))
 			skyPre = shadeSkyLookup(dir, lut, lutS, f);
 		cu = cloudStyle(c) > 0.5 ? cloudBlocky(dir, c, weather) : cloudMarch(dir, steps, lsteps, q, jitter, c, weather, noise, foot);
-		ci = cloudCirrusEnd(pre, dir, c, weather);
+		// (2.0.1 opt) skip altocumulus and cirrus when opaque cumulus completely blocks them (T <= 0.015)
+		if (cloudStyle(c) < 0.5 && (aboveAlto || cu.T > 0.015)) al = cloudAlto(dir, fract(jitter + 0.381966), c, weather, noise, foot);
+		if (cu.T * al.T > 0.015) ci = cloudCirrusEnd(pre, dir, c, weather);
 	} else {
 		cu = cloudStyle(c) > 0.5 ? cloudBlocky(dir, c, weather) : cloudMarch(dir, steps, lsteps, q, jitter, c, weather, noise, foot);
-		ci = cloudCirrus(dir, c, weather);
+		if (cloudStyle(c) < 0.5 && (aboveAlto || cu.T > 0.015)) al = cloudAlto(dir, fract(jitter + 0.381966), c, weather, noise, foot);
+		if (cu.T * al.T > 0.015) ci = cloudCirrus(dir, c, weather);
 	}
-	// (2026-11) the altocumulus between them (volumetric style only)
-	CloudResult al;
-	al.S = 0.0;
-	al.T = 1.0;
-	al.dist = -1.0;
-	if (cloudStyle(c) < 0.5) al = cloudAlto(dir, fract(jitter + 0.381966), c, weather, noise, foot);
 	// the clear sky behind only matters where a cloud is (aerial perspective; M3.1: no lookup for the empty rays)
 	if (cu.dist >= 0.0 || ci.dist >= 0.0 || al.dist >= 0.0 || cloudDev(c, CLOUD_DEV_OLD_MARCH)) {
 		float3 sky = batch ? skyPre : shadeSkyLookup(dir, lut, lutS, f);
@@ -1146,7 +1153,7 @@ static CloudResult cloudSky(float3 dir, int steps, int lsteps, int q, float jitt
 	CloudResult o;
 	// the cirrus is always behind (far above) the others; the altocumulus behind the cumulus unless the camera is above its middle
 	float3 back = al.S + al.T * ci.S;
-	if (c.layer.z > c.alto.y + 0.5 * c.alto.z) {
+	if (aboveAlto) {
 		o.S = al.S + al.T * (cu.S + cu.T * ci.S);
 	} else {
 		o.S = cu.S + cu.T * back;

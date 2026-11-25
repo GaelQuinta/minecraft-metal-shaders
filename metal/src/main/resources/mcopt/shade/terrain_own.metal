@@ -602,7 +602,14 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #endif
 			float amp = wp.swell.x * (1.0 + 0.8 * wp.state.z) * (1.0 + 0.6 * sf.weather.y) * swellOpen;
 #ifndef SHADE_PRICE_NOSWELL
-			if (amp > 0.0) wi.swell = shadeWaterSwell(shadeWaterXZ(p.xz, sf), shadeWaterTime(sf), wi.dxz, amp);
+			if (amp > 0.0) {
+#ifdef MCOPT_HDR
+				wi.swell = wp.far.w > 0.5 ? shadeWaterSwellSample(shadeWaterXZ(p.xz, sf), wi.dxz, amp, sr.waterSwell)
+				                          : shadeWaterSwell(shadeWaterXZ(p.xz, sf), shadeWaterTime(sf), wi.dxz, amp);
+#else
+				wi.swell = shadeWaterSwell(shadeWaterXZ(p.xz, sf), shadeWaterTime(sf), wi.dxz, amp);
+#endif
+			}
 #endif
 		}
 #endif
@@ -617,14 +624,21 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #endif
 #ifdef SHADE_DYNLIGHT
 		float3 dlSpec = float3(0.0);
-		if (n.y > 0.5h) { // the surface seen from above: torchlight on the water body and its glint on the ripples
-			float3 V = -normalize(p - shadeEye(sf.invViewProj)); // toward the eye (view bobbing moves it)
-			float3 dlN = normalize(float3(0.0, 1.0, 0.0) + float3(wi.detail.x, 0.0, wi.detail.y) * 0.35);
-			wi.lit += sf.ambientBlock.xyz * shadeDynamicLightsSpec(dl, dlVis, p, dlN, blockLight, V, 160.0, dlSpec);
-			float fres = 0.02 + 0.98 * pow(1.0 - saturate(dot(dlN, V)), 5.0);
-			dlSpec *= sf.ambientBlock.xyz * (0.25 + 3.0 * fres);
-		} else {
-			wi.lit += sf.ambientBlock.xyz * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(n), false, blockLight);
+		if (dl.info.x > 0u) {
+			if (n.y > 0.5h) { // the surface seen from above: torchlight on the water body and its glint on the ripples
+				uint2 dlm = shadeDlMask(dl, p);
+				if ((dlm.x | dlm.y) != 0u) {
+					float3 V = -normalize(p - shadeEye(sf.invViewProj)); // toward the eye (view bobbing moves it)
+					float3 dlN = normalize(float3(0.0, 1.0, 0.0) + float3(wi.detail.x, 0.0, wi.detail.y) * 0.35);
+					wi.lit += sf.ambientBlock.xyz * shadeDynamicLightsSpec(dl, dlVis, p, dlN, blockLight, V, 160.0, dlSpec);
+					float fm = 1.0 - saturate(dot(dlN, V));
+					float fm2 = fm * fm;
+					float fres = 0.02 + 0.98 * fm2 * fm2 * fm;
+					dlSpec *= sf.ambientBlock.xyz * (0.25 + 3.0 * fres);
+				}
+			} else {
+				wi.lit += sf.ambientBlock.xyz * shadeDynamicLightsVol(dl, dlIrr, dlDir, p, float3(n), false, blockLight);
+			}
 		}
 #endif
 		wi.exposure = ex;

@@ -988,66 +988,143 @@ struct VlFoldOut {
 	half od [[color(2)]]; // (2026-11, air8.z) the filtered optical depth of what dims the scene (R16F): next frame's od history
 };
 
-// (2026-11, C5: air8.z) the optical depth the scene behind is dimmed by: this frame's (the march's third target, a 3x3 weighted by
-// depth: the density is smooth, its noise is the steps' per-texel offsets) blended with last frame's at this point, as the light's
-// history is (weight temporal.x, clamped to the neighbourhood's range, widened while the view is still). histOk false: no od history
-// to use (mcvl.m kept none last frame: air8.z < 0), then this frame's alone. T flickering at the march's noise would show on the
-// crisp scene it multiplies, so it gets the same temporal filtering as the light it goes with.
-static inline float vlOdTemporal(VlOut in, constant ShadeFrame &f, constant VlParams &p, texture2d<half> raw, texture2d<half> history,
-                                 texture2d<half> odRaw, texture2d<half> odPrev, bool histOk) {
-	int2 px = int2(in.position.xy), hi = int2(p.size.xy) - 1;
-	float d = float(raw.read(uint2(px)).a);
-	float tol = 0.03 * d + 0.3;
-	float sum = 0.0, wsum = 0.0, mn = 1e9, mx = -1e9;
-	for (int j = -1; j <= 1; j++) {
-		for (int i = -1; i <= 1; i++) {
-			uint2 q = uint2(clamp(px + int2(i, j), int2(0), hi));
-			float s = float(odRaw.read(q).r);
-			float w = i == 0 && j == 0 ? 2.0 : exp(-abs(float(raw.read(q).a) - d) / tol);
-			sum += s * w;
-			wsum += w;
+// (2.0.1 opt) Fused temporal filter for vl_temporal_fold: shares all 9 raw depth reads, depth weights, vlDirection,
+// prevViewProj reprojection, history depth validation, and still-view factor between light and optical depth (od).
+// Eliminates 9 redundant texture reads, a duplicate matrix reprojection, and a duplicate history sample per VL texel.
+static inline half4 vlTemporalFoldCore(VlOut in, constant ShadeFrame &f, constant VlParams &p, texture2d<half> raw, texture2d<half> history,
+                                       texture2d<half> odRaw, texture2d<half> odPrev, bool doOd, bool odHistOk, thread float &odOut, thread float3 &dirOut) {
+	constexpr sampler lin(filter::linear, address::clamp_to_edge);
+	int2 px = int2(in.position.xy);
+	int2 hi = int2(p.size.xy) - 1;
+	half4 c = raw.read(uint2(px));
+	float d = float(c.a);
+	float invTol = 1.0 / (0.03 * d + 0.3);
+	float3 sum = float3(c.rgb) * 2.0;
+	float wsum = 2.0;
+	float3 mn = float3(c.rgb), mx = mn;
+	float odSum = 0.0, odWsum = 2.0, odMn = 1e9, odMx = -1e9;
+	if (doOd) {
+		float oc = float(odRaw.read(uint2(px)).r);
+		odSum = oc * 2.0;
+		odMn = oc;
+		odMx = oc;
+	}
+	const int2 taps[4] = {int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1)};
+	float spatial = p.air8.w;
+	for (int k = 0; k < 4; k++) {
+		uint2 q = uint2(clamp(px + taps[k], int2(0), hi));
+		half4 s = raw.read(q);
+		float w = exp(-abs(float(s.a) - d) * invTol);
+		sum += float3(s.rgb) * (w * spatial);
+		wsum += w * spatial;
+		if (w > 0.35) {
+			mn = min(mn, float3(s.rgb));
+			mx = max(mx, float3(s.rgb));
+		}
+		if (doOd) {
+			float os = float(odRaw.read(q).r);
+			odSum += os * w;
+			odWsum += w;
 			if (w > 0.35) {
-				mn = min(mn, s);
-				mx = max(mx, s);
+				odMn = min(odMn, os);
+				odMx = max(odMx, os);
 			}
 		}
 	}
-	float cur = sum / wsum;
-	if (!histOk || p.temporal.y > 0.5) return cur;
-	// this point in last frame's view (as vlTemporalRaw)
+	bool box3 = (int(p.sunPx.w) & 1) != 0;
+	if (box3 || doOd) {
+		const int2 diag[4] = {int2(1, 1), int2(-1, 1), int2(1, -1), int2(-1, -1)};
+		for (int k = 0; k < 4; k++) {
+			uint2 q = uint2(clamp(px + diag[k], int2(0), hi));
+			half4 s = raw.read(q);
+			float dd = abs(float(s.a) - d) * invTol;
+			if (box3 && dd < 1.05) {
+				mn = min(mn, float3(s.rgb));
+				mx = max(mx, float3(s.rgb));
+			}
+			if (doOd) {
+				float w = exp(-dd);
+				float os = float(odRaw.read(q).r);
+				odSum += os * w;
+				odWsum += w;
+				if (w > 0.35) {
+					odMn = min(odMn, os);
+					odMx = max(odMx, os);
+				}
+			}
+		}
+	}
+	float3 cur = sum / wsum;
+	float odCur = doOd ? odSum / odWsum : 0.0;
+	odOut = odCur;
 	float2 scale = p.size.zw / p.size.xy;
 	float2 fpos = floor(in.position.xy * scale) + 0.5;
-	float3 dir = vlDirection(fpos / p.size.zw * 2.0 - 1.0, f);
+	float2 ndc = fpos / p.size.zw * 2.0 - 1.0;
+	float3 dir = vlDirection(ndc, f);
+	dirOut = dir;
+	if (p.temporal.y > 0.5) return half4(half3(cur), half(d));
 	bool sky = d >= 9000.0;
 	float4 pc = sky ? f.prevViewProj * float4(dir, 0.0) : f.prevViewProj * float4(shadeEye(f.invViewProj) + dir * d, 1.0);
-	if (pc.w <= 1e-4) return cur;
+	if (pc.w <= 1e-4) return half4(half3(cur), half(d));
 	float2 puv = (pc.xy / pc.w) * 0.5 + 0.5;
-	if (any(puv < 0.0) || any(puv > 1.0)) return cur;
-	constexpr sampler lin(filter::linear, address::clamp_to_edge);
+	if (any(puv < 0.0) || any(puv > 1.0)) return half4(half3(cur), half(d));
 	float2 hs = p.carve.z > 0.0 ? p.carve.zw : float2(1.0);
-	float2 hdim = float2(odPrev.get_width(), odPrev.get_height());
-	float2 huv = clamp(puv * hs, 0.5 / hdim, hs - 0.5 / hdim);
-	// the same surface there (the light history's distance, bilinear: at a depth edge this frame's value alone)
+	float2 hdim = float2(history.get_width(), history.get_height());
+	float2 hTexel = 0.5 / hdim;
+	float2 huv = clamp(puv * hs, hTexel, hs - hTexel);
 	float dPrev = sky ? 1e4 : length(dir * d + p.camDelta.xyz);
-	if (abs(float(history.sample(lin, huv).a) - dPrev) >= 0.08 * dPrev + 0.6) return cur;
-	float h = float(odPrev.sample(lin, huv).r);
-	float mid = 0.5 * (mn + mx), ext = 0.5 * (mx - mn) * 1.35 + 0.002 * (abs(mid) + 0.001);
+	float tol = 0.08 * dPrev + 0.6;
+	half4 h;
+	bool valid;
+	bool odValid = false;
+	if ((int(p.sunPx.w) & 2) != 0) {
+		float2 hp = huv * hdim - 0.5;
+		float2 hfl = floor(hp), hfr = hp - hfl;
+		float4 hd4 = float4(history.gather(lin, (hfl + 1.0) / hdim, int2(0), component::w));
+		if (all(abs(hd4 - dPrev) < tol)) {
+			h = history.sample(lin, huv);
+			valid = true;
+			odValid = true;
+		} else {
+			int2 hb = int2(hfl), hhi = int2(hs * hdim + 0.5) - 1;
+			float4 acc = 0.0;
+			float wacc = 0.0;
+			for (int j = 0; j <= 1; j++) {
+				for (int i = 0; i <= 1; i++) {
+					half4 s = history.read(uint2(clamp(hb + int2(i, j), int2(0), hhi)));
+					float bw = (i == 0 ? 1.0 - hfr.x : hfr.x) * (j == 0 ? 1.0 - hfr.y : hfr.y) + 1e-4;
+					if (abs(float(s.a) - dPrev) < tol) {
+						acc += float4(s) * bw;
+						wacc += bw;
+					}
+				}
+			}
+			valid = wacc > 0.0;
+			h = half4(acc / max(wacc, 1e-6));
+		}
+	} else {
+		h = history.sample(lin, huv);
+		valid = abs(float(h.a) - dPrev) < tol;
+		odValid = valid;
+	}
+	if (!valid) return half4(half3(cur), half(d));
+	float still = 0.0;
 	if (p.sunPx.z > 0.0) {
 		float2 moved = puv * p.size.zw / scale - in.position.xy;
-		ext += (1.0 - smoothstep(0.75, 2.0, length(moved))) * p.sunPx.z * (abs(mid) + 0.5 * (mx - mn));
+		still = (1.0 - smoothstep(0.75, 2.0, length(moved))) * p.sunPx.z;
 	}
-	return max(mix(cur, clamp(h, mid - ext, mid + ext), p.temporal.x), 0.0);
+	float3 mid = 0.5 * (mn + mx), ext = 0.5 * (mx - mn) * 1.35 + 0.002 * (abs(mid) + 0.001);
+	if (still > 0.0) ext += still * (abs(mid) + 0.5 * (mx - mn));
+	float3 hc = clamp(float3(h.rgb), mid - ext, mid + ext);
+	if (doOd && odHistOk && odValid) {
+		float oh = float(odPrev.sample(lin, huv).r);
+		float omid = 0.5 * (odMn + odMx), oext = 0.5 * (odMx - odMn) * 1.35 + 0.002 * (abs(omid) + 0.001);
+		if (still > 0.0) oext += still * (abs(omid) + 0.5 * (odMx - odMn));
+		odOut = max(mix(odCur, clamp(oh, omid - oext, omid + oext), p.temporal.x), 0.0);
+	}
+	return half4(half3(mix(cur, hc, p.temporal.x)), half(d));
 }
 
-// The shafts' local contrast (2026-10-09, Gael: the stronger god rays veiled the view "como un lente empanado"). Where a ray
-// crosses tens of blocks of lit mist (a low sun under the trees, the lit clearing behind a trunk) the in-scattered light is a
-// uniform glow: no per-pixel measure tells it from a beam (both are lit air along the ray), only its surroundings do. So
-// each VL texel is compared with the local mean of r = (in-scattered luminance) / (the canopy mist's optical depth along the
-// ray + half a block): how lit the air along the ray is, the same for a ray that ends on a leaf a block away and one that
-// crosses the forest (their mean has no halo at depth edges). With rbar that mean, the light becomes
-//   max(gain * l - (gain - keep) * rbar * R, 0):  keep x a uniform glow (r = rbar), more than before for a beam (r > rbar),
-// nothing for air darker than ~(gain - keep) / gain of its surroundings: visible shafts without the veil. rbar = last frame's
-// (vl_veil_down + 2 blur passes at a quarter of the VL resolution, after this pass; low frequency, so one frame late is fine).
 static inline float vlVeilR(float3 light, float3 dir, float dist, constant VlParams &p) {
 	return max(dot(light, float3(0.2126, 0.7152, 0.0722)), 0.0) / (vlMistDepth(dir, min(dist, p.shape.y), p) + 0.5);
 }
@@ -1056,17 +1133,18 @@ fragment VlFoldOut vl_temporal_fold(VlOut in [[stage_in]], constant ShadeFrame &
                                     constant VlState &st [[buffer(1)]], texture2d<half> raw [[texture(0)]], texture2d<half> history [[texture(1)]],
                                     texture2d<half> veil [[texture(2)]], texture2d<half> odRaw [[texture(3)]], texture2d<half> odPrev [[texture(4)]]) {
 	VlFoldOut o;
-	o.history = vlTemporal(in, f, p, raw, history);
+	bool air = p.water2.y < 0.5;
+	bool doOd = p.air8.z != 0.0 && air;
+	float od = 0.0;
+	float3 dir;
+	half4 hist = vlTemporalFoldCore(in, f, p, raw, history, odRaw, odPrev, doOd, p.air8.z > 0.0, od, dir);
+	o.history = shadeBad(hist) ? half4(0.0h, 0.0h, 0.0h, 10000.0h) : hist;
 	float3 light = float3(o.history.rgb);
 	float T = 1.0;
 	float canopy = p.gate.z >= 0.0 ? p.gate.z : max(st.canopy.x, p.tune.x);
 	float mistK = p.light.w * canopy * p.mist.w * p.mist.z;
-	bool air = p.water2.y < 0.5;
 	bool hp = p.hp.w > 0.5 && p.temporal.y < 0.5 && air && canopy > 0.01;
 	if ((mistK > 1e-5 && air) || hp) {
-		float2 fpos = floor(in.position.xy * (p.size.zw / p.size.xy)) + 0.5;
-		float2 ndc = fpos / p.size.zw * 2.0 - 1.0;
-		float3 dir = vlDirection(ndc, f);
 		float dist = float(o.history.a);
 		if (hp) {
 			float l = dot(light, float3(0.2126, 0.7152, 0.0722));
@@ -1088,12 +1166,7 @@ fragment VlFoldOut vl_temporal_fold(VlOut in [[stage_in]], constant ShadeFrame &
 			light += p.mistAmb.rgb * (1.0 - T);
 		}
 	}
-	// (2026-11, C5: air8.z != 0, the air mode only) the forest air dims what is behind it (vl_march's od, filtered over time)
-	float od = 0.0;
-	if (p.air8.z != 0.0 && air) {
-		od = vlOdTemporal(in, f, p, raw, history, odRaw, odPrev, p.air8.z > 0.0);
-		T *= exp2(-1.442695 * od);
-	}
+	if (doOd) T *= exp2(-1.442695 * od);
 	o.od = half(od);
 	o.lightT = half4(half3(min(light, 30000.0)), half(T));
 	return o;

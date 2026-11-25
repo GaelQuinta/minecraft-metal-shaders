@@ -457,9 +457,11 @@ public final class ShadeWater {
 		return state != 0;
 	}
 
-	private static long bakePso, bakeDetailPso, library;
+	private static long bakePso, bakeDetailPso, bakeSwellPso, swellTex, library;
 	private static boolean bakeFailed, bakedOnce;
 	private static int capturesAtBake = -1;
+	/** (2.0.1 opt) ShadeResources entry for the baked 256^2 mipmapped sea swell texture (shade_look.metal waterSwell). */
+	static final int RES_SWELL = 15;
 
 	/** The module's own passes (wave bake, coarse depth): prelude + post (shade_fs_vs) + this prelude. */
 	/** How many scene copies (= frames that drew translucent terrain) so far. */
@@ -493,6 +495,8 @@ public final class ShadeWater {
 		capturesAtBake = captures;
 		if (!recent && bakedOnce) return;
 		if (bakedOnce && Boolean.getBoolean("mcopt.shade.water.devNoBake")) { // (1.2.9 pricing, read every frame: the waves stand still)
+			if (swellTex != 0 && mcopt.metal.shade.ShadeConfig.HDR && mcopt.metal.shade.ShadeRender.ready())
+				mcopt.metal.shade.ShadeRender.resource(RES_SWELL, swellTex);
 			WaterNative.wavesKeep(state);
 			return;
 		}
@@ -516,6 +520,18 @@ public final class ShadeWater {
 				}
 				long det = WaterNative.wavesDetail(ctx, state, DETAIL_SIZE);
 				mcopt.metal.shade.ShadeRender.pass(enc, bakeDetailPso, det, mcopt.metal.shade.ShadeRender.DONT_CARE, null, null, "mcopt shade water: ripple bake");
+			}
+			if (SWELL_CODE && mcopt.metal.shade.ShadeConfig.HDR && mcopt.metal.shade.ShadeRender.ready()
+				&& mcopt.metal.shade.Live.b("mcopt.shade.water.swellBake", true)) {
+				if (bakeSwellPso == 0) {
+					long t0 = mcopt.metal.shade.ShadeCompile.now();
+					bakeSwellPso = mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_bake_swell_fs",
+						mcopt.metal.shade.ShadeRender.RGBA16F, mcopt.metal.shade.ShadeRender.BLEND_NONE);
+					mcopt.metal.shade.ShadeCompile.setup("water", t0);
+				}
+				swellTex = WaterNative.wavesSwell(ctx, state, 256);
+				mcopt.metal.shade.ShadeRender.pass(enc, bakeSwellPso, swellTex, mcopt.metal.shade.ShadeRender.DONT_CARE, null, null, "mcopt shade water: swell bake");
+				mcopt.metal.shade.ShadeRender.resource(RES_SWELL, swellTex);
 			}
 			WaterNative.wavesDone(enc, state);
 		} catch (Throwable e) {

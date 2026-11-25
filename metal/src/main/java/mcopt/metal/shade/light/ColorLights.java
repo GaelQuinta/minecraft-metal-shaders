@@ -77,6 +77,8 @@ public final class ColorLights {
 	private static final boolean[] fineColored = new boolean[FINE];
 	private static final int[] fineLinger = new int[FINE];
 	private static final boolean[] fineNear = new boolean[FINE];
+	/** (2.0.1 opt) Remaining spread steps until each fine slot is guaranteed converged (0 = converged, skip GPU flood). */
+	private static final int[] fineDirty = new int[FINE];
 	/** A slot's coloured flag or the windows changed: the near sets are worked out again. */
 	private static boolean nearDirty = true;
 
@@ -85,6 +87,9 @@ public final class ColorLights {
 	private static final long[] coarseRead = new long[COARSE], coarseUnloaded = new long[COARSE], coarseColored = new long[COARSE];
 	private static final int[] coarseLinger = new int[COARSE];
 	private static final boolean[] coarseNear = new boolean[COARSE];
+	/** (2.0.1 opt) Remaining coarse spread steps until each coarse slot is guaranteed converged (0 = converged, skip GPU flood). */
+	private static final int[] coarseDirty = new int[COARSE];
+	private static final int COARSE_CONVERGE = 16;
 
 	private static final int[] clears = new int[LIST_CAP];
 	private static int clearCount;
@@ -273,6 +278,32 @@ public final class ColorLights {
 		if (clearCount < clears.length) clears[clearCount++] = coarse ? s | 0x80000000 : s;
 	}
 
+	/** (2.0.1 opt) Marks fine slot s and its 26 neighbours as needing up to steps more flood steps to converge. */
+	private static void markFine(int s, int steps) {
+		if (fx0 == Integer.MIN_VALUE) return;
+		int mx = s % FX, mz = (s / FX) % FZ, my = s / (FX * FZ);
+		int wx = mod(mx - fx0, FX), wy = mod(my - fy0, FY), wz = mod(mz - fz0, FZ);
+		for (int dy = -1; dy <= 1; dy++) for (int dz = -1; dz <= 1; dz++) for (int dx = -1; dx <= 1; dx++) {
+			int x = wx + dx, y = wy + dy, z = wz + dz;
+			if (x < 0 || x >= FX || y < 0 || y >= FY || z < 0 || z >= FZ) continue;
+			int n = fineSlot(fx0 + x, fy0 + y, fz0 + z);
+			if (fineDirty[n] < steps) fineDirty[n] = steps;
+		}
+	}
+
+	/** (2.0.1 opt) Marks coarse slot s and its 26 neighbours as needing up to steps more coarse flood steps to converge. */
+	private static void markCoarse(int s, int steps) {
+		if (cx0 == Integer.MIN_VALUE) return;
+		int mx = s % CX, mz = (s / CX) % CZ, my = s / (CX * CZ);
+		int wx = mod(mx - cx0, CX), wy = mod(my - cy0, CY), wz = mod(mz - cz0, CZ);
+		for (int dy = -1; dy <= 1; dy++) for (int dz = -1; dz <= 1; dz++) for (int dx = -1; dx <= 1; dx++) {
+			int x = wx + dx, y = wy + dy, z = wz + dz;
+			if (x < 0 || x >= CX || y < 0 || y >= CY || z < 0 || z >= CZ) continue;
+			int n = coarseSlot(cx0 + x, cy0 + y, cz0 + z);
+			if (coarseDirty[n] < steps) coarseDirty[n] = steps;
+		}
+	}
+
 	/** Each slot to the world section the window puts in it; a slot whose section changed is unread and (if it had light) emptied. */
 	private static void place(int nfx0, int nfy0, int nfz0, int ncx0, int ncy0, int ncz0) {
 		if (nfx0 != fx0 || nfy0 != fy0 || nfz0 != fz0 || ncx0 != cx0 || ncy0 != cy0 || ncz0 != cz0) nearDirty = true;
@@ -292,6 +323,7 @@ public final class ColorLights {
 				MemoryUtil.memSet(idsAddress + (long) s * CELLS, 0, CELLS);
 				if (fineLinger[s] != 0) clear(s, false);
 				fineLinger[s] = 0;
+				markFine(s, LINGER);
 			}
 		}
 		if (ncx0 != cx0 || ncy0 != cy0 || ncz0 != cz0) {
@@ -308,6 +340,7 @@ public final class ColorLights {
 				MemoryUtil.memSet(idsAddress + (long) (FINE + s) * CELLS, 0, CELLS);
 				if (coarseLinger[s] != 0) clear(s, true);
 				coarseLinger[s] = 0;
+				markCoarse(s, COARSE_CONVERGE);
 			}
 		}
 	}
@@ -343,6 +376,7 @@ public final class ColorLights {
 			int x = rx * 4 + (c & 3), z = rz * 4 + ((c >> 2) & 3), y = ry * 4 + (c >> 4);
 			MemoryUtil.memPutByte(base + (y * 16 + z) * 16 + x, coarseBuf[c]);
 		}
+		markCoarse(s, COARSE_CONVERGE);
 	}
 
 	// ---- changes -----------------------------------------------------------------------------------------------------------
@@ -350,10 +384,16 @@ public final class ColorLights {
 	static void sectionChanged(int sx, int sy, int sz) {
 		if (state == 0) return;
 		int s = fineSlot(sx, sy, sz);
-		if (s >= 0 && fineKey[s] == key(sx, sy, sz)) fineState[s] = 0;
+		if (s >= 0 && fineKey[s] == key(sx, sy, sz)) {
+			fineState[s] = 0;
+			markFine(s, LINGER);
+		}
 		int cx = Math.floorDiv(sx, 4), cy = Math.floorDiv(sy, 4), cz = Math.floorDiv(sz, 4);
 		int c = coarseSlot(cx, cy, cz);
-		if (c >= 0 && coarseKey[c] == key(cx, cy, cz)) coarseRead[c] &= ~(1L << (((sy - cy * 4) * 4 + (sz - cz * 4)) * 4 + (sx - cx * 4)));
+		if (c >= 0 && coarseKey[c] == key(cx, cy, cz)) {
+			coarseRead[c] &= ~(1L << (((sy - cy * 4) * 4 + (sz - cz * 4)) * 4 + (sx - cx * 4)));
+			markCoarse(c, COARSE_CONVERGE);
+		}
 	}
 
 	// ---- the frame ---------------------------------------------------------------------------------------------------------
@@ -373,6 +413,8 @@ public final class ColorLights {
 			lastLevel = level;
 			Arrays.fill(fineKey, NONE);
 			Arrays.fill(coarseKey, NONE);
+			Arrays.fill(fineDirty, 0);
+			Arrays.fill(coarseDirty, 0);
 			fx0 = cx0 = Integer.MIN_VALUE;
 			for (int s = 0; s < FINE; s++) if (fineLinger[s] != 0) clear(s, false);
 			for (int s = 0; s < COARSE; s++) if (coarseLinger[s] != 0) clear(s, true);
@@ -396,6 +438,7 @@ public final class ColorLights {
 				MemoryUtil.memByteBuffer(idsAddress + (long) s * CELLS, CELLS).put(0, fineBuf);
 				fineState[s] = 1;
 				fineColored[s] = (f & COLORED) != 0;
+				markFine(s, LINGER);
 			} else {
 				fineState[s] = 2;
 				fineColored[s] = false;
@@ -442,6 +485,7 @@ public final class ColorLights {
 
 	private static void near() {
 		nearDirty = false;
+		boolean[] prevFine = Arrays.copyOf(fineNear, FINE);
 		Arrays.fill(fineNear, false);
 		for (int s = 0; s < FINE; s++) {
 			if (!fineColored[s]) continue;
@@ -453,6 +497,8 @@ public final class ColorLights {
 				fineNear[fineSlot(fx0 + x, fy0 + y, fz0 + z)] = true;
 			}
 		}
+		for (int s = 0; s < FINE; s++) if (fineNear[s] != prevFine[s]) markFine(s, LINGER);
+		boolean[] prevCoarse = Arrays.copyOf(coarseNear, COARSE);
 		Arrays.fill(coarseNear, false);
 		for (int s = 0; s < COARSE; s++) {
 			long bits = coarseColored[s];
@@ -475,6 +521,7 @@ public final class ColorLights {
 				coarseNear[coarseSlot(cx0 + x, cy0 + y, cz0 + z)] = true;
 			}
 		}
+		for (int s = 0; s < COARSE; s++) if (coarseNear[s] != prevCoarse[s]) markCoarse(s, COARSE_CONVERGE);
 	}
 
 	private static void emit(long enc, ByteBuffer h, long t0) {
@@ -484,22 +531,36 @@ public final class ColorLights {
 		for (int i = 0; i < clearCount; i++) MemoryUtil.memPutInt(list + 4L * n++, clears[i]);
 		int nClear = n;
 		clearCount = 0;
+		// one step a frame for the fine slots (a light's 15 levels in ~0.2 s at 80 fps), the coarse ones every other frame (4 cells)
+		// (-Dmcopt.shade.coloredLights.spread=false, live, dev: no spread, to price it apart from the shading's reads)
+		// (2.0.1 opt, mcopt.shade.coloredLights.converge=true: skip converged static slots once their light has settled; 100% bit-identical)
+		boolean spread = Live.b("mcopt.shade.coloredLights.spread", true);
+		boolean converge = Live.b("mcopt.shade.coloredLights.converge", true);
+		boolean coarseStep = spread && (frame & 1) == 0;
 		for (int s = 0; s < FINE; s++) {
 			if (fineNear[s]) fineLinger[s] = frame;
 			else if (fineLinger[s] != 0 && frame - fineLinger[s] >= LINGER) {
 				fineLinger[s] = 0;
+				fineDirty[s] = 0;
 				clear(s, false); // (next frame's list)
 			}
-			if (fineLinger[s] != 0) MemoryUtil.memPutInt(list + 4L * n++, s);
+			if (fineLinger[s] != 0 && (!converge || fineDirty[s] > 0)) {
+				MemoryUtil.memPutInt(list + 4L * n++, s);
+				if (spread && fineDirty[s] > 0) fineDirty[s]--;
+			}
 		}
 		int nFine = n - nClear;
 		for (int s = 0; s < COARSE; s++) {
 			if (coarseNear[s]) coarseLinger[s] = frame;
 			else if (coarseLinger[s] != 0 && frame - coarseLinger[s] >= LINGER) {
 				coarseLinger[s] = 0;
+				coarseDirty[s] = 0;
 				clear(s, true);
 			}
-			if (coarseLinger[s] != 0) MemoryUtil.memPutInt(list + 4L * n++, s | 0x80000000);
+			if (coarseLinger[s] != 0 && (!converge || coarseDirty[s] > 0)) {
+				MemoryUtil.memPutInt(list + 4L * n++, s | 0x80000000);
+				if (coarseStep && coarseDirty[s] > 0) coarseDirty[s]--;
+			}
 		}
 		int nCoarse = n - nClear - nFine;
 
@@ -510,10 +571,7 @@ public final class ColorLights {
 		h.putFloat(64, Live.f("mcopt.shade.coloredLights.strength", 1f, 0f, 1f)).putFloat(68, Live.f("mcopt.shade.coloredLights.glow", 1f, 0f, 3f))
 			.putFloat(72, 16f).putFloat(76, 0f);
 		DynLightNative.clHeader(state, header);
-		// one step a frame for the fine slots (a light's 15 levels in ~0.2 s at 80 fps), the coarse ones every other frame (4 cells)
-		// (-Dmcopt.shade.coloredLights.spread=false, live, dev: no spread, to price it apart from the shading's reads)
-		boolean spread = Live.b("mcopt.shade.coloredLights.spread", true);
-		DynLightNative.clFrame(enc, state, slot, nClear, spread ? nFine : 0, spread && (frame & 1) == 0 ? nCoarse : 0, 1);
+		DynLightNative.clFrame(enc, state, slot, nClear, spread ? nFine : 0, coarseStep ? nCoarse : 0, 1);
 		cpuNanos = System.nanoTime() - t0;
 		lastFine = nFine;
 		lastCoarse = nCoarse;

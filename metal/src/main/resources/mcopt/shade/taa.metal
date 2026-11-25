@@ -176,7 +176,7 @@ static inline TaaOut taauResolve(float2 q, constant TaaParams &p, constant float
 	// 0.06 ms cheaper but flickered 20-25% more in motion).
 	half2 off = half2(float2(base) + 0.5 - pin);        // offset of the base texel's centre from pin, in (-1, 0] (wider at the edges)
 	half3 ox = half3(off.x - 1.0h, off.x, off.x + 1.0h), oy = half3(off.y - 1.0h, off.y, off.y + 1.0h);
-	half3 wx = exp(-2.29h * ox * ox), wy = exp(-2.29h * oy * oy);
+	half3 wx = exp2(-3.30377h * ox * ox), wy = exp2(-3.30377h * oy * oy);
 	half3 sum = 0.0h, m1 = 0.0h, m2 = 0.0h;
 	constexpr sampler texel(coord::pixel, filter::nearest, address::clamp_to_edge);
 	float2 centre = float2(base) + 0.5;

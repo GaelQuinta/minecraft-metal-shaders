@@ -373,14 +373,16 @@ int mc_vl_render(Enc *enc, VlState *s, id<MTLTexture> color, id<MTLTexture> dept
 		id<MTLCommandBuffer> cb = mc_frame_cmd(enc);
 		// (godrays v3) VlParams.air.x (float 88): the air mode; its shade grid first (a camera-centred 64 x 32 x 64 block of cells)
 		int air = s->shadeGridK && s->shadeGrid && paramBytes >= 89 * 4 && local[88] > 0.5f;
+		// (2.0.1 opt) air4.w >= 4.0 skips the shade-grid dispatch on this frame (e.g. odd night frames: updates every 8 frames instead of 4)
+		int runGrid = air && !(paramBytes >= 112 * 4 && local[111] >= 4.0f);
 		// (2026-11) VlParams.air8.z (float 126): the forest air dims the scene (air mode, fold): the march stores its od, the fold
 		// filters it into T (no plain temporal pass then, below)
 		int dim = (flags & 16) != 0 && s->temporalFold && s->odHist[0] && paramBytes >= 127 * 4 && local[88] > 0.5f && local[126] != 0.0f;
 		// (FT2.8, audit idx 6) the canopy factor (1 threadgroup, writes the state buffer) and the shade grid (writes the grid
 		// texture) are independent: one concurrent encoder, so the tiny canopy group overlaps the grid's instead of a pass of its own
-		if ((flags & 1) || air) {
+		if ((flags & 1) || runGrid) {
 			id<MTLComputeCommandEncoder> c = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
-			c.label = air ? @"mcopt shade: VL canopy + shade grid" : @"mcopt shade: VL canopy";
+			c.label = runGrid ? @"mcopt shade: VL canopy + shade grid" : @"mcopt shade: VL canopy";
 			mc_shade_bind_compute(c);
 			[c setBytes:params length:paramBytes atIndex:0];
 			if (flags & 1) {
@@ -388,7 +390,7 @@ int mc_vl_render(Enc *enc, VlState *s, id<MTLTexture> color, id<MTLTexture> dept
 				[c setBuffer:s->state offset:0 atIndex:1];
 				[c dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
 			}
-			if (air) {
+			if (runGrid) {
 				[c setComputePipelineState:s->shadeGridK];
 				[c setTexture:s->shadeGrid atIndex:0];
 				// a quarter of the z slices per frame (VlParams.air4.w, float 111: which; < 0 = all of them, after a reset)

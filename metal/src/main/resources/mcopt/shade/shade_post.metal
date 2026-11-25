@@ -390,19 +390,53 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 		uint2 t1 = t0 + 1u;
 		float dlo = min(min(dq.x, dq.y), min(dq.z, dq.w)), dhi = max(max(dq.x, dq.y), max(dq.z, dq.w));
 		if (dhi > 0.0 && (dlo <= 0.0 || dhi > dlo * 1.25)) {
+			// (2.0.1 opt) hoist shared view-direction phase/radiance constants out of the 4-corner depth-edge loop: all 4 sub-pixel
+			// corners share the same view direction within <0.05 deg, saving 6x shadeHG + 3x redundant E/sky/sR/sM per edge pixel
+			float3 vEdge = normalize(shadeViewRay(uv * 2.0 - 1.0, f.invViewProj));
+			float ycEdge = f.cameraBlock.y + f.cameraFract.y;
+			float nu = dot(vEdge, f.lightDirWorld.xyz);
+			float phR = 0.0596831 * (1.0 + nu * nu);
+			float phM = 0.8 * shadeHG(nu, SHADE_HAZE_MIE_G) + 0.2 * shadeHG(nu, -0.2);
+			float airSun = shadeAirSun(L);
+			float3 E = f.sunColor.rgb * (3.14159265 * airSun);
+			float3 skyE = f.ambientSky.rgb * (0.9 * shadeAirSky(L));
+			float glow = 1.0 + L.fogMisc.w;
+			float aM = L.fogM.w;
+			float msGain = L.user4.w > 0.0 ? L.user4.w : 1.0;
+			float aMScale = aM / (1.0 - 0.5 * aM);
+			float3 sR = (E * phR + skyE) * 2.0;
+			float3 sM = (E * phM * glow * msGain + skyE) * aMScale;
+			float3 sunR = E * (phR * 2.0), sunM = E * (phM * glow * msGain * aMScale);
+			float cave = (1.0 - airSun) * L.eye.x * f.ambientBlock.w;
 			float4 wq = float4((1.0 - fw.x) * (1.0 - fw.y), fw.x * (1.0 - fw.y), (1.0 - fw.x) * fw.y, fw.x * fw.y);
 			float3 Ts = 0.0, Ss = 0.0, Us = 0.0;
 			for (int k = 0; k < 4; k++) {
 				float3 Tk = float3(1.0), Sk = float3(0.0), Uk = float3(0.0);
 				uint2 tk = uint2(k & 1 ? t1.x : t0.x, k & 2 ? t1.y : t0.y);
+				float3 pk = float3(0.0);
+				bool eval = false;
 				if (dq[k] > 0.0) {
-					float3 pk = shadeWorldFromDepth((float2(tk) + 0.5) / dsize, dq[k], f);
+					pk = shadeWorldFromDepth((float2(tk) + 0.5) / dsize, dq[k], f);
 					dkq[k] = length(pk);
 					if (skyHaze) pk = shadeHazeBorderClamp(pk, L);
-					if (dot(pk, pk) > hazeNear) Sk = shadeHazeInscatter(pk, f, L, 1.0, Tk, Uk);
-					if (hazeFade) { float kk = shadeHazeBorderKeep(pk, L); Tk = mix(float3(1.0), Tk, kk); Sk *= kk; Uk *= kk; }
+					eval = dot(pk, pk) > hazeNear;
 				} else if (skyHaze) {
-					Sk = shadeHazeInscatter(shadeHazeSkyEnd(shadeViewRay((float2(tk) + 0.5) / dsize * 2.0 - 1.0, f.invViewProj), L), f, L, 1.0, Tk, Uk);
+					pk = shadeHazeSkyEnd(shadeViewRay((float2(tk) + 0.5) / dsize * 2.0 - 1.0, f.invViewProj), L);
+					eval = true;
+				}
+				if (eval) {
+					float tLen = length(pk);
+					float dy = pk.y / max(tLen, 1e-4);
+					float dR = shadeLayerDepth(ycEdge, dy, tLen, L.fogMisc.x, L.fogR.w);
+					float dM = shadeLayerDepth(ycEdge, dy, tLen, L.fogM.z, L.fogM.y);
+					float3 tauR = L.fogR.rgb * dR;
+					float tauM = L.fogM.x * dM;
+					float3 tau = tauR + tauM;
+					Tk = exp(-tau);
+					float3 w = (1.0 - Tk) / max(tau, 1e-6);
+					Uk = w * (tauR * sunR + tauM * sunM);
+					Sk = w * (tauR * sR + tauM * sM) + (1.0 - Tk) * cave;
+					if (hazeFade && dq[k] > 0.0) { float kk = shadeHazeBorderKeep(pk, L); Tk = mix(float3(1.0), Tk, kk); Sk *= kk; Uk *= kk; }
 				}
 				Ts += Tk * wq[k];
 				Ss += Sk * wq[k];
@@ -507,20 +541,24 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 		c = mix(c, b, saturate(m));
 	}
 	// Purkinje: dim light (scene luminance, not exposed) shifts toward the rods' cool grey
-	lum = shadeLuma(c) / ex;
+	float lc = shadeLuma(c);
+	lum = lc / ex;
 	if (lum < 0.04 && L.grade1.w > 0.0) { // (FT2.8, audit idx 39: elsewhere a mix by 0, the same pixel)
 		float rods = (1.0 - smoothstep(0.004, 0.04, lum)) * L.grade1.w;
-		c = mix(c, float3(shadeLuma(c)) * float3(0.72, 0.88, 1.3), rods);
+		c = mix(c, float3(lc) * float3(0.72, 0.88, 1.3), rods);
+		lc = shadeLuma(c);
 	}
-	// vignette (sparing what is bright)
+	// vignette (sparing what is bright); (2.0.1 opt) sub-bit-exact x^2.4 fit avoids pow(log2+exp2) at full output resolution
 	float2 r = (in.uv - 0.5) * float2(float(scene.get_width()) / float(scene.get_height()), 1.0);
-	float vr = pow(saturate(length(r) * 1.25), 2.4);
-	c *= 1.0 - L.user0.y * vr * (1.0 - 0.5 * saturate(shadeLuma(c) - 1.0)); // (1.1) user0.y: the vignette (0.12 as released)
+	float vx = saturate(length(r) * 1.25);
+	float vr = (vx * vx) * (0.8 * sqrt(vx) + 0.2);
+	float vig = 1.0 - L.user0.y * vr * (1.0 - 0.5 * saturate(lc - 1.0)); // (1.1) user0.y: the vignette (0.12 as released)
+	c *= vig;
 	// vibrance: saturate the less saturated colours more
-	float Y = shadeLuma(c);
+	float Y = lc * vig;
 	float mx = max(max(c.r, c.g), c.b), mn = min(min(c.r, c.g), c.b);
 	float chroma = (mx - mn) / max(mx, 1e-4);
-	c = max(Y + (c - Y) * (1.0 + L.grade0.z * (1.0 - saturate(chroma / 0.6))), 0.0);
+	c = max(Y + (c - Y) * (1.0 + L.grade0.z * (1.0 - saturate(chroma * (1.0 / 0.6)))), 0.0);
 	return c;
 }
 

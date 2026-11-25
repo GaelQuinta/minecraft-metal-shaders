@@ -108,10 +108,14 @@ static float3 shadeLit2(half3 albedo, half3 n, half sky, half block, half shadow
 	// warm fill where the sun doesn't reach: what the sunlit ground and walls around bounce back
 	half3 fill = sun * (half(L.ambientArt.w) * (half(1.0) - shadow * saturate(nl)) * g * g * gate) * half3(L.bounce.rgb);
 	// block light: F(b) = 2.2 b^7 + 0.55 b^2.4 (normalized to 1 at b = 1), a little weaker in daylight
-	half b7 = block * block * block; b7 = b7 * b7 * block;
-	half F = (half(2.2) * b7 + half(0.55) * pow(max(block, half(1e-3)), half(2.4))) * half(1.0 / 2.75);
-	half day = half(saturate(f.sunDirWorld.w * 4.0 + 0.2));
-	half3 torch = half3(f.ambientBlock.xyz) * F * (half(1.0) - half(0.25) * smoothstep(half(0.5), half(1.0), sky) * day);
+	// (2.0.1 opt) outdoor pixels with block == 0 skip pow(block, 2.4) + smoothstep completely (exact in FP16)
+	half3 torch = half3(0.0h);
+	if (block > half(0.0)) {
+		half b7 = block * block * block; b7 = b7 * b7 * block;
+		half F = (half(2.2) * b7 + half(0.55) * pow(max(block, half(1e-3)), half(2.4))) * half(1.0 / 2.75);
+		half day = half(saturate(f.sunDirWorld.w * 4.0 + 0.2));
+		torch = half3(f.ambientBlock.xyz) * F * (half(1.0) - half(0.25) * smoothstep(half(0.5), half(1.0), sky) * day);
+	}
 	half3 minimum = half(f.ambientBlock.w) * mix(half3(0.9h, 1.0h, 1.38h), half3(1.0h), g); // caves: a cool floor
 	if (L.user3.x > 0.0) {
 		// Use the surface's skylight, never the camera's: a bright garden seen through a doorway stays bright.
@@ -164,32 +168,40 @@ static half3 shadeLit2Direct(half3 n, half sky, half shadow, bool thin, bool fol
 // irregular cells, not a lattice). t: the water clock (ShadeFrame.sunPath.w). Shared by the bottom seen through the surface
 // (water.metal shadeWaterCaustics) and, from 1.2.8, the bottom seen from under water (terrain_own.metal).
 #define SHADE_CAUSTIC_COUNT 6
-constant float4 SHADE_CAUSTIC_WAVES[SHADE_CAUSTIC_COUNT] = {
-	//   dir x,  dir z, wavelength, amplitude
-	float4( 0.940,  0.342, 2.60, 0.018),
-	float4(-0.276,  0.961, 2.10, 0.015),
-	float4( 0.454, -0.891, 1.70, 0.012),
-	float4(-0.866, -0.500, 1.37, 0.0095),
-	float4( 0.643,  0.766, 1.11, 0.0075),
-	float4(-0.985,  0.174, 0.89, 0.006),
+// (2.0.1 opt) precomputed caustic wave constants: xy = dir, z = k = 2pi/wl, w = omega (rounded to whole turns/4096s)
+constant float4 SHADE_CAUSTIC_K[SHADE_CAUSTIC_COUNT] = {
+	float4( 0.940,  0.342, 2.41660973, 2.67833043),
+	float4(-0.276,  0.961, 2.99199300, 2.97900703),
+	float4( 0.454, -0.891, 3.69599135, 3.31190018),
+	float4(-0.866, -0.500, 4.58626664, 3.68928179),
+	float4( 0.643,  0.766, 5.66052730, 4.09887836),
+	float4(-0.985,  0.174, 7.05975876, 4.57597128),
+};
+// x = a * k * k, y = a * 14.0, z = phase
+constant float3 SHADE_CAUSTIC_A[SHADE_CAUSTIC_COUNT] = {
+	float3(0.10512004, 0.2520, 0.0),
+	float3(0.13428033, 0.2100, 1.9),
+	float3(0.16392423, 0.1680, 3.8),
+	float3(0.19982147, 0.1330, 5.7),
+	float3(0.24031177, 0.1050, 7.6),
+	float3(0.29904116, 0.0840, 9.5),
 };
 
 static float shadeCausticFocus(float2 x, float t, float kk) {
-	float3 hs = 0.0; // Hessian: xx, zz, xz
+	half3 hs = 0.0h; // Hessian: xx, zz, xz
 	for (int i = 0; i < SHADE_CAUSTIC_COUNT; i++) {
-		float4 w = SHADE_CAUSTIC_WAVES[i];
-		float k = 6.2831853 / w.z;
-		// (the angular speed rounded to whole turns per 4096 s, the clock's wrap: water.metal shadeWaterOmega)
-		float om = rint(sqrt(9.81 * k) * 0.55 * (4096.0 / 6.2831853)) * (6.2831853 / 4096.0);
-		float th = k * dot(w.xy, x) + om * t + float(i) * 1.9;
+		float4 w = SHADE_CAUSTIC_K[i];
+		float3 a = SHADE_CAUSTIC_A[i];
+		float th = w.z * dot(w.xy, x) + w.w * t + a.z;
 		float c;
 		float s = sincos(th, c);
-		float e = exp(s - 1.0);
-		float q = w.w * k * k * (c * c - s) * e;
-		hs += q * float3(w.x * w.x, w.y * w.y, w.x * w.y);
-		x -= w.xy * (c * e * w.w * 14.0); // strong mutual warping: irregular cells
+		half e = exp2(half(s - 1.0) * 1.442695h);
+		half q = half(a.x) * half(c * c - s) * e;
+		half2 wd = half2(w.xy);
+		hs += q * half3(wd.x * wd.x, wd.y * wd.y, wd.x * wd.y);
+		x -= w.xy * (c * float(e) * a.y); // strong mutual warping: irregular cells
 	}
-	float det = (1.0 + kk * hs.x) * (1.0 + kk * hs.y) - kk * kk * hs.z * hs.z;
+	float det = (1.0 + kk * float(hs.x)) * (1.0 + kk * float(hs.y)) - kk * kk * float(hs.z) * float(hs.z);
 	return min(1.0 / max(abs(det), 0.18), 4.0);
 }
 
@@ -241,7 +253,8 @@ static half shadeShadow2(depth2d_array<float> map, sampler cmp, constant ShadeFr
 	float m0 = max(abs(c.x), abs(c.y));
 	if (c.z <= 0.0 || c.z >= 1.0) m0 = 2.0;
 	float nearVis = 1.0;
-	if (m0 < 1.0 && length(p) > SHADE_PCSS_FAR) {
+	float p2 = dot(p, p);
+	if (m0 < 1.0 && p2 > SHADE_PCSS_FAR * SHADE_PCSS_FAR) {
 		// past PCSS range penumbrae are about a pixel wide: M1's 4-tap tent
 		float mm;
 		nearVis = shadeShadowCascade(map, cmp, 0u, f.shadowViewProj[0], p, dir * f.cascadeSplits.z, texelUv, 0.75, mm);
@@ -259,8 +272,8 @@ static half shadeShadow2(depth2d_array<float> map, sampler cmp, constant ShadeFr
 #else
 		float rot = shadeNoise(pixel, 0) * 6.2831853;
 #endif
-		float2 cs = float2(cos(rot), sin(rot));
-		float2x2 R = float2x2(cs.x, cs.y, -cs.y, cs.x);
+		float csX, csY = sincos(rot, csX);
+		float2x2 R = float2x2(csX, csY, -csY, csX);
 		constexpr sampler pt(filter::nearest, address::clamp_to_edge);
 		float2 o = R * float2(0.7, 0.25) * searchTex * texelUv;
 		float4 d0 = map.gather(pt, uv + o, 0u);
@@ -286,8 +299,8 @@ static half shadeShadow2(depth2d_array<float> map, sampler cmp, constant ShadeFr
 		}
 		// (FT2.8, audit idx 98) faded into M1's tent over the last 6 blocks before SHADE_PCSS_FAR, not a step: a ring where the
 		// shadows' softness dropped 2-3x at 40 blocks
-		float lp = length(p);
-		if (lp > SHADE_PCSS_FAR - 6.0) {
+		if (p2 > (SHADE_PCSS_FAR - 6.0) * (SHADE_PCSS_FAR - 6.0)) {
+			float lp = sqrt(p2);
 			float mt;
 			float tent = shadeShadowCascade(map, cmp, 0u, f.shadowViewProj[0], p, dir * f.cascadeSplits.z, texelUv, 0.75, mt);
 			nearVis = mix(nearVis, tent, smoothstep(SHADE_PCSS_FAR - 6.0, SHADE_PCSS_FAR, lp));
@@ -520,9 +533,11 @@ static inline float3 shadeAerialSunGlow(float3 p, texture2d<half> lut, sampler s
 // Planck's law sampled at 3 wavelengths (610, 550, 465 nm), normalized to luminance 1, then pulled toward white (three
 // samples over-saturate): a star's colour from its temperature.
 static inline float3 shadeBlackbody(float kelvin) {
-	const float3 lam = float3(610e-9, 550e-9, 465e-9);
-	float3 e = exp(1.4388e-2 / (lam * kelvin)) - 1.0;
-	float3 b = 1.0 / (lam * lam * lam * lam * lam * e);
+	// (2.0.1 opt) precomputed c2*log2(e)/lam and relative 1/lam^5 weights using hardware exp2
+	const float3 kLog = float3(34028.05, 37740.20, 44638.94); // 1.4388e-2 * log2(e) / lam
+	const float3 wLam = float3(0.594726, 1.000000, 2.313734); // (550/lam)^5
+	float3 e = exp2(kLog / kelvin) - 1.0;
+	float3 b = wLam / e;
 	b /= max(dot(b, float3(0.2126, 0.7152, 0.0722)), 1e-30);
 	return mix(float3(1.0), b, 0.55);
 }
@@ -539,6 +554,11 @@ static float3 shadeStars(float3 s, float airmass, float time, float sigmaCells) 
 	const float N = 420.0;
 	float2 cell = (uv * 0.5 + 0.5) * N;
 	float2 base = floor(cell - 0.5);
+	float sig2 = sigmaCells * sigmaCells;
+	float maxR2 = 9.0 * sig2;
+	float inv2Sig2 = -0.72134752 / sig2; // -0.5 * log2(e) / sig2
+	float t7 = time * 7.0;
+	float twAmp = 0.35 * min(airmass, 4.0);
 	float3 sum = float3(0.0);
 	for (int j = 0; j < 4; j++) {
 		int2 c = int2(base) + int2(j & 1, j >> 1);
@@ -547,17 +567,17 @@ static float3 shadeStars(float3 s, float airmass, float time, float sigmaCells) 
 		float2 pos = float2(c) + 0.2 + 0.6 * float2(shadeHash01(h ^ 0x68e31da4u), shadeHash01(h ^ 0xb5297a4du));
 		float2 dd = cell - pos;
 		float r2 = dot(dd, dd);
-		float sig2 = sigmaCells * sigmaCells;
-		if (r2 > 9.0 * sig2) continue;
+		if (r2 > maxR2) continue;
 		float mag = -1.0 + 7.5 * pow(shadeHash01(h ^ 0x1b56c4e9u), 0.45);
 		float flux = exp2(-1.328771 * mag); // 10^(-0.4 m)
 		float pick = shadeHash01(h ^ 0x7f4a7c15u);
-		float kelvin = pick < 0.55 ? mix(3200.0, 5200.0, pick / 0.55) : pick < 0.9 ? mix(5200.0, 7500.0, (pick - 0.55) / 0.35)
-			: mix(7500.0, 15000.0, (pick - 0.9) / 0.1);
-		float ph = shadeHash01(h ^ 0x2545f491u) * 64.0;
-		float tw0 = shadeHash01(h ^ uint(floor(time * 7.0 + ph))), tw1 = shadeHash01(h ^ uint(floor(time * 7.0 + ph) + 1.0));
-		float twinkle = 1.0 + 0.35 * min(airmass, 4.0) * (mix(tw0, tw1, fract(time * 7.0 + ph)) - 0.5);
-		sum += shadeBlackbody(kelvin) * (flux * twinkle * exp(-0.5 * r2 / sig2));
+		float kelvin = pick < 0.55 ? mix(3200.0, 5200.0, pick * (1.0 / 0.55)) : pick < 0.9 ? mix(5200.0, 7500.0, (pick - 0.55) * (1.0 / 0.35))
+			: mix(7500.0, 15000.0, (pick - 0.9) * 10.0);
+		float ph = t7 + shadeHash01(h ^ 0x2545f491u) * 64.0;
+		float pf = floor(ph);
+		float tw0 = shadeHash01(h ^ uint(pf)), tw1 = shadeHash01(h ^ uint(pf + 1.0));
+		float twinkle = 1.0 + twAmp * (mix(tw0, tw1, ph - pf) - 0.5);
+		sum += shadeBlackbody(kelvin) * (flux * twinkle * exp2(r2 * inv2Sig2));
 	}
 	return sum;
 }
@@ -637,7 +657,7 @@ static float3 shadeSkyRadiance2(float3 dir, texture2d<half> lut, sampler s, cons
 	}
 	bool procedural = shadeFeature(L, SHADE_FEATURE_STARS);
 	float night = L.night.x;
-	if (procedural && (night > 0.0 || dot(dir, f.moonDirWorld.xyz) > 0.999)) {
+	if (procedural && dir.y > -0.03 && (night > 0.0 || dot(dir, f.moonDirWorld.xyz) > 0.999)) {
 		// star space (wheels with the tilted sun path)
 		float3 st = float3(dot(L.celestial[0].xyz, dir), dot(L.celestial[1].xyz, dir), dot(L.celestial[2].xyz, dir));
 		float clear = (1.0 - rain) * above;

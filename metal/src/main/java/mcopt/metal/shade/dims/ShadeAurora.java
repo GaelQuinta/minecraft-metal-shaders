@@ -39,7 +39,8 @@ public final class ShadeAurora {
 	 * The texture's size as a fraction of the output (window framebuffer) size: mcopt.shade.aurora.scale (0.5) x the preset's
 	 * render scale (TAAU; 1 without it), i.e. half the world's render size in each direction (balanced 0.8: 0.4, 1210x786).
 	 */
-	static final float SCALE = Math.max(0.1f, Math.min(1f, Float.parseFloat(System.getProperty("mcopt.shade.aurora.scale", "0.5"))
+	// (2.0.1 opt) 0.35 (was 0.5): smooth atmospheric aurora ribbons look identical when bilinearly upscaled at ~2x fewer night pixels
+	static final float SCALE = Math.max(0.1f, Math.min(1f, Float.parseFloat(System.getProperty("mcopt.shade.aurora.scale", "0.35"))
 		* (mcopt.metal.shade.taa.TaaConfig.ENABLED ? mcopt.metal.shade.taa.TaaConfig.SCALE : 1f)));
 
 	/**

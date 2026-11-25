@@ -47,7 +47,7 @@ public final class ShadeXdr {
 	// knee 3 / 4 octaves (the first cut) left lava, glowstone and torches under SDR white in every dumped scene (max 1.2x):
 	// 2.0 / 3.5 lets emissive cores and the sun use the headroom while lit surfaces (snow at noon) stay within ~1.1x
 	static final float KNEE = DimsConfig.floatFlag("mcopt.shade.xdrKnee", 2.0f, 0.5f, 16f), RANGE = 3.5f;
-	private static float testClock;
+	private static float testClock, headroomLogAt;
 
 	/** (1.1) live: mcopt.shade.xdrKnee (KNEE at startup; 0.5..16): the final pass's knee and the bloom's hot flag follow it. */
 	static float knee() {
@@ -150,8 +150,9 @@ public final class ShadeXdr {
 			// (1.1) mcopt.shade.xdrPeak live (1..16): applies at the next query (0.25 s), eased like a headroom change
 			float cap = mcopt.metal.shade.Live.f("mcopt.shade.xdrPeak", DimsConfig.XDR_PEAK, 1f, 16f);
 			target = edrHere ? Math.max(1f, Math.min(headroomNow, cap)) : 1f;
-			if (Math.abs(headroomNow - loggedHeadroom) > 0.1f) {
+			if (loggedHeadroom < 0f || (Math.abs(headroomNow - loggedHeadroom) > 0.5f && testClock - headroomLogAt >= 10f)) {
 				loggedHeadroom = headroomNow;
+				headroomLogAt = testClock;
 				System.out.println("[mcopt] shade: XDR headroom " + headroomNow + " (potential " + potential + "), highlight peak " + target);
 			}
 		}

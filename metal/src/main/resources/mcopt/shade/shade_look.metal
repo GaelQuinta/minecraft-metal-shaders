@@ -126,7 +126,7 @@ struct ShadeResources {
 	texture2d<half> cloudShadow; // 12 M3 clouds: R16F cumulus transmittance toward the light (ShadeLook.cloudShadowVP), 256^2
 	texture2d<half> cloudDome;   // 13 M3 clouds: RGBA16F (scattered light before exposure, transmittance) by direction, upper hemisphere
 	texture2d<half> cloudScreen; // 14 M3 clouds: RGBA16F the same for this frame's view (no TAA jitter), reconstructed history
-	texture2d<half> reserved15;
+	texture2d<half> waterSwell;  // 15 (2.0.1 opt) RGBA16F 256^2 mipmapped baked sea swell (xy unit slope, z height, w |slope|^2 for Toksvig variance)
 };
 
 // (FT2.9, mcopt.shade.caveAir) the share of the sky's light that reaches the air around the camera: from the sky light at the eye

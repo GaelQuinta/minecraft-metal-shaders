@@ -255,6 +255,7 @@ public final class ShadeCompile {
 			if (mcopt.metal.shade.water.ShadeWater.BAKE) {
 				water.add(Pso.fullScreen("shade_water_bake_fs", ShadeRender.RGBA16F));
 				if (mcopt.metal.shade.water.ShadeWater.DETAIL) water.add(Pso.fullScreen("shade_water_bake_detail_fs", ShadeRender.RGBA16F));
+				if (mcopt.metal.shade.water.ShadeWater.SWELL_CODE) water.add(Pso.fullScreen("shade_water_bake_swell_fs", ShadeRender.RGBA16F));
 			}
 			w.add(Map.entry("water", () -> warm(ctx, mcopt.metal.shade.water.ShadeWater.librarySource(), water.toArray(Pso[]::new))));
 		}

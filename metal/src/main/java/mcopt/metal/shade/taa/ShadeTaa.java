@@ -214,7 +214,9 @@ public final class ShadeTaa {
 					System.clearProperty("mcopt.shade.drs.restart");
 					DRS.restart(TaaConfig.SCALE);
 				}
-				this.scale = DRS.update();
+				boolean focused = Minecraft.getInstance().isWindowActive();
+				DRS.setPaused(!focused);
+				this.scale = focused ? DRS.update() : DRS.scale();
 			}
 		} else this.scale = FIXED_FOR_DH ? Math.min(TaaConfig.SCALE, this.allocScale) : TaaConfig.SCALE;
 		this.updateSize();

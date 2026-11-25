@@ -740,7 +740,7 @@ public final class ShadowPass {
 		// in heavy rain on performance/balanced (ShadeWeather.tintHidden) the receivers' tint has faded out: no pass either
 		// (1.1) mcopt.shade.colorShadows live off (ShadeWeather.colorShadows; the map exists only when it was on at startup): no tint
 		// pass, and the receivers are told there are no casters (ssr.w = 0, an empty rectangle), so they skip the lookup
-		boolean colour = mcopt.metal.shade.weather.ShadeWeather.colorShadows();
+		boolean colour = mcopt.metal.shade.weather.ShadeWeather.colorShadows() && !this.lightIsMoon; // (2.0.1 opt) moonlight is too dim for stained-glass colour tinting
 		if (this.tintMap != 0 && !colour) mcopt.metal.shade.ShadeBindings.setShadowTint(0, 1f, 1f, -1f, -1f);
 		boolean tint = this.tintMap != 0 && colour && (Integer.getInteger("mcopt.shade.dev", 0) & 16384) == 0 && !mcopt.metal.shade.weather.ShadeWeather.tintHidden();
 		int tintDev = ShadowConfig.tintDev();

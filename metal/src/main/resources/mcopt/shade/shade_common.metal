@@ -652,6 +652,32 @@ static inline float shadeShadowCascadeDisc(depth2d_array<float> map, sampler cmp
 		if (db > 0.02) r = clamp(db * contact, 0.1, r);
 	}
 	float s = 0.0;
+	// (2.0.1 opt) precomputed Vogel disc offsets & radii rotated once per pixel (1 sincos, 0 sqrt instead of 4 sincos + 4 sqrt)
+	float cs;
+	float sn = sincos(turn * 2.39996323, cs);
+	float3 rax = (ax * cs + az * sn) * r, raz = (az * cs - ax * sn) * r;
+	float zStep = contact > 0.0 ? zPerBlock * (r / contact) : 0.0;
+#if SHADE_WSOFT_TAPS == 4
+	const float3 disc[4] = {
+		float3( 0.35355339,  0.00000000, 0.35355339),
+		float3(-0.45154434,  0.41365165, 0.61237244),
+		float3( 0.06911610, -0.78754236, 0.79056942),
+		float3( 0.56917150,  0.74232325, 0.93541435),
+	};
+	for (int i = 0; i < 4; i++) {
+		float3 c = c0.xyz + rax * disc[i].x + raz * disc[i].y;
+		s += map.sample_compare(cmp, shadeShadowUV(c), layer, c.z + zStep * disc[i].z);
+	}
+#elif SHADE_WSOFT_TAPS == 2
+	const float3 disc[2] = {
+		float3( 0.50000000,  0.00000000, 0.50000000),
+		float3(-0.63858017,  0.58499177, 0.86602540),
+	};
+	for (int i = 0; i < 2; i++) {
+		float3 c = c0.xyz + rax * disc[i].x + raz * disc[i].y;
+		s += map.sample_compare(cmp, shadeShadowUV(c), layer, c.z + zStep * disc[i].z);
+	}
+#else
 	// (1.2.9 water phase 2, SHADE_WSOFT_TAPS: fewer taps, the per-pixel, per-frame turn spreads them for the TAA; 4 = as before)
 	for (int i = 0; i < SHADE_WSOFT_TAPS; i++) {
 		float a = (float(i) + turn) * 2.39996323, d = r * sqrt((float(i) + 0.5) * (1.0 / SHADE_WSOFT_TAPS));
@@ -659,6 +685,7 @@ static inline float shadeShadowCascadeDisc(depth2d_array<float> map, sampler cmp
 		float ref = contact > 0.0 ? c.z + zPerBlock * (d / contact) : c.z;
 		s += map.sample_compare(cmp, shadeShadowUV(c), layer, ref);
 	}
+#endif
 	return s * (1.0 / SHADE_WSOFT_TAPS);
 }
 

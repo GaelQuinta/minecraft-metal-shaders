@@ -227,8 +227,9 @@ kernel void shade_dl_irr(uint3 t0 [[thread_position_in_grid]], constant ShadeDyn
 // Diffuse plus a glossy highlight (water, wet or polished surfaces): v = unit direction from p toward the camera,
 // shininess the Blinn-Phong exponent, spec its strength (Fresnel-weighted by the caller). Returns diffuse in rgb as
 // shadeDynamicLights and adds the specular radiance factor (same units) into specOut.
-static float3 shadeDynamicLightsSpec(constant ShadeDynLights &D, texture3d<half> vis, float3 p, float3 n, half block, float3 v, float shininess,
-                                     thread float3 &specOut) {
+// (2.0.1 opt) noinline: keeps dynamic-light loop registers out of the register-bound water fragment shader (98% of ocean pixels skip it).
+static __attribute__((noinline)) float3 shadeDynamicLightsSpec(constant ShadeDynLights &D, texture3d<half> vis, float3 p, float3 n, half block, float3 v, float shininess,
+                                      thread float3 &specOut) {
 	uint2 m = shadeDlMask(D, p);
 	specOut = float3(0.0);
 	if ((m.x | m.y) == 0u) return float3(0.0);
