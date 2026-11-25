@@ -215,9 +215,13 @@ public final class ShadeTaa {
 					System.clearProperty("mcopt.shade.drs.restart");
 					DRS.restart(TaaConfig.SCALE);
 				}
-				boolean focused = Minecraft.getInstance().isWindowActive();
-				DRS.setPaused(!focused);
-				this.scale = focused ? DRS.update() : DRS.scale();
+				Minecraft mc = Minecraft.getInstance();
+				var screen = mc.gui.screen();
+				boolean pauseDrs = !mc.isWindowActive()
+					|| (mcopt.metal.shade.Live.b("mcopt.shade.drsPauseMenu", true)
+						&& (mc.isPaused() || (screen != null && !(screen instanceof net.minecraft.client.gui.screens.ChatScreen))));
+				DRS.setPaused(pauseDrs);
+				this.scale = pauseDrs ? DRS.scale() : DRS.update();
 			}
 		} else this.scale = FIXED_FOR_DH ? Math.min(TaaConfig.SCALE, this.allocScale) : TaaConfig.SCALE;
 		this.updateSize();

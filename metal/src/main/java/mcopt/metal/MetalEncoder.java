@@ -281,7 +281,7 @@ final class MetalEncoder implements CommandEncoderBackend {
 		if (now - this.statStart < 1_000_000_000L) return;
 		double frameMs = (now - this.statStart) / 1e6 / this.statFrames;
 		System.out.printf("mcopt-metal stats: %d fps, %.3f ms/frame, %.3f ms of it waiting on the GPU, %d presents%s%n", this.statFrames,
-			frameMs, this.waitNanos / 1e6 / this.statFrames, this.statPresents, (PRESENT_QUEUE ? " (queued" + (PRESENT_ACQUIRE ? ", acquired on the present side" : "") + "; skipped so far " + Native.presentSkipped() + ", dropped " + Native.presentDropped() + ")" : "")
+			frameMs, this.waitNanos / 1e6 / this.statFrames, this.statPresents, (FrameWait.isVsyncDirect() ? " (direct vsync)" : PRESENT_QUEUE ? " (queued" + (PRESENT_ACQUIRE ? ", acquired on the present side" : "") + "; skipped so far " + Native.presentSkipped() + ", dropped " + Native.presentDropped() + ")" : "")
 			+ (MetalSurface.PACE_ADAPT ? String.format(" (pace margin +%.2f ms learned)", Native.paceExtraMs()) : ""));
 		if (MetalTerrain.OCC) {
 			long[] t = this.terrain.lastCompletedCounts();
@@ -850,14 +850,14 @@ final class MetalEncoder implements CommandEncoderBackend {
 		}
 	}
 
-	void presentTexture(long drawable, GpuTextureView view) {
+	void presentTexture(long drawable, GpuTextureView view, boolean direct) {
 		MetalEvents.Operation event = MetalEvents.begin("present", this.submitIndex, 0);
 		try {
 			this.trace("present", view);
 			this.presentedThisSubmit = true;
 			this.flushClear(view.texture());
 			this.discardMainDepth();
-			if (PRESENT_QUEUE) {
+			if (!direct && PRESENT_QUEUE) {
 				// the frame's command buffer only fills a staging slot; the present goes out on a second queue after the commit
 				if (Native.presentQueued(this.enc, drawable, ((MetalTexture.View) view).handle) == 0) return; // slot still being read: skip
 				if (GPU_TIMES) GpuTimes.present(this.submitIndex, drawable);

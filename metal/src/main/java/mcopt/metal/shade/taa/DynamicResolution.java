@@ -120,10 +120,19 @@ public final class DynamicResolution {
 		return this.average * 1e3;
 	}
 
-	/** (2.0.1 fix) Pause DRS timing updates while unfocused (e.g. macOS screenshot overlay) so focus hitches don't tank scale. */
+	/** (2.0.1e) Pause DRS timing updates while unfocused or paused/in a menu so non-gameplay GPU times don't skew render scale. */
 	public void setPaused(boolean paused) {
-		if (paused && !this.paused) this.skip = Math.max(this.skip, IN_FLIGHT + 2);
-		else if (!paused && this.paused) this.skip = Math.max(this.skip, IN_FLIGHT + 2);
+		if (paused && !this.paused) {
+			this.skip = Math.max(this.skip, IN_FLIGHT + 2);
+		} else if (!paused && this.paused) {
+			this.skip = Math.max(this.skip, IN_FLIGHT + 2);
+			this.outlierStreak = 0;
+			this.statusStart = 0;
+			this.statusFrames = 0;
+			this.statusChanges = 0;
+			this.statusMin = Float.MAX_VALUE;
+			this.statusMax = 0f;
+		}
 		this.paused = paused;
 	}
 

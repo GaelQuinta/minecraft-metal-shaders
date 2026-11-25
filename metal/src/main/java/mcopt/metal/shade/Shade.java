@@ -90,6 +90,11 @@ public final class Shade {
 		// that nextDrawable blocks the render thread (the 1% lows). Present (and acquire) on mcopt's second queue instead,
 		// unless the user chose otherwise.
 		if (System.getProperty("mcopt.metal.presentQueue") == null) System.setProperty("mcopt.metal.presentQueue", "acquire");
+		// (2.0.1e) With VSync (FIFO) on, present directly on the render thread instead of routing through presentQueue=acquire
+		// (which bypasses VSync back-pressure and drops/skips frames while reporting 120 fps), and avoid fighting hardware VSync
+		// with a drifting software frame cap when framerateLimit >= the display's refresh rate. VSync-off is unchanged.
+		if (System.getProperty("mcopt.metal.vsyncDirect") == null) System.setProperty("mcopt.metal.vsyncDirect", "true");
+		if (System.getProperty("mcopt.metal.vsyncLimiter") == null) System.setProperty("mcopt.metal.vsyncLimiter", "true");
 		// (1.1.1, macOS 27) VSync off: the paced presents (one per refresh) still wait for a vblank, as with VSync. Without display
 		// sync a present that goes direct to the display (fullscreen) can land mid-scanout (tearing), and on the 120 Hz panel
 		// paced presents reached the screen in pairs (MetalSurface.PACE_SYNC). The game still renders every frame. And the

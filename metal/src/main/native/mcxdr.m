@@ -197,6 +197,19 @@ uint32_t mc_layer_display(CAMetalLayer *layer) {
 	}
 }
 
+// (2.0.1e) Top refresh rate (Hz) of the display the layer's window is on (e.g. 120 on ProMotion, 144 on an external monitor,
+// 60 on an SDR panel); 0 when unknown or off the main thread. Used with direct VSync so a software framerateLimit >= refresh
+// doesn't fight hardware VSync.
+int mc_layer_refresh_hz(CAMetalLayer *layer) {
+	if (!layer || ![NSThread isMainThread]) return 0;
+	@autoreleasepool {
+		NSScreen *s = layerScreen(layer);
+		if (!s) return 0;
+		NSInteger hz = s.maximumFramesPerSecond;
+		return hz > 0 ? (int) hz : 0;
+	}
+}
+
 // (1.1.1) One line for bug reports (latest.log): the OS version and build, Low Power Mode, and every screen (pixels, top
 // refresh rate, potential EDR headroom), the window's marked with *.
 void mc_system_info(CAMetalLayer *layer, char *out, int cap) {
