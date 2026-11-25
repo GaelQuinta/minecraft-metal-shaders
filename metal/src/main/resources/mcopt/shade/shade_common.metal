@@ -321,6 +321,7 @@ static inline float3 shadeGoldenHour(float dirY, float sunY, float rain) {
 // peach on the sides, and opposite the sun a thin rose-lilac band (the Belt of Venus) over a cooler horizon.
 static inline float3 shadeSunsetGrade(float3 dir, float3 sun, float sunY, float rain) {
 	float w = (1.0 - smoothstep(0.02, 0.32, sunY)) * smoothstep(-0.16, -0.02, sunY) * (1.0 - rain);
+	if (w <= 0.0) return float3(1.0);
 	float h = 1.0 - saturate(abs(dir.y));
 	float dl = dot(dir.xz, dir.xz), sl = dot(sun.xz, sun.xz);
 	float toward = dl > 1e-8 && sl > 1e-8 ? dot(dir.xz, sun.xz) * rsqrt(dl * sl) * 0.5 + 0.5 : 0.5;
@@ -705,7 +706,8 @@ static half shadeShadowSoft(depth2d_array<float> map, sampler cmp, constant Shad
 	// the near cascade's detail is what the softening removes anyway). Points it doesn't cover keep shadeShadow.
 	float m1;
 	float far = shadeShadowCascadeDisc(map, cmp, 1u, f.shadowViewProj[1], p, dir * f.cascadeSplits.w, r, turn, m1, contact, L);
-	if (m1 >= 1.0) return shadeShadow(map, cmp, f, p, n, false); // (as a call, not inlined: +0.2 ms over a lake, price-14 2026-11-10)
+	// (2.0.1 opt) outside the far cascade (which encloses the near cascade): always lit; removes dead shadeShadow fallback from water
+	if (m1 >= 1.0) return half(1.0);
 	return half(mix(far, 1.0, smoothstep(0.85, 1.0, m1)));
 }
 

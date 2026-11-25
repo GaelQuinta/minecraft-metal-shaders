@@ -38,7 +38,7 @@ public final class ShadeDiag {
 	private static final String[] THERMAL = {"nominal", "fair", "serious", "critical"};
 	private static @Nullable MethodHandle thermal;
 	private static boolean linked;
-	private static long start, last;
+	private static long start, last, lastThermalPoll;
 	private static int frames, hitches, lastThermal = -1;
 	private static long worst, gcStart, gcCountStart;
 
@@ -61,10 +61,15 @@ public final class ShadeDiag {
 		frames++;
 		if (ft > HITCH) hitches++;
 		worst = Math.max(worst, ft);
-		int th = thermal();
-		if (th != lastThermal) {
-			if (lastThermal >= 0 || th > 0) System.out.println("[mcopt] shade: diag: macOS thermal state " + name(th));
-			lastThermal = th;
+		// (2.0.1 opt) poll macOS thermal state at 1 Hz instead of every frame (avoids 100+ FFM/ObjC calls/s)
+		int th = lastThermal;
+		if (lastThermal < 0 || now - lastThermalPoll >= 1_000_000_000L) {
+			lastThermalPoll = now;
+			th = thermal();
+			if (th != lastThermal) {
+				if (lastThermal >= 0 || th > 0) System.out.println("[mcopt] shade: diag: macOS thermal state " + name(th));
+				lastThermal = th;
+			}
 		}
 		if (now - start < PERIOD) return;
 		long[] gc = gc();

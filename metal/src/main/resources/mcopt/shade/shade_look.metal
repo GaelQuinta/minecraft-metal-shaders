@@ -151,9 +151,11 @@ static inline float3 shadeRows(const constant float4 *m, float3 c) {
 	return float3(dot(m[0].xyz, c), dot(m[1].xyz, c), dot(m[2].xyz, c));
 }
 
+// (2.0.1 opt) share log2(x)*t.x across both powers: 3 log2 + 6 exp2 instead of 6 log2 + 6 exp2 (-17.8M log2/frame at Retina)
 static inline float3 shadeLottes(float3 x, float4 t) {
-	float3 xa = pow(max(x, 1e-7), float3(t.x));
-	float3 xad = pow(max(x, 1e-7), float3(t.x * t.y));
+	float3 lx = log2(max(x, 1e-7)) * t.x;
+	float3 xa = exp2(lx);
+	float3 xad = exp2(lx * t.y);
 	return xa / (xad * t.z + t.w);
 }
 

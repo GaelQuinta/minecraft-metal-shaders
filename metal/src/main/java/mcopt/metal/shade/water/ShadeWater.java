@@ -402,7 +402,11 @@ public final class ShadeWater {
 		if (SMOOTH && SSR_QUAD && Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrLane", "true"))) b.append("#define SHADE_SSR_LANE 1\n");
 		if (SMOOTH) b.append("#define SHADE_WATER_SMOOTH 1\n"); // (2026-11-02: calm and ripple are read every frame, ShadeWaterParams.swell2.zw)
 		if (GLINT_GRAZE) b.append("#define SHADE_WATER_GLINT_GRAZE 1\n");
-		if (SWELL_CODE) b.append("#define SHADE_WATER_SWELL 1\n"); // (2026-11-02, water round 1)
+		if (SWELL_CODE) {
+			b.append("#define SHADE_WATER_SWELL 1\n"); // (2026-11-02, water round 1)
+			if (mcopt.metal.shade.ShadeConfig.HDR && Boolean.parseBoolean(System.getProperty("mcopt.shade.water.swellBake", "true")))
+				b.append("#define SHADE_WATER_SWELL_BAKED 1\n");
+		}
 		if (GLITTER_CODE) b.append("#define SHADE_WATER_GLITTER 1\n");
 		if (BAKE) b.append("#define SHADE_WAVE_BAKE 1\n#define SHADE_WAVE_BAKE_SIZE ").append(BAKE_SIZE).append('\n');
 		// TAAU (mcopt.shade.taa): the world draws into a live sub-rect of fixed-size targets (so do the copies), and the SSR
@@ -459,7 +463,7 @@ public final class ShadeWater {
 
 	private static long bakePso, bakeDetailPso, bakeSwellPso, swellTex, library;
 	private static boolean bakeFailed, bakedOnce;
-	private static int capturesAtBake = -1;
+	private static int capturesAtBake = -1, swellFrame;
 	/** (2.0.1 opt) ShadeResources entry for the baked 256^2 mipmapped sea swell texture (shade_look.metal waterSwell). */
 	static final int RES_SWELL = 15;
 
@@ -489,12 +493,12 @@ public final class ShadeWater {
 	 */
 	public static void bake(long ctx, long enc) {
 		if (!BAKE || bakeFailed || enc == 0 || !ready(ctx)) return;
-		// no translucent terrain drew last frame (no scene copy: no water on screen, the Nether, caves): skip the bake; the
-		// shaders use the analytic waves on the frame water comes back (ShadeWaterParams.state.w = 0)
+		// (2.0.1 opt) keep the last baked waves/swell bound whenever we skip baking (no water last frame, waves=0, devNoBake),
+		// so the frame water re-enters view immediately samples valid baked textures and never needs the analytic fallback!
 		boolean recent = captures != capturesAtBake;
 		capturesAtBake = captures;
-		if (!recent && bakedOnce) return;
-		if (bakedOnce && Boolean.getBoolean("mcopt.shade.water.devNoBake")) { // (1.2.9 pricing, read every frame: the waves stand still)
+		boolean wavesOff = mcopt.metal.shade.ShadeSettings.waves() <= 0f;
+		if (bakedOnce && (!recent || wavesOff || Boolean.getBoolean("mcopt.shade.water.devNoBake"))) {
 			if (swellTex != 0 && mcopt.metal.shade.ShadeConfig.HDR && mcopt.metal.shade.ShadeRender.ready())
 				mcopt.metal.shade.ShadeRender.resource(RES_SWELL, swellTex);
 			WaterNative.wavesKeep(state);
@@ -521,16 +525,23 @@ public final class ShadeWater {
 				long det = WaterNative.wavesDetail(ctx, state, DETAIL_SIZE);
 				mcopt.metal.shade.ShadeRender.pass(enc, bakeDetailPso, det, mcopt.metal.shade.ShadeRender.DONT_CARE, null, null, "mcopt shade water: ripple bake");
 			}
-			if (SWELL_CODE && mcopt.metal.shade.ShadeConfig.HDR && mcopt.metal.shade.ShadeRender.ready()
-				&& mcopt.metal.shade.Live.b("mcopt.shade.water.swellBake", true)) {
-				if (bakeSwellPso == 0) {
-					long t0 = mcopt.metal.shade.ShadeCompile.now();
-					bakeSwellPso = mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_bake_swell_fs",
-						mcopt.metal.shade.ShadeRender.RGBA16F, mcopt.metal.shade.ShadeRender.BLEND_NONE);
-					mcopt.metal.shade.ShadeCompile.setup("water", t0);
+			boolean wantSwell = SWELL_CODE && mcopt.metal.shade.ShadeConfig.HDR && mcopt.metal.shade.ShadeRender.ready()
+				&& !fast() && mcopt.metal.shade.Live.b("mcopt.shade.water.swellBake", true)
+				&& mcopt.metal.shade.Live.f("mcopt.shade.water.swell", 1.3f, 0f, 3f) > 0f;
+			if (wantSwell) {
+				// (2.0.1 opt) sea swell has 23-41 block wavelengths (slowly moving): bake every 2nd frame (~45-60 Hz)
+				if (swellTex == 0 || (swellFrame++ & 1) == 0) {
+					if (bakeSwellPso == 0) {
+						long t0 = mcopt.metal.shade.ShadeCompile.now();
+						bakeSwellPso = mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_bake_swell_fs",
+							mcopt.metal.shade.ShadeRender.RGBA16F, mcopt.metal.shade.ShadeRender.BLEND_NONE);
+						mcopt.metal.shade.ShadeCompile.setup("water", t0);
+					}
+					swellTex = WaterNative.wavesSwell(ctx, state, 256);
+					mcopt.metal.shade.ShadeRender.pass(enc, bakeSwellPso, swellTex, mcopt.metal.shade.ShadeRender.DONT_CARE, null, null, "mcopt shade water: swell bake");
 				}
-				swellTex = WaterNative.wavesSwell(ctx, state, 256);
-				mcopt.metal.shade.ShadeRender.pass(enc, bakeSwellPso, swellTex, mcopt.metal.shade.ShadeRender.DONT_CARE, null, null, "mcopt shade water: swell bake");
+				mcopt.metal.shade.ShadeRender.resource(RES_SWELL, swellTex);
+			} else if (swellTex != 0 && mcopt.metal.shade.ShadeConfig.HDR && mcopt.metal.shade.ShadeRender.ready()) {
 				mcopt.metal.shade.ShadeRender.resource(RES_SWELL, swellTex);
 			}
 			WaterNative.wavesDone(enc, state);

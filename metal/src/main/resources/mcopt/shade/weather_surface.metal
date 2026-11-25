@@ -174,10 +174,13 @@ static float2 shadeWxRipples(float2 xa, float t, float rate, float footprint) {
 		float2 d = lp - c0;
 		float r = length(d);
 		float e = r - age * 0.42;
-		float env = exp(-age * 5.0) * (1.0 - smoothstep(0.2 * C, 0.29 * C, r)) * exp(-(e * e) / (wid * wid));
+		// (2.0.1 opt) Gaussian envelope is < 0.002 beyond 2.5*wid: skip exp + sincos completely!
+		if (abs(e) > 2.5 * wid) continue;
+		float invW2 = 1.0 / (wid * wid);
+		float env = exp2((-age * 5.0 - e * e * invW2) * 1.44269504) * (1.0 - smoothstep(0.2 * C, 0.29 * C, r));
 		float s;
 		float c = sincos(k * e, s);
-		float dh = env * (k * c - 2.0 * e / (wid * wid) * s);
+		float dh = env * (k * c - 2.0 * e * invW2 * s);
 		g += dh * d / max(r, 1e-4);
 	}
 	return g * (0.0055 / widen);
@@ -211,6 +214,7 @@ struct ShadeWet {
 	half tex;  // the texel's height proxy -1..1 (sodium_terrain.fs.metal, shadeWetTexHeight): + raised (drier), - a crevice (wetter)
 	half grain; // (2026-10-11, SHADE_SNOW_GRAIN) the texel against its sprite's mean - 1, -0.5..0.5: the block's texture under the snow
 	half vegK;  // (2026-10-12, shadeWxVegLight) 1: vegetation's albedo darkens a third as much (shadeWetAlbedo)
+	half veg;   // (2.0.1 opt) cached shadeWxVegHue(albedo) reused by shadeWetAlbedo & shadeWetShade
 };
 
 // (M3.3 wet ground) the texel's height proxy: its luminance against its sprite's mean (the atlas' coarsest mip), scaled by
@@ -237,6 +241,7 @@ static ShadeWet shadeWetSurface(float3 p, half3 n, half sky, bool thin, bool fol
 	w.tex = 0.0h;
 	w.grain = 0.0h;
 	w.vegK = shadeWxVegLight(f) ? 1.0h : 0.0h;
+	w.veg = veg;
 	half open = smoothstep(0.90h, 0.995h, sky);
 	if (open <= 0.0h || shadeDev(f, SHADE_DEV_WX_DRY)) return w;
 	half face = n.y > 0.5h ? 1.0h : n.y < -0.5h ? 0.0h : 0.55h; // walls get wet streaks, undersides stay dry
@@ -313,15 +318,14 @@ static ShadeWet shadeWetSurface(float3 p, half3 n, half sky, bool thin, bool fol
 // is under it a little more; snow covers it.
 static inline half3 shadeWetAlbedo(half3 albedo, ShadeWet w) {
 	half3 a = albedo;
-	// (2026-10-12, vegK; Gael: "ours looks odd" in rain; measured: wet grass a third as bright as dry) grass and leaves (green over
-	// red and blue, relative to green: the same test as shadeWetShade's) darken a third as much: water beads on the blades instead
-	// of soaking in; Photon and Complementary don't darken them at all outside puddles, SEUS by albedo^(1 + 0.6 w)
-	half om = w.omega * (1.0h - 0.67h * w.vegK * shadeWxVegHue(albedo));
-	if (om > 0.0h) a = pow(max(a, half3(1e-4h)), half3(1.0h + 0.65h * om)) * (1.0h - 0.08h * om);
+	half om = w.omega * (1.0h - 0.67h * w.vegK * w.veg);
+	// (2.0.1 opt) combine wetness and film-darkening pows into a single pow()
+	if (om > 0.0h) {
+		half ex = 1.0h + 0.65h * om;
+		if (w.film > 0.0h && w.dark != 0.0h) ex *= 1.0h + w.dark * om;
+		a = pow(max(a, half3(1e-4h)), half3(ex)) * (1.0h - 0.08h * om);
+	}
 	if (w.film > 0.0h) {
-		if (w.dark != 0.0h) a = pow(max(a, half3(1e-4h)), half3(1.0h + w.dark * om));
-		// (M3.3 wet ground) the rim darkens on toward the puddle, which dims a little less on top of it: the same x0.7 at its
-		// middle as M3.2's puddle, reached gradually instead of at the puddle's edge
 		a *= (1.0h - 0.12h * w.low) * (1.0h - 0.2h * w.puddle);
 	} else if (w.puddle > 0.0h) a *= 1.0h - 0.3h * w.puddle;
 	if (w.snow > 0.0h) a = mix(a, half3(0.86h, 0.88h, 0.92h) * (1.0h + 0.35h * w.grain), w.snow);
@@ -392,16 +396,17 @@ static float4 shadeWxHistMarch(float3 p, float3 r, float maxDist, int chunk, int
 			continue;
 		}
 		// behind something: refine between the last step in front and this one
-		float lo = tPrev, hi = t;
+		float lo = tPrev, hi = t, wHi = ws;
 		for (int j = 0; j < 3; j++) {
 			float m = 0.5 * (lo + hi);
 			float2 sm = s0 + d * m;
 			float wm = 1.0 / mix(iw0, iw1, m);
-			if (wm > float(histDepth.sample(shadeWxNearest, sm * 0.5 + 0.5, level(0.0)).r)) hi = m; else lo = m;
+			float dm = float(histDepth.sample(shadeWxNearest, sm * 0.5 + 0.5, level(0.0)).r);
+			if (wm > dm) { hi = m; wHi = dm; } else lo = m;
 		}
 		float2 sh = s0 + d * hi;
 		float2 uv = sh * 0.5 + 0.5;
-		float wh = float(histDepth.sample(shadeWxNearest, uv, level(0.0)).r);
+		float wh = wHi;
 		float wrh = 1.0 / mix(iw0, iw1, hi);
 		float wp = 1.0 / mix(iw0, iw1, tPrev);
 		float thick = 0.35 + 0.025 * wh + abs(wrh - wp) * 3.0; // (FT2.7: x3 step extents, as the water since FT2.6, Photon MIT)
@@ -519,7 +524,7 @@ static float3 shadeWetShade(float3 radiance, half3 albedo, ShadeWet w, ShadeWetL
 	half wet = max(w.omega, w.puddle);
 #if defined(SHADE_PUDDLE_SSR) && defined(SHADE_PUDDLE_QUAD)
 	// the quad-shared march needs all four lanes: only a quad without any puddle may leave early
-	bool quadPuddle = shadeWxQuadMax(float(w.puddle)) > 0.02;
+	bool quadPuddle = L.wet.y > 0.001 && shadeWxQuadMax(float(w.puddle)) > 0.02;
 	// (M3.3 wet ground) film reflections share the march: a quad with a soaked up-facing film stays as well (per frame first)
 	bool quadFilm = SHADE_WET_ALL_ON(L) && L.water.w > 0.0 && shadeWxQuadMax(in.n.y > 0.5h ? float(w.film * w.omega) : 0.0) > 0.3;
 	if (wet <= 0.004h && !quadPuddle && !quadFilm) return radiance;
@@ -546,8 +551,7 @@ static float3 shadeWetShade(float3 radiance, half3 albedo, ShadeWet w, ShadeWetL
 	// and a rougher one; by hue (green over red and blue, relative to green), so the darkened wet albedo still counts
 	float film = 0.0;
 	if (w.film > 0.0h) {
-		float g = max(float(albedo.g), 1e-3);
-		float vegR = saturate(((g - max(float(albedo.r), float(albedo.b))) / g - 0.1) * 2.5);
+		float vegR = float(w.veg);
 		float soak = saturate(float(w.omega) * 1.15);
 		float tx = float(w.tex) * (1.0 - float(w.low)); // (texel relief: raised texels rougher and partly dry, crevices smoother)
 		float rS = clamp(L.water.y + L.water.z * vegR - 0.25 * float(w.var) + 0.18 * tx, 0.06, 0.6);

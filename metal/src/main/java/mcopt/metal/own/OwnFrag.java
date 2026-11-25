@@ -728,6 +728,11 @@ final class OwnFrag {
 		float rdStart = 0;
 		long fa = MetalBridge.bufferAddress(fog.buffer());
 		if (fa != 0) rdStart = MemoryUtil.memGetFloat(fa + fog.offset() + 24);
+		// (2.0.1 opt) Under shading, clamp rdStart to ShadeLook's border-fog start so SO_LEAN units guarantee edge == 0 in shadeFogAir2
+		if (mcopt.metal.shade.terrain.ShadeTerrain.ON) {
+			float sb = mcopt.metal.shade.ShadeLook.leanBorderStart();
+			if (sb > 0f && sb < rdStart) rdStart = sb;
+		}
 		if (FOG_LOG && fa != 0) {
 			// (measurement: vanilla's fog block as the frame sets it, logged when it changes)
 			long b = fa + fog.offset();

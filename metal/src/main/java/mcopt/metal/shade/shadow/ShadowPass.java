@@ -94,6 +94,11 @@ public final class ShadowPass {
 	/** The part of the back map drawn next (0..FAR_EVERY-1), -1: no back map under way. */
 	private int backPart = -1;
 	private long backLightKey;
+	private int farSeamSerial = Integer.MIN_VALUE, backSeamSerial;
+	private final float[] ownPlanesScratch = new float[8];
+	private final Matrix4f ownMatScratch = new Matrix4f();
+	private final org.joml.Vector4f ownPlaneScratch = new org.joml.Vector4f();
+	private final int[] zeroArea = new int[2];
 	/** This frame's far cascade: 0 not drawn, 1 whole into the bound map (M3.2), 2 one part into the back map, 3 the last part (the maps swap first). */
 	private int farMode;
 	private int farPartNow;
@@ -324,23 +329,36 @@ public final class ShadowPass {
 		this.farMode = 0;
 		boolean lightJump = spread ? far.z[0] * this.light[0] + far.z[1] * this.light[1] + far.z[2] * this.light[2] < SPREAD_LIGHT_COS
 			: this.farLightKey != this.lightKey;
+		mcopt.metal.own.OwnTerrain ownT = mcopt.metal.own.OwnTerrain.get();
+		int seam = ownT != null ? ownT.seamSerial() : (int) this.frames;
 		if (!far.valid || moved || lightJump || !spread && this.framesSinceFar >= ShadowConfig.FAR_EVERY - 1) {
 			far.fit(this.light, x, y, z, dist, res, FAR_BACK, DEPTH_FRONT, CASTER_REACH);
 			this.farMode = 1;
 			this.backPart = -1;
+			this.backSeamSerial = seam;
 		} else if (spread) {
-			if (this.backPart < 0) { // a new back map: fitted once, here, for all its parts
-				this.farBack.fit(this.light, x, y, z, dist, res, FAR_BACK, DEPTH_FRONT, CASTER_REACH);
-				this.backPart = 0;
-				this.backLightKey = this.lightKey;
+			// (2.0.1 opt) don't continuously redraw the far cascade when sun, camera (< dist/32), and chunks are all static
+			if (this.backPart < 0) {
+				boolean farNeed = this.farLightKey != this.lightKey
+					|| dx * dx + dy * dy + dz * dz > (dist / 32.0) * (dist / 32.0)
+					|| seam != this.farSeamSerial
+					|| this.framesSinceFar >= 45;
+				if (farNeed) {
+					this.farBack.fit(this.light, x, y, z, dist, res, FAR_BACK, DEPTH_FRONT, CASTER_REACH);
+					this.backPart = 0;
+					this.backLightKey = this.lightKey;
+					this.backSeamSerial = seam;
+				}
 			}
-			this.farPartNow = this.backPart;
-			if (this.backPart >= ShadowConfig.FAR_EVERY - 1) {
-				far.copyFrom(this.farBack); // receivers read the back map (complete after this frame's part) from this frame on
-				this.farMode = 3;
-			} else {
-				this.farMode = 2;
-				this.farBack.matrix(x, y, z, this.backMatrix, 0);
+			if (this.backPart >= 0) {
+				this.farPartNow = this.backPart;
+				if (this.backPart >= ShadowConfig.FAR_EVERY - 1) {
+					far.copyFrom(this.farBack); // receivers read the back map (complete after this frame's part) from this frame on
+					this.farMode = 3;
+				} else {
+					this.farMode = 2;
+					this.farBack.matrix(x, y, z, this.backMatrix, 0);
+				}
 			}
 		}
 		this.draw[1] = this.farMode != 0;
@@ -520,14 +538,14 @@ public final class ShadowPass {
 			}
 			this.ownReady = 1;
 		}
-		float[] planes = new float[8];
+		float[] planes = this.ownPlanesScratch;
 		try (MemoryStack s = MemoryStack.stackPush()) {
 			long at = s.nmalloc(16, 32);
 			this.depthPlanes(this.castCascades[c], at);
 			for (int i = 0; i < 8; i++) planes[i] = MemoryUtil.memGetFloat(at + i * 4L);
 		}
 		int part = c == 1 && this.casters.farPart >= 0 ? this.casters.farPart : -1;
-		if (!own.shadowCull(c, new org.joml.Matrix4f().set(matrix), (float) this.light[0], (float) this.light[1], (float) this.light[2], planes, part,
+		if (!own.shadowCull(c, this.ownMatScratch.set(matrix), (float) this.light[0], (float) this.light[1], (float) this.light[2], planes, part,
 			this.casters.farParts)) return 0;
 		long[] b = own.shadowBuffers(c);
 		long d = stack.ncalloc(16, OWN_DRAW_BYTES, 1);
@@ -573,7 +591,7 @@ public final class ShadowPass {
 	private long ownTint(MemoryStack stack) {
 		mcopt.metal.own.OwnTerrain own = mcopt.metal.own.OwnTerrain.get();
 		long handle = mcopt.metal.shade.terrain.ShadeTerrain.ownHandle();
-		if (own == null || handle == 0 || this.ownReady != 1 || this.ownTintReady < 0) return 0;
+		if (own == null || handle == 0 || this.ownReady != 1 || this.ownTintReady < 0 || own.translucentSections() <= 0) return 0;
 		net.minecraft.client.renderer.ViewArea va = Minecraft.getInstance().levelRenderer.viewArea();
 		if (va == null) return 0;
 		if (this.ownTintReady == 0) {
@@ -592,13 +610,11 @@ public final class ShadowPass {
 		MemoryUtil.memPutLong(d + 8, b[1]);
 		MemoryUtil.memPutLong(d + 16, b[2]);
 		MemoryUtil.memPutInt(d + 24, (int) (this.ownTintPasses % OWN_TINT_RING));
-		// draw: only while the cull listed units lately (the slot OWN_TINT_BACK passes back: the latest the GPU is done with), and
-		// in the first passes; otherwise the cull alone runs (the tint map's 8 MB clear and store were ~0.5 ms a frame)
 		MemoryUtil.memPutInt(d + 28, this.ownTintPasses + 1 < OWN_TINT_BACK || this.ownTintSlot(this.ownTintPasses + 1 - OWN_TINT_BACK)[5] > 0 ? 1 : 0);
 		// OwnTcullFrame: cascade 0's side planes (camera-relative), camera block, offset and section, view distance, sections
 		long f = d + 32;
-		Matrix4f clip = new Matrix4f().set(java.util.Arrays.copyOfRange(this.matrices, 0, 16));
-		org.joml.Vector4f pl = new org.joml.Vector4f();
+		Matrix4f clip = this.ownMatScratch.set(this.matrices, 0);
+		org.joml.Vector4f pl = this.ownPlaneScratch;
 		int[] planes = {org.joml.Matrix4fc.PLANE_NX, org.joml.Matrix4fc.PLANE_PX, org.joml.Matrix4fc.PLANE_NY, org.joml.Matrix4fc.PLANE_PY};
 		for (int i = 0; i < 4; i++) {
 			clip.frustumPlane(planes[i], pl);
@@ -763,16 +779,22 @@ public final class ShadowPass {
 			this.texture = ShadowNative.texture(this.shadow);
 		}
 		long enc = MetalBridge.enc(encoder);
-		var memory = ((FrontendCommandEncoder) RenderSystem.getDevice().createCommandEncoder()).transientMemory();
-		// regions, then every cascade's chunks back to back; one upload each
-		int regionBytes = Math.max(16, this.casters.regionCount * ShadowCasters.regionBytes());
-		GpuBufferSlice.MappedView regions = memory.allocateGpuMapped(regionBytes, 16L, GpuBuffer.USAGE_UNIFORM);
-		MemoryUtil.memCopy(this.casters.regions, MemoryUtil.memAddress(regions.data()), (long) this.casters.regionCount * ShadowCasters.regionBytes());
 		int totalChunks = 0;
 		for (int c = 0; c < CASCADES; c++) for (ShadowCasters.DrawList l : this.casters.lists[c]) totalChunks += l.count;
-		GpuBufferSlice.MappedView chunks = memory.allocateGpuMapped(Math.max(16, (long) totalChunks * ShadowCasters.chunkBytes()), 16L, GpuBuffer.USAGE_UNIFORM);
-		long chunkAt = MemoryUtil.memAddress(chunks.data());
-		long regionsHandle = MetalBridge.useBuffer(encoder, regions.slice().buffer()), chunksHandle = MetalBridge.useBuffer(encoder, chunks.slice().buffer());
+		long regionsHandle = 0, chunksHandle = 0, regionsOff = 0, chunksOff = 0, chunkAt = 0;
+		// (2.0.1 opt) skip dead Sodium transient buffer allocations when mcopt's own terrain owns all shadow casters
+		if (totalChunks > 0 || this.casters.regionCount > 0) {
+			var memory = ((FrontendCommandEncoder) RenderSystem.getDevice().createCommandEncoder()).transientMemory();
+			int regionBytes = Math.max(16, this.casters.regionCount * ShadowCasters.regionBytes());
+			GpuBufferSlice.MappedView regions = memory.allocateGpuMapped(regionBytes, 16L, GpuBuffer.USAGE_UNIFORM);
+			MemoryUtil.memCopy(this.casters.regions, MemoryUtil.memAddress(regions.data()), (long) this.casters.regionCount * ShadowCasters.regionBytes());
+			GpuBufferSlice.MappedView chunks = memory.allocateGpuMapped(Math.max(16, (long) totalChunks * ShadowCasters.chunkBytes()), 16L, GpuBuffer.USAGE_UNIFORM);
+			chunkAt = MemoryUtil.memAddress(chunks.data());
+			regionsHandle = MetalBridge.useBuffer(encoder, regions.slice().buffer());
+			chunksHandle = MetalBridge.useBuffer(encoder, chunks.slice().buffer());
+			regionsOff = regions.slice().offset();
+			chunksOff = chunks.slice().offset();
+		}
 		long atlas = blockAtlas();
 		int first = 0;
 		boolean tracing = MetalBridge.tracing(encoder);
@@ -819,8 +841,8 @@ public final class ShadowPass {
 				int load = c == 1 && this.farMode >= 2 && this.farPartNow > 0 ? 1 : 0;
 				int timer = !this.timing ? -1 : c == 0 ? 0 : this.farMode == 1 ? 1 : 2;
 				long own = this.ownDraw(stack, c, back ? this.backMatrix : java.util.Arrays.copyOfRange(this.matrices, c * 16, c * 16 + 16));
-				int gpuEncoder = ShadowNative.renderEx(enc, this.shadow, c, cascadeData, CASCADE_BYTES, chunksHandle, chunks.slice().offset(), regionsHandle,
-					regions.slice().offset(), draws, n, atlas, -ShadowConfig.BIAS_SLOPE, -8f * depthPerTexel, back ? 1 : 0, load, timer, own);
+				int gpuEncoder = ShadowNative.renderEx(enc, this.shadow, c, cascadeData, CASCADE_BYTES, chunksHandle, chunksOff, regionsHandle,
+					regionsOff, draws, n, atlas, -ShadowConfig.BIAS_SLOPE, -8f * depthPerTexel, back ? 1 : 0, load, timer, own);
 				if (c == 0 && tint) {
 					// M3 coloured shadows: the near cascade's translucent casters into the tint map (unbiased matrix: receivers compare their own depth)
 					MemoryUtil.memPutFloat(cascadeData + 64, 0f);
@@ -835,14 +857,12 @@ public final class ShadowPass {
 					if (lite && this.tintLite == 0) this.tintLite = ShadowNative.tintLiteInit(this.shadow, 512);
 					lite &= this.tintLite != 0;
 					this.tintRes = lite ? 512 : mcopt.metal.shade.weather.ShadeWeather.COLOR_SHADOW_RES;
-					// M3.3 mcopt.shade.tintSub: draw (clear, store) only the casters' rectangle, at the map's texel size, in its top-left corner
-					// (v12: own terrain's casters are found on the GPU during the pass, so the map is drawn whole for them: no rectangle)
 					long ownTint = own != 0 ? this.ownTint(stack) : 0;
 					this.tintSubNow = ShadowConfig.tintSub() && nTint > 0 && (tintDev & 2) == 0 && ownTint == 0;
-					int[] area = this.tintSubNow && this.tintRect() ? this.tintSubMatrix(cascadeData, this.tintRes) : new int[2];
-					if ((tintDev & 2) == 0) {
-						ShadowNative.tintRenderEx(enc, this.shadow, cascadeData, CASCADE_BYTES, chunksHandle, chunks.slice().offset(), regionsHandle,
-							regions.slice().offset(), tintDraws, nTint, translucentAtlas, params, TINT_PARAM_BYTES, lite ? 1 : 0, this.timing ? 3 : -1, area[0], area[1],
+					int[] area = this.tintSubNow && this.tintRect() ? this.tintSubMatrix(cascadeData, this.tintRes) : this.zeroArea;
+					if ((tintDev & 2) == 0 && (nTint > 0 || ownTint != 0)) {
+						ShadowNative.tintRenderEx(enc, this.shadow, cascadeData, CASCADE_BYTES, chunksHandle, chunksOff, regionsHandle,
+							regionsOff, tintDraws, nTint, translucentAtlas, params, TINT_PARAM_BYTES, lite ? 1 : 0, this.timing ? 3 : -1, area[0], area[1],
 							ownTint);
 						if (ownTint != 0) this.ownTintEncoded();
 					}
@@ -865,6 +885,7 @@ public final class ShadowPass {
 			case 1 -> { // whole (M3.2's redraw, or a jump in spread mode)
 				this.framesSinceFar = 0;
 				this.farLightKey = this.lightKey;
+				this.farSeamSerial = this.backSeamSerial;
 				this.statWhole++;
 			}
 			case 2 -> { // one part of the back map
@@ -875,6 +896,7 @@ public final class ShadowPass {
 				this.backPart = -1;
 				this.framesSinceFar = 0;
 				this.farLightKey = this.backLightKey;
+				this.farSeamSerial = this.backSeamSerial;
 				this.statSwaps++;
 			}
 			default -> this.framesSinceFar++;

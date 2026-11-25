@@ -51,7 +51,7 @@ public final class ShadeClouds {
 	private static final long OUT = MemoryUtil.nmemCalloc(3, 8);
 	private static final long TIMES = MemoryUtil.nmemCalloc(5, 4);
 	private static long lastNanos, lastLog;
-	private static int frame, domeFrames;
+	private static int frame, domeFrames, domeSlice;
 	private static double lastX, lastY, lastZ;
 	private static int lastDimension = -1;
 	private static int lastMode = -1;
@@ -320,34 +320,46 @@ public final class ShadeClouds {
 			if (domeOn && !lastDome) modeChanged = true;
 			lastDome = domeOn;
 			p.reset = snap || resized || modeChanged;
-			if (p.reset) domeFrames = 0;
+			if (p.reset) {
+				domeFrames = 0;
+				domeSlice = 0;
+			}
 			p.domeValid = domeOn && domeFrames > 0;
 			p.domeUpdates = domeFrames;
 			// (1.1: the player's mcopt.shade.user.cloudOpacity, live; 1 = as released. CloudParams scales the shadows by it too)
 			p.opacity = CloudConfig.userOpacity();
 			p.dev = dev;
 			p.mode = mode;
-			// the shadow map and the dome change slowly (the wind moves the shadows ~1/25 of a map texel in 4 frames): each every
-			// fourth frame, never in the same frame (both after a reset). CloudParams keeps the map's own frame in between.
-			// (M3.1: the dome every 8th frame at performance/balanced, CloudConfig.DOME_EVERY: its 8k rays cost ~0.11 ms per update,
-			// the long horizon rays' latency, not their number)
+			// (2.0.1 opt) time-sliced 4-strip dome update (zero frame-time spikes, keeps sharp 256x128 night reflections)
 			int domeEvery = (dev & CloudConfig.DEV_OLD_DOME) != 0 ? 4 : CloudConfig.DOME_EVERY;
-			boolean dome = (p.frame & (domeEvery - 1)) == 1;
-			// (1.1: the shadows live; off = no map pass and strength 0 (CloudParams); turned on, the map is rendered this frame, it
-			// holds the frame it was last rendered in, or nothing)
+			int domeStep = Math.max(1, domeEvery / 4);
+			boolean domeFull = domeOn && p.reset;
+			boolean domeSliced = domeOn && !p.reset && (domeStep == 1 || (p.frame % domeStep) == 1);
+			// (2.0.1 opt) 8-frame shadow map cadence + skip completely when sun/moon shadowStrength <= 0.001
 			boolean shadows = CloudConfig.shadows();
-			p.shadowUpdate = shadows && ((p.frame & 3) == 3 || p.reset || !lastShadows);
+			float shadowStr = shadows ? CloudConfig.shadowStrength() * CloudParams.smoothstep(0.04f, 0.18f, f.sky.lightDir[1]) * p.opacity : 0f;
+			p.shadowUpdate = shadows && shadowStr > 0.001f && ((p.frame & 7) == 7 || p.reset || !lastShadows);
 			lastShadows = shadows;
 			p.pack(PACKED, f, WEATHER);
-			int flags = 2 | (p.shadowUpdate ? 1 : 0) | (domeOn && (dome || p.reset) ? 4 : 0)
+			int flags = 2 | (p.shadowUpdate ? 1 : 0) | (domeFull ? 4 : domeSliced ? (4 | 128) : 0)
 				| (CloudConfig.GPU_TIMER ? 8 : 0) | ((mode & CloudConfig.MODE_STABLE) != 0 ? 16 : 0) | (cells ? 32 : 0)
 				| (mcopt.metal.shade.Live.b("mcopt.shade.cloudLean", true) ? 64 : 0);
 			if (!p.reset) {
 				if ((dev & CloudConfig.DEV_NO_SCREEN) != 0) flags &= ~2;   // pricing: no march / resolve (the consumers read the old history)
-				if ((dev & CloudConfig.DEV_NO_MAPS) != 0) flags &= ~(1 | 4); // pricing: no shadow map / dome pass
+				if ((dev & CloudConfig.DEV_NO_MAPS) != 0) flags &= ~(1 | 4 | 128); // pricing: no shadow map / dome pass
 			}
 			CloudNative.render(enc, state, MemoryUtil.memAddress(PACKED), CloudParams.SIZE, flags);
-			if ((flags & 4) != 0) domeFrames++;
+			if ((flags & 4) != 0) {
+				if ((flags & 128) != 0) {
+					if (++domeSlice >= 4) {
+						domeSlice = 0;
+						domeFrames++;
+					}
+				} else {
+					domeSlice = 0;
+					domeFrames++;
+				}
+			}
 			CloudNative.outputs(state, OUT);
 			ShadeRender.resource(RESOURCE_SHADOW, MemoryUtil.memGetAddress(OUT));
 			ShadeRender.resource(RESOURCE_DOME, MemoryUtil.memGetAddress(OUT + 8));

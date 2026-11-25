@@ -93,15 +93,14 @@ fragment half4 shade_bloom_up(ShadeFsOut in [[stage_in]], texture2d<half> level 
                               constant ShadeBloomUp &p [[buffer(0)]]) {
 	half3 l = level.sample(shadeLinearClamp, in.uv).rgb;
 	float2 t = 1.0 / float2(coarser.get_width(), coarser.get_height());
-	// 3x3 tent upsample of the coarser accumulation
-	// (1.2.4, GitHub issue #8) the tent's weights (4, 2, 1) / 16 applied per tap: summed first, 16 taps of a sun core held at
-	// the first level's 30000 overflowed half (Inf, then NaN in the final pass)
-	half3 u = coarser.sample(shadeLinearClamp, in.uv).rgb * 0.25h;
-	u += coarser.sample(shadeLinearClamp, in.uv + float2(t.x, 0)).rgb * 0.125h + coarser.sample(shadeLinearClamp, in.uv - float2(t.x, 0)).rgb * 0.125h
-	    + coarser.sample(shadeLinearClamp, in.uv + float2(0, t.y)).rgb * 0.125h + coarser.sample(shadeLinearClamp, in.uv - float2(0, t.y)).rgb * 0.125h;
-	u += coarser.sample(shadeLinearClamp, in.uv + t).rgb * 0.0625h + coarser.sample(shadeLinearClamp, in.uv - t).rgb * 0.0625h
-	    + coarser.sample(shadeLinearClamp, in.uv + float2(t.x, -t.y)).rgb * 0.0625h + coarser.sample(shadeLinearClamp, in.uv + float2(-t.x, t.y)).rgb * 0.0625h;
-	return half4(l * half(p.w.x) + u * half(p.w.y), 1.0h);
+	// (2.0.1 opt) variance-matched 4-tap bilinear tent (sigma^2 = 0.5 texel^2, matching the 3x3 tent with 55% fewer taps);
+	// each tap weighted by 0.25h before sum and combined in FP32 capped at 60000 so sun cores never overflow half/RG11B10F (issue #8)
+	float2 o = t * 0.70710678;
+	half3 u = coarser.sample(shadeLinearClamp, in.uv + o).rgb * 0.25h
+	        + coarser.sample(shadeLinearClamp, in.uv - o).rgb * 0.25h
+	        + coarser.sample(shadeLinearClamp, in.uv + float2(o.x, -o.y)).rgb * 0.25h
+	        + coarser.sample(shadeLinearClamp, in.uv + float2(-o.x, o.y)).rgb * 0.25h;
+	return half4(half3(min(float3(l) * p.w.x + float3(u) * p.w.y, 60000.0)), 1.0h);
 }
 
 // p: x 1 / (sum of the bloom weights), y bloom on (0/1), z frame index, w debug view; q: x weight of bloom level 0, y the
@@ -168,12 +167,8 @@ static inline half3 shadeVlScaled(half3 rgb, half rr, bool airNeg) {
 static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, float2 uv, float dist, float maxD, float2 uvScale,
                                     float mode = 0.0, float tolScale = 1.0, bool airNeg = false) {
 	// the live part of the VL targets (TAAU dynamic resolution: allocated for the largest scale; uvScale = live / allocated)
-	float2 size = float2(vlT.get_width(), vlT.get_height()) * uvScale;
-	uv = min(uv * uvScale, uvScale - 0.5 / float2(vlT.get_width(), vlT.get_height()));
-	float2 lp = uv / uvScale * size - 0.5;
-	float2 fl = floor(lp);
-	half2 fr = half2(lp - fl);
-	int2 base = int2(fl), hi = int2(size) - 1;
+	float2 dim = float2(vlT.get_width(), vlT.get_height());
+	uv = min(uv * uvScale, uvScale - 0.5 / dim);
 	float tolerance = (0.04 * dist + 0.15) * max(tolScale, 0.05);
 	float hd = min(dist, 3e4);
 	// the four distances of the bilinear footprint in one fetch (gather order: (0,1) (1,1) (1,0) (0,0)); when all of them
@@ -182,18 +177,27 @@ static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, fl
 	if (mode > 1.5 && mode < 3.5) {
 		half4 s = vlT.sample(shadeLinearClamp, uv);
 		if (mode < 2.5) return s;
-		half4 bw4 = half4((1.0h - fr.x) * fr.y, fr.x * fr.y, fr.x * (1.0h - fr.y), (1.0h - fr.x) * (1.0h - fr.y)); // gather order
+		float2 lp3 = uv * dim - 0.5;
+		half2 fr3 = half2(lp3 - floor(lp3));
+		half4 bw4 = half4((1.0h - fr3.x) * fr3.y, fr3.x * fr3.y, fr3.x * (1.0h - fr3.y), (1.0h - fr3.x) * (1.0h - fr3.y)); // gather order
 		float mD = maxD, avgD = dot(float4(bw4), min(float4(dd), mD));
 		return half4(s.rgb * half(clamp((min(hd, mD) + 0.5) / (avgD + 0.5), 0.0, 4.0)), s.a);
 	}
 	if (all(abs(float4(dd) - hd) < 0.5 * tolerance)) return vlT.sample(shadeLinearClamp, uv);
+	// (2.0.1 opt) defer bilinear-grid coordinate math past the smooth fast path and cache the 2x2 reads for fallback reuse
+	float2 lp = uv * dim - 0.5;
+	float2 fl = floor(lp);
+	half2 fr = half2(lp - fl);
+	int2 base = int2(fl), hi = int2(dim * uvScale) - 1;
 	half4 sum = 0.0h, bestC = half4(0.0h, 0.0h, 0.0h, 1.0h);
+	half4 sv[4];
 	half wsum = 0.0h;
 	float best = 6e4, bestD = 1.0;
 	for (int j = 0; j <= 1; j++) {
 		for (int i = 0; i <= 1; i++) {
 			uint2 q = uint2(clamp(base + int2(i, j), int2(0), hi));
 			half4 s = vlT.read(q);
+			sv[j * 2 + i] = s;
 			half sd = j == 0 ? (i == 0 ? dd.w : dd.z) : (i == 0 ? dd.x : dd.y);
 			half bw = (i == 0 ? 1.0h - fr.x : fr.x) * (j == 0 ? 1.0h - fr.y : fr.y) + 1e-3h;
 			float diff = abs(float(sd) - hd);
@@ -231,7 +235,7 @@ static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, fl
 		float mD = maxD;
 		for (int j = 0; j <= 1; j++) {
 			for (int i = 0; i <= 1; i++) {
-				half4 s = vlT.read(uint2(clamp(base + int2(i, j), int2(0), hi)));
+				half4 s = sv[j * 2 + i];
 				half sd = j == 0 ? (i == 0 ? dd.w : dd.z) : (i == 0 ? dd.x : dd.y);
 				half bw = (i == 0 ? 1.0h - fr.x : fr.x) * (j == 0 ? 1.0h - fr.y : fr.y) + 1e-3h;
 				ratio += half4(shadeVlScaled(s.rgb, half((min(hd, mD) + 0.5) / (min(float(sd), mD) + 0.5)), airNeg), s.a) * bw;
@@ -263,7 +267,7 @@ static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, fl
 		half bsum = 0.0h;
 		for (int j = 0; j <= 1; j++) {
 			for (int i = 0; i <= 1; i++) {
-				half4 s = vlT.read(uint2(clamp(base + int2(i, j), int2(0), hi)));
+				half4 s = sv[j * 2 + i];
 				half sd = j == 0 ? (i == 0 ? dd.w : dd.z) : (i == 0 ? dd.x : dd.y);
 				half bw = (i == 0 ? 1.0h - fr.x : fr.x) * (j == 0 ? 1.0h - fr.y : fr.y) + 1e-3h;
 				acc += half4(shadeVlScaled(s.rgb, half((min(hd, mD) + 0.5) / (min(float(sd), mD) + 0.5)), airNeg), s.a) * bw;
@@ -306,8 +310,74 @@ static inline float3 shadeHazeBorderClamp(float3 p, constant ShadeLook &L) {
 // native resolution (run c2-attrib: every sky pixel of the output evaluates the layers and both phase functions).
 static inline float shadeHazeBorderKeep(float3 p, constant ShadeLook &L) {
 	float Rb = L.fogMisc.z;
-	return 1.0 - smoothstep(L.fogMisc.y * Rb, Rb, shadeL4(p.xz));
+	float loR = L.fogMisc.y * Rb;
+	// (2.0.1 opt) L4(p.xz) <= L2(p.xz) always, so within the inner radius smoothstep is identically 0 (saves 2 sqrt on ~80% of terrain)
+	if (dot(p.xz, p.xz) <= loR * loR) return 1.0;
+	return 1.0 - smoothstep(loR, Rb, shadeL4(p.xz));
 }
+
+// (2.0.1 opt) Out-of-line cold helpers keep rare edge/sunset-clamp paths out of the main shader's live register set.
+static __attribute__((noinline)) float3 shadeAerialSunGlowCold(float3 wp, texture2d<half> skyLut, sampler lutS,
+                                                               constant ShadeFrame &f, constant ShadeLook &L) {
+	return shadeAerialSunGlow(wp, skyLut, lutS, f, L);
+}
+
+#ifdef SHADE_HAZE_EDGE
+static __attribute__((noinline)) void shadeHazeEdgeSlow(float2 uv, float2 dsize, uint2 t0, float4 dq, float4 wq, float hazeNear,
+                                                        bool skyHaze, bool hazeFade, constant ShadeFrame &f, constant ShadeLook &L,
+                                                        thread float3 &Ts, thread float3 &Ss, thread float3 &Us, thread float4 &dkq) {
+	uint2 t1 = t0 + 1u;
+	float3 vEdge = normalize(shadeViewRay(uv * 2.0 - 1.0, f.invViewProj));
+	float ycEdge = f.cameraBlock.y + f.cameraFract.y;
+	float nu = dot(vEdge, f.lightDirWorld.xyz);
+	float phR = 0.0596831 * (1.0 + nu * nu);
+	float phM = 0.8 * shadeHG(nu, SHADE_HAZE_MIE_G) + 0.2 * shadeHG(nu, -0.2);
+	float airSun = shadeAirSun(L);
+	float3 E = f.sunColor.rgb * (3.14159265 * airSun);
+	float3 skyE = f.ambientSky.rgb * (0.9 * shadeAirSky(L));
+	float glow = 1.0 + L.fogMisc.w;
+	float aM = L.fogM.w;
+	float msGain = L.user4.w > 0.0 ? L.user4.w : 1.0;
+	float aMScale = aM / (1.0 - 0.5 * aM);
+	float3 sR = (E * phR + skyE) * 2.0;
+	float3 sM = (E * phM * glow * msGain + skyE) * aMScale;
+	float3 sunR = E * (phR * 2.0), sunM = E * (phM * glow * msGain * aMScale);
+	float cave = (1.0 - airSun) * L.eye.x * f.ambientBlock.w;
+	Ts = 0.0; Ss = 0.0; Us = 0.0;
+	for (int k = 0; k < 4; k++) {
+		float3 Tk = float3(1.0), Sk = float3(0.0), Uk = float3(0.0);
+		uint2 tk = uint2(k & 1 ? t1.x : t0.x, k & 2 ? t1.y : t0.y);
+		float3 pk = float3(0.0);
+		bool eval = false;
+		if (dq[k] > 0.0) {
+			pk = shadeWorldFromDepth((float2(tk) + 0.5) / dsize, dq[k], f);
+			dkq[k] = length(pk);
+			if (skyHaze) pk = shadeHazeBorderClamp(pk, L);
+			eval = dot(pk, pk) > hazeNear;
+		} else if (skyHaze) {
+			pk = shadeHazeSkyEnd(shadeViewRay((float2(tk) + 0.5) / dsize * 2.0 - 1.0, f.invViewProj), L);
+			eval = true;
+		}
+		if (eval) {
+			float tLen = length(pk);
+			float dy = pk.y / max(tLen, 1e-4);
+			float dR = shadeLayerDepth(ycEdge, dy, tLen, L.fogMisc.x, L.fogR.w);
+			float dM = shadeLayerDepth(ycEdge, dy, tLen, L.fogM.z, L.fogM.y);
+			float3 tauR = L.fogR.rgb * dR;
+			float tauM = L.fogM.x * dM;
+			float3 tau = tauR + tauM;
+			Tk = exp(-tau);
+			float3 w = (1.0 - Tk) / max(tau, 1e-6);
+			Uk = w * (tauR * sunR + tauM * sunM);
+			Sk = w * (tauR * sR + tauM * sM) + (1.0 - Tk) * cave;
+			if (hazeFade && dq[k] > 0.0) { float kk = shadeHazeBorderKeep(pk, L); Tk = mix(float3(1.0), Tk, kk); Sk *= kk; Uk *= kk; }
+		}
+		Ts += Tk * wq[k];
+		Ss += Sk * wq[k];
+		Us += Uk * wq[k];
+	}
+}
+#endif
 
 // Everything of the final pass before the display transform: the exposed scene colour (haze, the dimension fogs, camera
 // media, VL, bloom, Purkinje, vignette, vibrance). lum: the scene luminance before exposure (debug view 4).
@@ -377,7 +447,7 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 	float4 dkq = float4(1e4), wqq = float4(0.0);
 	// (FT2.12) the sunlit part of the haze glow added here (exposed): at most this much is what the VL air mode's shadows take out
 	float3 sunGlow = float3(0.0);
-	bool skyHaze = hazeOn && L.user4.x > 0.5 && L.user4.x < 1.5 && L.fogMisc.z > 0.0; // (1.2.9, see shadeHazeSkyEnd)
+	const bool skyHaze = !LEAN && hazeOn && L.user4.x > 0.5 && L.user4.x < 1.5 && L.fogMisc.z > 0.0; // (1.2.9, see shadeHazeSkyEnd)
 	bool hazeFade = hazeOn && L.user4.x > 1.5 && L.fogMisc.z > 0.0; // (1.2.9 candidate 3, see shadeHazeBorderKeep)
 #ifdef SHADE_HAZE_EDGE
 	if (hazeOn) {
@@ -387,66 +457,35 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 		// where they agree (almost everywhere) one evaluation as before; along an edge each terrain texel's haze is weighted
 		// bilinearly (the sky's texels add none), so the haze fades across the edge as the colour does
 		// (dq, t0, fw: read above with the pixel's own depth)
-		uint2 t1 = t0 + 1u;
 		float dlo = min(min(dq.x, dq.y), min(dq.z, dq.w)), dhi = max(max(dq.x, dq.y), max(dq.z, dq.w));
-		if (dhi > 0.0 && (dlo <= 0.0 || dhi > dlo * 1.25)) {
-			// (2.0.1 opt) hoist shared view-direction phase/radiance constants out of the 4-corner depth-edge loop: all 4 sub-pixel
-			// corners share the same view direction within <0.05 deg, saving 6x shadeHG + 3x redundant E/sky/sR/sM per edge pixel
-			float3 vEdge = normalize(shadeViewRay(uv * 2.0 - 1.0, f.invViewProj));
-			float ycEdge = f.cameraBlock.y + f.cameraFract.y;
-			float nu = dot(vEdge, f.lightDirWorld.xyz);
-			float phR = 0.0596831 * (1.0 + nu * nu);
-			float phM = 0.8 * shadeHG(nu, SHADE_HAZE_MIE_G) + 0.2 * shadeHG(nu, -0.2);
-			float airSun = shadeAirSun(L);
-			float3 E = f.sunColor.rgb * (3.14159265 * airSun);
-			float3 skyE = f.ambientSky.rgb * (0.9 * shadeAirSky(L));
-			float glow = 1.0 + L.fogMisc.w;
-			float aM = L.fogM.w;
-			float msGain = L.user4.w > 0.0 ? L.user4.w : 1.0;
-			float aMScale = aM / (1.0 - 0.5 * aM);
-			float3 sR = (E * phR + skyE) * 2.0;
-			float3 sM = (E * phM * glow * msGain + skyE) * aMScale;
-			float3 sunR = E * (phR * 2.0), sunM = E * (phM * glow * msGain * aMScale);
-			float cave = (1.0 - airSun) * L.eye.x * f.ambientBlock.w;
+		// (2.0.1 opt) skip near-field (<12 blocks) terrain-vs-terrain depth edges where haze differs by <0.2%, and unify
+		// single-surface sky silhouettes into 1 haze eval instead of up to 3; push multi-depth 4-corner fallback out-of-line
+		float nearCut = f.proj[3][2] > 0.0 ? (f.proj[3][2] * (1.0 / 12.0) - f.proj[2][2]) : 1.0;
+		if (dhi > 0.0 && (dlo <= 0.0 || (dlo <= nearCut && dhi > dlo * 1.25))) {
 			float4 wq = float4((1.0 - fw.x) * (1.0 - fw.y), fw.x * (1.0 - fw.y), (1.0 - fw.x) * fw.y, fw.x * fw.y);
-			float3 Ts = 0.0, Ss = 0.0, Us = 0.0;
-			for (int k = 0; k < 4; k++) {
-				float3 Tk = float3(1.0), Sk = float3(0.0), Uk = float3(0.0);
-				uint2 tk = uint2(k & 1 ? t1.x : t0.x, k & 2 ? t1.y : t0.y);
-				float3 pk = float3(0.0);
-				bool eval = false;
-				if (dq[k] > 0.0) {
-					pk = shadeWorldFromDepth((float2(tk) + 0.5) / dsize, dq[k], f);
-					dkq[k] = length(pk);
-					if (skyHaze) pk = shadeHazeBorderClamp(pk, L);
-					eval = dot(pk, pk) > hazeNear;
-				} else if (skyHaze) {
-					pk = shadeHazeSkyEnd(shadeViewRay((float2(tk) + 0.5) / dsize * 2.0 - 1.0, f.invViewProj), L);
-					eval = true;
+			float dMinPos = min(min(dq.x > 0.0 ? dq.x : 2.0, dq.y > 0.0 ? dq.y : 2.0),
+			                    min(dq.z > 0.0 ? dq.z : 2.0, dq.w > 0.0 ? dq.w : 2.0));
+			if (dlo <= 0.0 && !skyHaze && (LEAN || P.a.x <= 0.0 || (int(P.a.y) & 1) == 0) && dhi <= dMinPos * 1.25) {
+				float wTerr = (dq.x > 0.0 ? wq.x : 0.0) + (dq.y > 0.0 ? wq.y : 0.0)
+				            + (dq.z > 0.0 ? wq.z : 0.0) + (dq.w > 0.0 ? wq.w : 0.0);
+				float3 pRep = d > 0.0 ? wp : shadeWorldFromDepth(uv, dhi, f);
+				if (dot(pRep, pRep) > hazeNear) {
+					float3 Tk, Uk;
+					float3 Sk = shadeHazeInscatter(pRep, f, L, 1.0, Tk, Uk);
+					if (hazeFade) { float kk = shadeHazeBorderKeep(pRep, L); Tk = mix(float3(1.0), Tk, kk); Sk *= kk; Uk *= kk; }
+					T = mix(float3(1.0), Tk, wTerr);
+					c = c * T + Sk * (wTerr * ex);
+					sunGlow = Uk * (wTerr * ex);
 				}
-				if (eval) {
-					float tLen = length(pk);
-					float dy = pk.y / max(tLen, 1e-4);
-					float dR = shadeLayerDepth(ycEdge, dy, tLen, L.fogMisc.x, L.fogR.w);
-					float dM = shadeLayerDepth(ycEdge, dy, tLen, L.fogM.z, L.fogM.y);
-					float3 tauR = L.fogR.rgb * dR;
-					float tauM = L.fogM.x * dM;
-					float3 tau = tauR + tauM;
-					Tk = exp(-tau);
-					float3 w = (1.0 - Tk) / max(tau, 1e-6);
-					Uk = w * (tauR * sunR + tauM * sunM);
-					Sk = w * (tauR * sR + tauM * sM) + (1.0 - Tk) * cave;
-					if (hazeFade && dq[k] > 0.0) { float kk = shadeHazeBorderKeep(pk, L); Tk = mix(float3(1.0), Tk, kk); Sk *= kk; Uk *= kk; }
-				}
-				Ts += Tk * wq[k];
-				Ss += Sk * wq[k];
-				Us += Uk * wq[k];
+			} else {
+				float3 Ts, Ss, Us;
+				shadeHazeEdgeSlow(uv, dsize, t0, dq, wq, hazeNear, skyHaze, hazeFade, f, L, Ts, Ss, Us, dkq);
+				T = Ts;
+				c = c * Ts + Ss * ex;
+				sunGlow = Us * ex;
+				hazeEdge = true;
+				wqq = wq;
 			}
-			T = Ts;
-			c = c * Ts + Ss * ex;
-			sunGlow = Us * ex;
-			hazeEdge = true;
-			wqq = wq;
 		} else if (d > 0.0 && dot(wp, wp) > hazeNear) {
 			float3 U;
 			float3 S = shadeHazeInscatter(skyHaze ? shadeHazeBorderClamp(wp, L) : wp, f, L, 1.0, T, U);
@@ -530,7 +569,7 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 		float3 lo = lit * (P.a.x > 0.0 && d > 0.0 ? P.a.x : 0.55);
 		if (P.a.z > 0.0 && P.a.x > 0.0 && d > 0.0) {
 			lo = max(lit - sunGlow * tv, 0.0);
-			if (any(add < -sunGlow * tv)) lo = max(lo - shadeAerialSunGlow(wp, skyLut, lutS, f, L) * (ex * tv), 0.0);
+			if (any(add < -sunGlow * tv)) lo = max(lo - shadeAerialSunGlowCold(wp, skyLut, lutS, f, L) * (ex * tv), 0.0);
 		}
 		c = max(lit + add, lo);
 	}
@@ -540,26 +579,27 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 		float m = L.bloom.x + (d > 0.0 ? L.bloom.z * (1.0 - shadeLuma(T) * tv) : L.bloom.z * (0.25 + 0.75 * (1.0 - tv)));
 		c = mix(c, b, saturate(m));
 	}
-	// Purkinje: dim light (scene luminance, not exposed) shifts toward the rods' cool grey
-	float lc = shadeLuma(c);
-	lum = lc / ex;
+	// (2.0.1 opt) Purkinje, vignette, vibrance in FP16 on Apple9 dual-issue ALUs (luma/ex kept FP32 for debug/threshold precision)
+	half3 ch = half3(min(max(c, 0.0), 60000.0));
+	half lch = shadeLumaH(ch);
+	lum = float(lch) / ex;
 	if (lum < 0.04 && L.grade1.w > 0.0) { // (FT2.8, audit idx 39: elsewhere a mix by 0, the same pixel)
-		float rods = (1.0 - smoothstep(0.004, 0.04, lum)) * L.grade1.w;
-		c = mix(c, float3(lc) * float3(0.72, 0.88, 1.3), rods);
-		lc = shadeLuma(c);
+		half rods = half((1.0 - smoothstep(0.004, 0.04, lum)) * L.grade1.w);
+		ch = mix(ch, half3(lch) * half3(0.72h, 0.88h, 1.3h), rods);
+		lch = shadeLumaH(ch);
 	}
 	// vignette (sparing what is bright); (2.0.1 opt) sub-bit-exact x^2.4 fit avoids pow(log2+exp2) at full output resolution
-	float2 r = (in.uv - 0.5) * float2(float(scene.get_width()) / float(scene.get_height()), 1.0);
-	float vx = saturate(length(r) * 1.25);
-	float vr = (vx * vx) * (0.8 * sqrt(vx) + 0.2);
-	float vig = 1.0 - L.user0.y * vr * (1.0 - 0.5 * saturate(lc - 1.0)); // (1.1) user0.y: the vignette (0.12 as released)
-	c *= vig;
+	half2 rh = half2((in.uv - 0.5) * float2(float(scene.get_width()) / float(scene.get_height()), 1.0));
+	half vx = saturate(length(rh) * 1.25h);
+	half vr = (vx * vx) * (0.8h * sqrt(vx) + 0.2h);
+	half vig = 1.0h - half(L.user0.y) * vr * (1.0h - 0.5h * saturate(lch - 1.0h)); // (1.1) user0.y: the vignette (0.12 as released)
+	ch *= vig;
 	// vibrance: saturate the less saturated colours more
-	float Y = lc * vig;
-	float mx = max(max(c.r, c.g), c.b), mn = min(min(c.r, c.g), c.b);
-	float chroma = (mx - mn) / max(mx, 1e-4);
-	c = max(Y + (c - Y) * (1.0 + L.grade0.z * (1.0 - saturate(chroma * (1.0 / 0.6)))), 0.0);
-	return c;
+	half Y = lch * vig;
+	half mx = max(max(ch.r, ch.g), ch.b), mn = min(min(ch.r, ch.g), ch.b);
+	half chroma = (mx - mn) / max(mx, 1e-4h);
+	ch = max(Y + (ch - Y) * (1.0h + half(L.grade0.z) * (1.0h - saturate(chroma * half(1.0 / 0.6)))), 0.0h);
+	return float3(ch);
 }
 
 // Smooth, monotonic shadow toe: derivative 1 - exp(-y / phi) is nonnegative. The old -3 exponent reversed the darkest
@@ -569,16 +609,22 @@ static inline float3 shadeBlackFloor(float3 y, float phi) {
 	return y;
 }
 
+static inline half3 shadeLinearToSrgbFast(half3 y) {
+	half3 hi = 1.055h * exp2(log2(max(y, 1e-6h)) * half(1.0 / 2.4)) - 0.055h;
+	return select(hi, y * 12.92h, y <= 0.0031308h);
+}
+
 // The SDR display value -> what main stores: black floor, sRGB, triangular dither (+-1 LSB), debug view 4.
 template <bool LEAN = false>
 static inline float3 shadeFinalEncode(float3 y, float4 position, constant ShadeFinalParams &P, constant ShadeLook &L, float lum) {
 	y = shadeBlackFloor(y, L.grade2.w);
-	float3 srgb = shadeLinearToSrgbExact(saturate(y));
-	// triangular dither, +-1 LSB
-	float n0 = shadeNoise(position.xy, int(P.p.z)), n1 = shadeNoise(position.xy + 17.0, int(P.p.z) + 7);
-	srgb += (n0 + n1 - 1.0) * (L.output.z / 255.0);
-	if (!LEAN && P.p.w == 4.0) srgb = float3(saturate(log2(max(lum, 1e-6)) / 16.0 + 0.6)); // debug: luminance (log)
-	return saturate(srgb);
+	half3 srgb = shadeLinearToSrgbFast(half3(saturate(y)));
+	// (2.0.1 opt) single-IGN triangular dither (+-1 LSB, identical PDF with 1 IGN hash instead of 2)
+	half n = half(shadeNoise(position.xy, int(P.p.z))) * 2.0h - 1.0h;
+	half tri = sign(n) * (1.0h - sqrt(max(1.0h - abs(n), 0.0h)));
+	srgb += tri * half(L.output.z / 255.0);
+	if (!LEAN && P.p.w == 4.0) srgb = half3(half(saturate(log2(max(lum, 1e-6)) / 16.0 + 0.6))); // debug: luminance (log)
+	return float3(saturate(srgb));
 }
 
 #define SHADE_FINAL_ARGS ShadeFsOut in [[stage_in]], texture2d<half> scene [[texture(0)]], texture2d<half> bloom [[texture(1)]], \
@@ -691,13 +737,16 @@ kernel void shade_histogram(texture2d<half> src [[texture(0)]], device ShadeGpu 
 	if (lid < 64) atomic_store_explicit(&bins[lid], 0u, memory_order_relaxed);
 	threadgroup_barrier(mem_flags::mem_threadgroup);
 	uint w = src.get_width(), h = src.get_height();
-	if (id.x < w && id.y < h) {
-		float ex = max(g.exposure.x, 1e-6);
-		float lum = float(shadeLumaH(src.read(id).rgb)) / ex;
-		float t = (log2(max(lum, 1e-7)) - SHADE_HIST_MIN) / (SHADE_HIST_MAX - SHADE_HIST_MIN);
+	// (2.0.1 opt) 2x2 rotating strided grid dispatched at ((w+1)/2, (h+1)/2) + log2 subtraction instead of division per thread
+	uint phase = uint(g.scene.w) & 3u;
+	uint2 p = id * 2u + uint2(phase & 1u, (phase >> 1u) & 1u);
+	if (p.x < w && p.y < h) {
+		float logEx = log2(max(g.exposure.x, 1e-6));
+		float logLum = log2(max(float(shadeLumaH(src.read(p).rgb)), 1e-7)) - logEx;
+		float t = (logLum - SHADE_HIST_MIN) * (1.0 / (SHADE_HIST_MAX - SHADE_HIST_MIN));
 		uint bin = uint(clamp(t * 64.0, 0.0, 63.0));
-		float2 r = (float2(id) + 0.5) / float2(w, h) - 0.5;
-		float weight = exp(-dot(r, r) / 0.3);
+		float2 r = (float2(p) + 0.5) / float2(w, h) - 0.5;
+		float weight = exp(-dot(r, r) * (1.0 / 0.3));
 		// (FT2.8, audit idx 53: no "hand's corner" de-weight: in GL row order r.y > 0.2 is the TOP right, usually sky, and the hand is
 		// drawn after the final pass, never in this image)
 		atomic_fetch_add_explicit(&bins[bin], uint(weight * 16.0 + 0.5), memory_order_relaxed);

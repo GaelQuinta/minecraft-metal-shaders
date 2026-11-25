@@ -13,7 +13,8 @@
 // publishes the outputs in ShadeResources (12 shadow, 13 dome, 14 screen history). Manual retain/release (-fno-objc-arc).
 #import "mcmetal.h"
 
-int mc_shade_bind_render(id<MTLRenderCommandEncoder> r);
+void mc_shade_bind_sky_lut(id<MTLRenderCommandEncoder> r);
+void mc_shade_bind_frame_look_gpu(id<MTLRenderCommandEncoder> r);
 
 #define CLOUD_TIME_RING 4
 #define CLOUD_PASSES 4
@@ -33,7 +34,7 @@ typedef struct {
 	id<MTLTexture> noise, weather, shadowMap;
 	id<MTLTexture> vanilla; // (1.1) the game's cloud texture as a 0/1 mask (mc_clouds_vanilla): the blocky style's cells
 	id<MTLTexture> marchColor, marchDist, hist[2], data[2], dataSt[2], domeTex[2];
-	int hw, hh, mw, mh, dw, dh, cur, domeCur;
+	int hw, hh, mw, mh, dw, dh, cur, domeCur, domeSlice;
 	int histSt; // (1.2.3) hist[cur] came from cloud_resolve_st (flag 16): dataSt[cur] holds its distances (cloud_over reads them)
 	// GPU timer (flag 8): fragment start/end per pass, a ring of 4 frames
 	id<MTLCounterSampleBuffer> times;
@@ -78,7 +79,7 @@ static id<MTLRenderPipelineState> cloudPso(id<MTLDevice> dev, id<MTLLibrary> lib
 // The three lean pipelines for one key (march, resolve, resolve_st), as mc_clouds_lean and mc_clouds_warm_lean build them.
 static int cloudLeanPsos(id<MTLDevice> dev, id<MTLLibrary> lib, int devBits, int modeBits, float style, id<MTLRenderPipelineState> out[3]) {
 	char err[512];
-	out[0] = cloudPsoFc(dev, lib, @"cloud_march", MTLPixelFormatRGBA16Float, MTLPixelFormatR32Float, 1, devBits, modeBits, style, err, sizeof err);
+	out[0] = cloudPsoFc(dev, lib, @"cloud_march", MTLPixelFormatRGBA16Float, MTLPixelFormatR16Float, 1, devBits, modeBits, style, err, sizeof err);
 	out[1] = cloudPsoFc(dev, lib, @"cloud_resolve", MTLPixelFormatRGBA16Float, MTLPixelFormatR8Unorm, 1, devBits, modeBits, style, err, sizeof err);
 	out[2] = cloudPsoFc(dev, lib, @"cloud_resolve_st", MTLPixelFormatRGBA16Float, MTLPixelFormatR16Uint, 1, devBits, modeBits, style, err, sizeof err);
 	if (out[0] && out[1] && out[2]) return 1;
@@ -103,10 +104,12 @@ static id<MTLComputePipelineState> cloudKernel(id<MTLDevice> dev, id<MTLLibrary>
 	return p;
 }
 
-static id<MTLTexture> cloudTarget(id<MTLDevice> dev, MTLPixelFormat format, int w, int h, NSString *label) {
+static id<MTLTexture> cloudTarget(id<MTLDevice> dev, MTLPixelFormat format, int w, int h, int lossy, NSString *label) {
 	MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format width:(NSUInteger) w height:(NSUInteger) h mipmapped:NO];
 	td.storageMode = MTLStorageModePrivate;
 	td.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+	if (lossy && [dev supportsFamily:MTLGPUFamilyApple8] && format != MTLPixelFormatRG11B10Float && format != MTLPixelFormatRGB9E5Float)
+		td.compressionType = MTLTextureCompressionTypeLossy;
 	id<MTLTexture> t = [dev newTextureWithDescriptor:td];
 	t.label = label;
 	return t;
@@ -190,11 +193,11 @@ CloudState *mc_clouds_new(Ctx *ctx, const char *source, char *err, int errCap) {
 		}
 		s->bakeNoise = cloudKernel(dev, s->lib, @"cloud_bake_noise", err, errCap);
 		s->bakeWeather = cloudKernel(dev, s->lib, @"cloud_bake_weather", err, errCap);
-		s->march = cloudPso(dev, s->lib, @"cloud_march", MTLPixelFormatRGBA16Float, MTLPixelFormatR32Float, err, errCap);
+		s->march = cloudPso(dev, s->lib, @"cloud_march", MTLPixelFormatRGBA16Float, MTLPixelFormatR16Float, err, errCap);
 		s->resolve = cloudPso(dev, s->lib, @"cloud_resolve", MTLPixelFormatRGBA16Float, MTLPixelFormatR8Unorm, err, errCap);
 		s->resolveSt = cloudPso(dev, s->lib, @"cloud_resolve_st", MTLPixelFormatRGBA16Float, MTLPixelFormatR16Uint, err, errCap);
 		s->dome = cloudPso(dev, s->lib, @"cloud_dome", MTLPixelFormatRGBA16Float, MTLPixelFormatInvalid, err, errCap);
-		s->shadow = cloudPso(dev, s->lib, @"cloud_shadow", MTLPixelFormatR16Float, MTLPixelFormatInvalid, err, errCap);
+		s->shadow = cloudPso(dev, s->lib, @"cloud_shadow", MTLPixelFormatR8Unorm, MTLPixelFormatInvalid, err, errCap);
 		if (!s->bakeNoise || !s->bakeWeather || !s->march || !s->resolve || !s->resolveSt || !s->dome || !s->shadow) {
 			mc_clouds_free(s);
 			return NULL;
@@ -214,7 +217,7 @@ CloudState *mc_clouds_new(Ctx *ctx, const char *source, char *err, int errCap) {
 		wd.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
 		s->weather = [dev newTextureWithDescriptor:wd];
 		s->weather.label = @"mcopt shade: cloud weather map";
-		s->shadowMap = cloudTarget(dev, MTLPixelFormatR16Float, 256, 256, @"mcopt shade: cloud shadow");
+		s->shadowMap = cloudTarget(dev, MTLPixelFormatR8Unorm, 256, 256, 0, @"mcopt shade: cloud shadow");
 		id<MTLCommandBuffer> cb = [ctx->queue commandBuffer];
 		id<MTLComputeCommandEncoder> c = [cb computeCommandEncoder];
 		c.label = @"mcopt shade: cloud noise bakes";
@@ -286,12 +289,12 @@ int mc_clouds_size(CloudState *s, Ctx *ctx, int hw, int hh, int mw, int mh, int 
 				[s->data[i] release];
 				[s->dataSt[i] release];
 			}
-			s->marchColor = cloudTarget(dev, MTLPixelFormatRGBA16Float, mw, mh, @"mcopt shade: cloud march");
-			s->marchDist = cloudTarget(dev, MTLPixelFormatR32Float, mw, mh, @"mcopt shade: cloud march distance");
+			s->marchColor = cloudTarget(dev, MTLPixelFormatRGBA16Float, mw, mh, 1, @"mcopt shade: cloud march");
+			s->marchDist = cloudTarget(dev, MTLPixelFormatR16Float, mw, mh, 0, @"mcopt shade: cloud march distance");
 			for (int i = 0; i < 2; i++) {
-				s->hist[i] = cloudTarget(dev, MTLPixelFormatRGBA16Float, hw, hh, i ? @"mcopt shade: cloud history B" : @"mcopt shade: cloud history A");
-				s->data[i] = cloudTarget(dev, MTLPixelFormatR8Unorm, hw, hh, i ? @"mcopt shade: cloud age B" : @"mcopt shade: cloud age A");
-				s->dataSt[i] = cloudTarget(dev, MTLPixelFormatR16Uint, hw, hh, i ? @"mcopt shade: cloud age+distance B" : @"mcopt shade: cloud age+distance A");
+				s->hist[i] = cloudTarget(dev, MTLPixelFormatRGBA16Float, hw, hh, 0, i ? @"mcopt shade: cloud history B" : @"mcopt shade: cloud history A");
+				s->data[i] = cloudTarget(dev, MTLPixelFormatR8Unorm, hw, hh, 0, i ? @"mcopt shade: cloud age B" : @"mcopt shade: cloud age A");
+				s->dataSt[i] = cloudTarget(dev, MTLPixelFormatR16Uint, hw, hh, 0, i ? @"mcopt shade: cloud age+distance B" : @"mcopt shade: cloud age+distance A");
 			}
 			s->hw = hw;
 			s->hh = hh;
@@ -302,10 +305,11 @@ int mc_clouds_size(CloudState *s, Ctx *ctx, int hw, int hh, int mw, int mh, int 
 		if (dw != s->dw || dh != s->dh) {
 			for (int i = 0; i < 2; i++) {
 				[s->domeTex[i] release];
-				s->domeTex[i] = cloudTarget(dev, MTLPixelFormatRGBA16Float, dw, dh, i ? @"mcopt shade: cloud dome B" : @"mcopt shade: cloud dome A");
+				s->domeTex[i] = cloudTarget(dev, MTLPixelFormatRGBA16Float, dw, dh, 1, i ? @"mcopt shade: cloud dome B" : @"mcopt shade: cloud dome A");
 			}
 			s->dw = dw;
 			s->dh = dh;
+			s->domeSlice = 0;
 			changed = 1;
 		}
 	}
@@ -313,7 +317,8 @@ int mc_clouds_size(CloudState *s, Ctx *ctx, int hw, int hh, int mw, int mh, int 
 }
 
 static void cloudPass(id<MTLCommandBuffer> cb, id<MTLRenderPipelineState> p, id<MTLTexture> out0, id<MTLTexture> out1, NSString *label,
-	const void *params, int bytes, id<MTLTexture> const *inputs, int count, id<MTLCounterSampleBuffer> times, int sample) {
+	const void *params, int bytes, id<MTLTexture> const *inputs, int count, int bindSkyLut, MTLLoadAction load0, const MTLScissorRect *scissor,
+	id<MTLCounterSampleBuffer> times, int sample) {
 	MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
 	if (times) {
 		rp.sampleBufferAttachments[0].sampleBuffer = times;
@@ -323,7 +328,7 @@ static void cloudPass(id<MTLCommandBuffer> cb, id<MTLRenderPipelineState> p, id<
 		rp.sampleBufferAttachments[0].endOfFragmentSampleIndex = (NSUInteger) sample + 1;
 	}
 	rp.colorAttachments[0].texture = out0;
-	rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+	rp.colorAttachments[0].loadAction = load0;
 	rp.colorAttachments[0].storeAction = MTLStoreActionStore;
 	if (out1) {
 		rp.colorAttachments[1].texture = out1;
@@ -333,7 +338,8 @@ static void cloudPass(id<MTLCommandBuffer> cb, id<MTLRenderPipelineState> p, id<
 	id<MTLRenderCommandEncoder> r = [cb renderCommandEncoderWithDescriptor:rp];
 	r.label = label;
 	[r setRenderPipelineState:p];
-	mc_shade_bind_render(r);
+	if (scissor) [r setScissorRect:*scissor];
+	if (bindSkyLut) mc_shade_bind_sky_lut(r);
 	[r setFragmentBytes:params length:(NSUInteger) bytes atIndex:0];
 	for (int i = 0; i < count; i++) if (inputs[i]) [r setFragmentTexture:inputs[i] atIndex:(NSUInteger) i];
 	[r drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
@@ -384,7 +390,7 @@ void mc_clouds_render(Enc *enc, CloudState *s, const void *params, int bytes, in
 		}
 		if (flags & 1) {
 			id<MTLTexture> in[2] = {weather, s->noise};
-			cloudPass(cb, s->shadow, s->shadowMap, nil, @"mcopt shade: cloud shadow", params, bytes, in, 2, times, base);
+			cloudPass(cb, s->shadow, s->shadowMap, nil, @"mcopt shade: cloud shadow", params, bytes, in, 2, 0, MTLLoadActionDontCare, NULL, times, base);
 		}
 		if (flags & 2) {
 			// (v12-opt, flag 64: mcopt.shade.cloudLean) the specialized march and resolve when this frame's dev bits (lightDir.w, float
@@ -393,21 +399,37 @@ void mc_clouds_render(Enc *enc, CloudState *s, const void *params, int bytes, in
 			int lean = (flags & 64) && s->marchLean && bytes >= 448 && (int) pf[63] == s->leanDev && (int) pf[103] == s->leanMode && pf[107] == s->leanStyle;
 			id<MTLTexture> in[2] = {weather, s->noise};
 			cloudPass(cb, lean ? s->marchLean : s->march, s->marchColor, s->marchDist, lean ? @"mcopt shade: cloud march (lean)" : @"mcopt shade: cloud march", params,
-				bytes, in, 2, times, base + 2);
+				bytes, in, 2, 1, MTLLoadActionDontCare, NULL, times, base + 2);
 			int next = s->cur ^ 1;
 			BOOL st = (flags & 16) != 0;
 			id<MTLTexture> const *data = st ? s->dataSt : s->data;
 			id<MTLTexture> in2[4] = {s->marchColor, s->marchDist, s->hist[s->cur], data[s->cur]};
 			id<MTLRenderPipelineState> rs = st ? (lean ? s->resolveStLean : s->resolveSt) : (lean ? s->resolveLean : s->resolve);
-			cloudPass(cb, rs, s->hist[next], data[next], @"mcopt shade: cloud resolve", params, bytes, in2, 4, times, base + 4);
+			cloudPass(cb, rs, s->hist[next], data[next], @"mcopt shade: cloud resolve", params, bytes, in2, 4, 0, MTLLoadActionDontCare, NULL, times, base + 4);
 			s->cur = next;
 			s->histSt = st;
 		}
 		if (flags & 4) {
 			int next = s->domeCur ^ 1;
 			id<MTLTexture> in[3] = {weather, s->noise, s->domeTex[s->domeCur]};
-			cloudPass(cb, s->dome, s->domeTex[next], nil, @"mcopt shade: cloud dome", params, bytes, in, 3, times, base + 6);
-			s->domeCur = next;
+			if (flags & 128) {
+				// (2.0.1 opt) time-sliced 4-strip dome update: renders 1/4 vertical azimuth strip per pass into domeTex[next], flips domeCur on slice 3
+				int slice = s->domeSlice;
+				int w0 = s->dw / 4;
+				int x0 = slice * w0;
+				int sw = slice == 3 ? (s->dw - x0) : w0;
+				MTLScissorRect sc = {(NSUInteger) x0, 0, (NSUInteger) sw, (NSUInteger) s->dh};
+				MTLLoadAction la = slice == 0 ? MTLLoadActionDontCare : MTLLoadActionLoad;
+				cloudPass(cb, s->dome, s->domeTex[next], nil, @"mcopt shade: cloud dome", params, bytes, in, 3, 1, la, &sc, times, base + 6);
+				if (++s->domeSlice >= 4) {
+					s->domeSlice = 0;
+					s->domeCur = next;
+				}
+			} else {
+				s->domeSlice = 0;
+				cloudPass(cb, s->dome, s->domeTex[next], nil, @"mcopt shade: cloud dome", params, bytes, in, 3, 1, MTLLoadActionDontCare, NULL, times, base + 6);
+				s->domeCur = next;
+			}
 		}
 	}
 }
@@ -442,11 +464,15 @@ void mc_clouds_over(Enc *enc, CloudState *s, id<MTLTexture> scene, id<MTLTexture
 		rp.colorAttachments[0].texture = scene;
 		rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
 		rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+		if (liveW > 0 && liveH > 0) {
+			rp.renderTargetWidth = (NSUInteger) liveW;
+			rp.renderTargetHeight = (NSUInteger) liveH;
+		}
 		id<MTLRenderCommandEncoder> r = [cb renderCommandEncoderWithDescriptor:rp];
 		r.label = @"mcopt shade: clouds over the world";
 		[r setRenderPipelineState:s->over];
 		if (liveW > 0 && liveH > 0) [r setViewport:(MTLViewport) {0, 0, liveW, liveH, 0, 1}];
-		mc_shade_bind_render(r);
+		mc_shade_bind_frame_look_gpu(r);
 		[r setFragmentTexture:depth atIndex:0];
 		[r setFragmentTexture:s->marchDist atIndex:1];
 		[r setFragmentTexture:s->hist[s->cur] atIndex:2];
@@ -476,11 +502,11 @@ int mc_clouds_warm(Ctx *ctx, id<MTLLibrary> lib) {
 		id built[7] = {
 			cloudKernel(dev, lib, @"cloud_bake_noise", err, sizeof err),
 			cloudKernel(dev, lib, @"cloud_bake_weather", err, sizeof err),
-			cloudPso(dev, lib, @"cloud_march", MTLPixelFormatRGBA16Float, MTLPixelFormatR32Float, err, sizeof err),
+			cloudPso(dev, lib, @"cloud_march", MTLPixelFormatRGBA16Float, MTLPixelFormatR16Float, err, sizeof err),
 			cloudPso(dev, lib, @"cloud_resolve", MTLPixelFormatRGBA16Float, MTLPixelFormatR8Unorm, err, sizeof err),
 			cloudPso(dev, lib, @"cloud_resolve_st", MTLPixelFormatRGBA16Float, MTLPixelFormatR16Uint, err, sizeof err),
 			cloudPso(dev, lib, @"cloud_dome", MTLPixelFormatRGBA16Float, MTLPixelFormatInvalid, err, sizeof err),
-			cloudPso(dev, lib, @"cloud_shadow", MTLPixelFormatR16Float, MTLPixelFormatInvalid, err, sizeof err),
+			cloudPso(dev, lib, @"cloud_shadow", MTLPixelFormatR8Unorm, MTLPixelFormatInvalid, err, sizeof err),
 		};
 		int failed = 0;
 		for (int i = 0; i < 7; i++) {

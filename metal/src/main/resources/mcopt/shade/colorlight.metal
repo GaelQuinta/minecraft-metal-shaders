@@ -152,10 +152,11 @@ kernel void shade_cl_clear(uint3 tg3 [[threadgroup_position_in_grid]], uint3 tid
 // sampler repeats).
 static float3 shadeClSample(constant ShadeColorLights &H, texture3d<float> tex, int3 qi, float3 qf, bool coarse) {
 	int4 dm = coarse ? H.coarseDim : H.fineDim;
-	float3 size = float3(dm.xyz * 16);
-	float3 c = coarse ? float3(shadeClMod(qi >> 2, dm.xyz * 16)) + (float3(qi & 3) + qf) * 0.25 : float3(shadeClMod(qi, dm.xyz * 16)) + qf;
+	int3 sz = dm.xyz * 16;
+	// (2.0.1 opt) fine dims (16, 8, 16) * 16 = (256, 128, 256) are powers of two: bitwise mask avoids 3 integer divisions per vertex
+	float3 c = coarse ? float3(shadeClMod(qi >> 2, sz)) + (float3(qi & 3) + qf) * 0.25 : float3(qi & (sz - 1)) + qf;
 	constexpr sampler s(filter::linear, address::repeat, coord::normalized);
-	float3 lv = tex.sample(s, c / size).rgb * (255.0 / 8.0) - SHADE_CL_BIAS;
+	float3 lv = tex.sample(s, c / float3(sz)).rgb * (255.0 / 8.0) - SHADE_CL_BIAS;
 	return max(lv.x, max(lv.y, lv.z)) < -2.5 ? float3(0.0) : exp2(lv - 15.0);
 }
 
@@ -176,10 +177,12 @@ static float3 shadeColorLightAt(constant ShadeColorLights &H, texture3d<float> f
 	if (H.fineMin.w == 0 || H.tune.x <= 0.0 || block < 0.02) return float3(0.0);
 	float band = max(H.tune.z, 1.0);
 	float wFine = saturate(shadeClInside(qi, H.fineMin, H.fineDim, 16) / band);
-	float wCoarse = saturate(shadeClInside(qi, H.coarseMin, H.coarseDim, 64) / (2.0 * band));
 	float3 L = 0.0;
-	if (wFine > 0.0) L = shadeClSample(H, fineTex, qi, qf, false) * wFine;
-	if (wFine < 1.0 && wCoarse > 0.0) L += shadeClSample(H, coarseTex, qi, qf, true) * (wCoarse * (1.0 - wFine));
+	if (wFine > 0.0 && H.fineDim.w != 0) L = shadeClSample(H, fineTex, qi, qf, false) * wFine;
+	if (wFine < 1.0 && H.coarseDim.w != 0) {
+		float wCoarse = saturate(shadeClInside(qi, H.coarseMin, H.coarseDim, 64) / (2.0 * band));
+		if (wCoarse > 0.0) L += shadeClSample(H, coarseTex, qi, qf, true) * (wCoarse * (1.0 - wFine));
+	}
 	float lmax = max(L.x, max(L.y, L.z));
 	if (lmax <= 1e-6) return float3(0.0);
 	float level = 15.0 + log2(lmax);

@@ -148,7 +148,8 @@ static inline half3 taaCatmullRom(texture2d<half> tex, sampler s, float2 uv, flo
 		+ taaTap(cc.rgb, rescale, comp) * (w12.x * w12.y)
 		+ taaTap(tex.sample(s, float2(t3.x, t12.y)).rgb, rescale, comp) * (w3.x * w12.y)
 		+ taaTap(tex.sample(s, float2(t12.x, t3.y)).rgb, rescale, comp) * (w12.x * w3.y);
-	half wsum = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;
+	// (2.0.1 opt) exact identity since w0 + w12 + w3 == 1: wsum = w12.x + w12.y - w12.x * w12.y
+	half wsum = w12.x + w12.y - w12.x * w12.y;
 	return max(c / wsum, 0.0h); // the spline's negative lobes can ring below 0 at hard edges
 }
 
@@ -170,10 +171,13 @@ static inline TaaOut taauResolve(float2 q, constant TaaParams &p, constant float
 	int2 last = int2(p.input.xy) - 1;
 	int2 base = clamp(int2(floor(pin)), int2(1), last - 1); // the 3x3 stays inside the live sub-rect (the rest is stale)
 
-	// The 3x3 input neighbourhood: a reconstruction of this frame's colour at q (Gaussian fit of Blackman-Harris, radius
-	// ~1 input pixel, separable so 6 exponentials instead of 9), and its moments for rectifying the history (in RGB: YCoCg
-	// tested no better on tools/shade/taatest and costs ALU, which this pass is bound by; a 5-tap cross instead of 3x3 was
-	// 0.06 ms cheaper but flickered 20-25% more in motion).
+	// (2.0.1 opt) issue depth gather BEFORE 3x3 colour loop so its latency hides behind the 9 reads AND we capture the
+	// nearest corner's alpha (la) directly inside the 3x3 loop, eliminating 5.9M redundant cur.gather(..., component::w) calls
+	constexpr sampler point(filter::nearest, address::clamp_to_edge);
+	float4 z4 = curDepth.gather(point, pin / float2(curDepth.get_width(), curDepth.get_height()));
+	float zmax = max(max(z4.x, z4.y), max(z4.z, z4.w));
+
+	// The 3x3 input neighbourhood: a reconstruction of this frame's colour at q (separable Gaussian fit of Blackman-Harris)
 	half2 off = half2(float2(base) + 0.5 - pin);        // offset of the base texel's centre from pin, in (-1, 0] (wider at the edges)
 	half3 ox = half3(off.x - 1.0h, off.x, off.x + 1.0h), oy = half3(off.y - 1.0h, off.y, off.y + 1.0h);
 	half3 wx = exp2(-3.30377h * ox * ox), wy = exp2(-3.30377h * oy * oy);
@@ -181,59 +185,61 @@ static inline TaaOut taauResolve(float2 q, constant TaaParams &p, constant float
 	constexpr sampler texel(coord::pixel, filter::nearest, address::clamp_to_edge);
 	float2 centre = float2(base) + 0.5;
 	for (int dy = 0; dy < 3; dy++) {
+		half3 row = 0.0h;
 		for (int dx = 0; dx < 3; dx++) { // immediate texel offsets: no address maths per tap
 			// (1.2.4, issue #8) an Inf from a shader's own maths would compress to NaN: at most 60000 (NaN: 0, outweighed by its neighbours)
 			half3 c = taaCompress(clamp(cur.sample(texel, centre, int2(dx - 1, dy - 1)).rgb, 0.0h, 60000.0h));
-			sum += c * (wx[dx] * wy[dy]);
+			row += c * wx[dx];
 			m1 += c;
 			m2 += c * c;
 		}
+		sum += row * wy[dy];
 	}
-	// nearest of the 2x2 input depths around pin (one gather; reversed Z: the largest value is the nearest surface)
-	constexpr sampler point(filter::nearest, address::clamp_to_edge);
-	float4 z4 = curDepth.gather(point, pin / float2(curDepth.get_width(), curDepth.get_height()));
-	float zmax = max(max(z4.x, z4.y), max(z4.z, z4.w));
 	half wsum = (wx.x + wx.y + wx.z) * (wy.x + wy.y + wy.z);
 	half wnear = max3(wx.x, wx.y, wx.z) * max3(wy.x, wy.y, wy.z);
 	half3 current = sum / wsum;
 	half3 mean = m1 * (1.0h / 9.0h);
 	half3 sigma = sqrt(max(m2 * (1.0h / 9.0h) - mean * mean, 0.0h));
 
-	// Camera motion from depth: this pixel's (nearest) surface in last frame's clip space; on a moving entity (M3 movers)
-	// its surface point moved by that entity's render-position change since last frame.
+	// Camera motion from depth: this pixel's (nearest) surface in last frame's clip space
 	float2 ndc = q * p.output.zw * 2.0 - 1.0;
-	// (FT2.8, audit idx 64) the view depth is 1 / h.w (curRowW is row 3 of the viewProj invCur inverts), and with no movers this
-	// frame (uniform) last frame's clip is (prevVP invCur) v / h.w: one matrix (multiplied on the CPU in double), no world point
 	float4 v4 = float4(ndc, zmax, 1.0);
 	float iw = 1.0 / dot(float4(p.invCur[0].w, p.invCur[1].w, p.invCur[2].w, p.invCur[3].w), v4);
-	float4 prev = (p.reproj * v4) * iw;
 	float viewDepth = iw;
 	float3 moved = float3(0.0);
-	if (taaMoversOn && movers.count.x > 0u && zmax > 0.0) { // prevVP (world - moved, 1) = the above - prevVP (moved, 0)
-		moved = taaMoverDelta((p.invCur * v4).xyz * iw, movers);
-		prev -= p.prevVP * float4(moved, 0.0);
-	}
-	// (1.2.7 candidate 7) a waving leaf (the nearest of the 2x2, as the depth: alpha 2 + its amplitude) stood elsewhere last frame:
-	// reprojected from its own sway as well as the camera's. Without it a canopy moving close to a pixel a frame near the camera
-	// never settled: shimmering leaves, orange specks at sunset (Gael 2026-11-04). Its swaying shadows and light stay rectified.
+	// (2.0.1 opt) read leaf-sway alpha from L1-hot 3x3 footprint only on non-sky pixels when leafMotion is enabled (keeps 3x3 loop branchless)
+	half la = 0.0h;
 	if (p.leafCam.w > 0.5 && zmax > 0.0) {
-		half4 a4 = cur.gather(point, pin / float2(cur.get_width(), cur.get_height()), int2(0), component::w);
-		half la = z4.x == zmax ? a4.x : z4.y == zmax ? a4.y : z4.z == zmax ? a4.z : a4.w;
-		if (la > 1.5h) {
+		int dx0 = off.x > 0.0h ? -1 : 0, dx1 = dx0 + 1;
+		int dy0 = off.y > 0.0h ? -1 : 0, dy1 = dy0 + 1;
+		int2 pick = z4.x == zmax ? int2(dx0, dy1) : z4.y == zmax ? int2(dx1, dy1) : z4.z == zmax ? int2(dx1, dy0) : int2(dx0, dy0);
+		la = cur.read(uint2(base + pick)).a;
+	}
+	bool leafMoved = la > 1.5h;
+	// (2.0.1 opt) still camera + no movers + non-swaying pixel (blend.w < -0.5): exact pixel-center identity reprojection, 1 hist.read instead of 5-tap Catmull-Rom
+	bool stillPx = p.blend.w < -0.5 && !leafMoved && p.misc.w < 0.5;
+	float4 prev;
+	float2 uvPrev;
+	if (stillPx) {
+		prev = float4(ndc * iw, 0.0, iw);
+		uvPrev = q * p.output.zw;
+	} else {
+		prev = (p.reproj * v4) * iw;
+		if (taaMoversOn && movers.count.x > 0u && zmax > 0.0) {
+			moved = taaMoverDelta((p.invCur * v4).xyz * iw, movers);
+			prev -= p.prevVP * float4(moved, 0.0);
+		}
+		if (leafMoved) {
 			float A = float(la) - 2.0;
 			float3 w = (p.invCur * v4).xyz * iw;
 			float3 a = w + p.leafCam.xyz;
-			float3 leafMoved = taaLeafSway(a, p.leafNow, A) - taaLeafSway(a, p.leafPrev, A);
-			prev -= p.prevVP * float4(leafMoved, 0.0);
+			float3 leafDelta = taaLeafSway(a, p.leafNow, A) - taaLeafSway(a, p.leafPrev, A);
+			prev -= p.prevVP * float4(leafDelta, 0.0);
 		}
+		uvPrev = prev.xy / prev.w * 0.5 + 0.5;
 	}
-	float2 uvPrev = prev.xy / prev.w * 0.5 + 0.5;
 
 	TaaOut o;
-	// (FT2.7, audit idx 68) where nothing drew (reversed Z 0: the sky, clouds, aurora and every Distant Horizons LOD) the history
-	// keeps "sky" (~65000, as ShadeResources.prevDepth documents), not the far plane's axial depth: on a turn the far plane's
-	// depth at a sky point changes by F tan(phi) theta, which tripped the 3 % test at the screen's sides from ~1.4 degrees per
-	// frame (LOD ridges and the sun lost their history while panning). Sky is matched with sky, surfaces by depth.
 	bool skyNow = zmax <= 0.0;
 	o.depth = skyNow ? half(65000.0) : half(clamp(viewDepth, 0.0, 60000.0));
 	bool valid = p.blend.w < 0.5 && prev.w > 0.0 && all(uvPrev > 0.0) && all(uvPrev < 1.0);
@@ -241,17 +247,38 @@ static inline TaaOut taauResolve(float2 q, constant TaaParams &p, constant float
 	half3 history = current;
 	half disocclusion = 0.0h;
 	if (valid) {
-		uint2 hp = uint2(min(uvPrev * p.output.xy, p.output.xy - 1.0));
-		// Disocclusion: the surface last frame saw there is not the one we reprojected (it was hidden, or it moved).
+		uint2 hp = stillPx ? uint2(q) : uint2(min(uvPrev * p.output.xy, p.output.xy - 1.0));
 		float stored = float(histDepth.read(hp).r);
 		bool skyThen = stored > 60000.0;
 		float tolerance = 0.03 * prev.w + 0.1;
 		disocclusion = skyNow || skyThen ? half(skyNow != skyThen) : half(saturate((abs(stored - prev.w) - tolerance) / tolerance));
+		// (2.0.1 opt) skip 5-tap Catmull-Rom on full disocclusion, use exact 1-read on still pixels, and use 1 bilinear tap
+		// on flat low-variance gradients (sky, smooth clouds, calm ocean) where bilinear and Catmull-Rom are mathematically equal
+		if (disocclusion < 1.0h || p.misc.w >= 0.5) {
+			if (stillPx) {
+				half4 hc0 = hist.read(hp);
+				age = hc0.a;
 #ifndef TAA_LINEAR_HISTORY
-		history = taaCatmullRom(hist, linear, uvPrev, p.output.xy, p.output.zw, age, float(rescale), taaHdr);
+				history = taaTap(hc0.rgb, float(rescale), taaHdr);
 #else
-		history = taaCompress(min(taaCatmullRom(hist, linear, uvPrev, p.output.xy, p.output.zw, age) * rescale, half3(60000.0h))); // (1.2.4: x4 rescale)
+				history = taaCompress(min(min(hc0.rgb, half3(16384.0h)) * rescale, half3(60000.0h)));
 #endif
+			} else if (max3(sigma.x, sigma.y, sigma.z) < max(0.003h, max3(mean.x, mean.y, mean.z) * 0.01h)) {
+				half4 hc0 = hist.sample(linear, uvPrev);
+				age = hc0.a;
+#ifndef TAA_LINEAR_HISTORY
+				history = taaTap(hc0.rgb, float(rescale), taaHdr);
+#else
+				history = taaCompress(min(min(hc0.rgb, half3(16384.0h)) * rescale, half3(60000.0h)));
+#endif
+			} else {
+#ifndef TAA_LINEAR_HISTORY
+				history = taaCatmullRom(hist, linear, uvPrev, p.output.xy, p.output.zw, age, float(rescale), taaHdr);
+#else
+				history = taaCompress(min(taaCatmullRom(hist, linear, uvPrev, p.output.xy, p.output.zw, age) * rescale, half3(60000.0h)));
+#endif
+			}
+		}
 	}
 	// Rectify: the history may only take colours this frame's neighbourhood could produce (variance box). It is clipped
 	// toward the mean along the line between them, which (unlike a per-channel clamp) keeps the history's hue; outside = how
@@ -296,17 +323,17 @@ static inline TaaOut taauResolve(float2 q, constant TaaParams &p, constant float
 	// while strafing even though the reprojection is exact (taaDebug 4). A floor on the current frame's weight as soon as
 	// the pixel moves (full at 0.5 px/frame) keeps it (0.2: 0.31 of a 2.5 px period, 0.9 of a 3 px one), trading a little
 	// stability in motion, where shimmer is far less visible than smear.
-	float motionPx = length(uvPrev * p.output.xy - q);
-	half floorW = half(saturate(motionPx * 2.0));
-	// (candidate 7) sharpen.w: only as far as the history is actually resampled between its pixels (Photon MIT 26c2906e
-	// c4_taa_exposure offcenter_rejection, adapted): a reprojection that lands on a history pixel's centre does not blur, so it needs
-	// no floor. 1 at the centre, 0 halfway between pixels on both axes. (Photon shaders, MIT, (c) SixthSurge)
-	if (p.sharpen.w > 0.0) {
-		float2 px = 1.0 - abs(2.0 * fract(uvPrev * p.output.xy) - 1.0);
-		floorW *= half(mix(1.0, 1.0 - sqrt(px.x * px.y), p.sharpen.w));
+	half floorW = 0.0h;
+	if (!stillPx) {
+		float motionPx = length(uvPrev * p.output.xy - q);
+		floorW = half(saturate(motionPx * 2.0));
+		if (p.sharpen.w > 0.0) {
+			float2 px = 1.0 - abs(2.0 * fract(uvPrev * p.output.xy) - 1.0);
+			floorW *= half(mix(1.0, 1.0 - sqrt(px.x * px.y), p.sharpen.w));
+		}
 	}
 	alpha = max(alpha, half(p.sharpen.y) * floorW * kf);
-	if (p.misc.z > 0.0) alpha = max(alpha, reactive.read(uint2(clamp(base, int2(0), int2(reactive.get_width(), reactive.get_height()) - 1))).r * half(p.misc.z));
+	if (p.misc.z > 0.0 && alpha < 1.0h) alpha = max(alpha, reactive.read(uint2(clamp(base, int2(0), int2(reactive.get_width(), reactive.get_height()) - 1))).r * half(p.misc.z));
 	half3 resolved = mix(clipped, current, saturate(alpha));
 	float3 rgb = taaExpand(float3(resolved));
 	half newAge = min(age + 1.0h, half(p.blend.z));

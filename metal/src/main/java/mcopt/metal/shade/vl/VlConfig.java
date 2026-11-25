@@ -186,58 +186,37 @@ public final class VlConfig {
 	 * clear gaps near the sun (M33_MISC.md). 1 (or false) = M3.2; true = the default.
 	 */
 	public static float sunsetRays() {
-		String v = System.getProperty("mcopt.shade.vl.sunsetRays");
+		String v = Live.s("mcopt.shade.vl.sunsetRays", null);
 		if (v == null) return SUNSET_RAYS_DEFAULT;
-		v = v.trim();
 		if (v.equalsIgnoreCase("false") || v.equalsIgnoreCase("off")) return 1f;
 		if (v.equalsIgnoreCase("true") || v.equalsIgnoreCase("on")) return SUNSET_RAYS_DEFAULT;
-		return clamp(floatProperty("mcopt.shade.vl.sunsetRays", SUNSET_RAYS_DEFAULT), 0f, 4f);
+		return Live.f("mcopt.shade.vl.sunsetRays", SUNSET_RAYS_DEFAULT, 0f, 4f);
 	}
 
-	/**
-	 * M3.3, read every frame: mcopt.shade.vl.sunsetFar, the golden-hour gain (sunsetRays) measured from the crepuscular taps past
-	 * the pixel's own neighbourhood (vl.metal openFar): a clear pixel's own open mask no longer dilutes the shadow of a cloud
-	 * between it and the sun, so the shadow shafts read across the clear sky (M33_MISC.md). Default {@link #SUNSET_FAR_DEFAULT}.
-	 */
 	public static boolean sunsetFar() {
-		String v = System.getProperty("mcopt.shade.vl.sunsetFar");
-		return v == null ? SUNSET_FAR_DEFAULT : Boolean.parseBoolean(v.trim());
+		return Live.b("mcopt.shade.vl.sunsetFar", SUNSET_FAR_DEFAULT);
 	}
 
-	/** M3.3, read every frame: mcopt.shade.vl.sunsetFall, the falloff exponent of that gain around the sun (0 = the streaks' own, 6). */
 	public static float sunsetFall() {
-		String v = System.getProperty("mcopt.shade.vl.sunsetFall");
-		return v == null ? SUNSET_FALL_DEFAULT : clamp(floatProperty("mcopt.shade.vl.sunsetFall", SUNSET_FALL_DEFAULT), 0f, 16f);
+		return Live.f("mcopt.shade.vl.sunsetFall", SUNSET_FALL_DEFAULT, 0f, 16f);
 	}
 
-	/** M3.3 dev, read every frame: mcopt.shade.vl.skyRays, a gain on the sky's dark rays at any time (1; 0 = none: the ray-only metric). */
 	public static float skyRays() {
-		String v = System.getProperty("mcopt.shade.vl.skyRays");
-		return v == null ? 1f : clamp(floatProperty("mcopt.shade.vl.skyRays", 1f), 0f, 4f);
+		return Live.f("mcopt.shade.vl.skyRays", 1f, 0f, 4f);
 	}
 
-	/**
-	 * 2026-10-09 (Gael: the god rays "se ven poquito", dots where they cross leaves): the look's default, or FT2.1's with
-	 * mcopt.shade.vl.look=ft21 (read every frame, for in-session comparisons); either way the key itself overrides it.
-	 */
 	/** Whether mcopt.shade.vl.look=ft21 (FT2.1's look, read every frame). */
 	public static boolean ft21() {
-		return "ft21".equals(System.getProperty("mcopt.shade.vl.look"));
+		return "ft21".equals(Live.s("mcopt.shade.vl.look", null));
 	}
 
 	public static float look(String key, float now, float ft21) {
-		return live(key, "ft21".equals(System.getProperty("mcopt.shade.vl.look")) ? ft21 : now);
+		return live(key, ft21() ? ft21 : now);
 	}
 
-	/** A float system property read every frame (look development in one session: the bench's variant shots set it). */
+	/** A float system property read every frame, cached via Live. */
 	public static float live(String key, float def) {
-		String v = System.getProperty(key);
-		if (v == null) return def;
-		try {
-			return Float.parseFloat(v.trim());
-		} catch (NumberFormatException e) {
-			return def;
-		}
+		return Live.f(key, def);
 	}
 
 	static float floatProperty(String key, float def) {

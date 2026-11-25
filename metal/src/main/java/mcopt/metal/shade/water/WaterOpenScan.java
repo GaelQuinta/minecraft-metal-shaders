@@ -47,7 +47,7 @@ public final class WaterOpenScan {
 	/** Cells per side (2 blocks each): 256 blocks across, centred on the camera. Must match water.metal shadeWaterOpen (1 / 256). */
 	static final int N = 128;
 	private static final int Q = N / 2; // biome samples per side (4 blocks)
-	private static final int FAST = 1024, SLOW = 256;
+	private static final int FAST = 1024, SLOW = 48;
 	private static final byte LAND = 0, WATER = 1, UNKNOWN = 2;
 	// the toroidal stores: cell (cx, cz) at (cx & N-1) + N (cz & N-1), the cell each entry holds (stale entries are unknown)
 	private static final int[] CELL_X = new int[N * N], CELL_Z = new int[N * N];
@@ -57,11 +57,12 @@ public final class WaterOpenScan {
 	// the build's window (window cell (i, j) = world cell (centre - N/2 + i, ...))
 	private static final int[] DIST = new int[N * N];
 	private static final byte[] WIN = new byte[N * N];
-	private static final float[] OPEN = new float[N * N], TMP = new float[N * N];
+	private static final float[] OPEN = new float[N * N], TMP = new float[N * N], BLUR_H = new float[N * N];
 	private static ByteBuffer bytes;
 	private static int cursor;
 	private static int lastCx = Integer.MIN_VALUE, lastCz;
-	private static boolean complete, active;
+	private static float lastLake = Float.NaN, lastFetch = Float.NaN;
+	private static boolean complete, active, dirty;
 	private static ClientLevel lastLevel;
 
 	private WaterOpenScan() {
@@ -69,7 +70,8 @@ public final class WaterOpenScan {
 
 	/** Once per frame (WaterFrame.update): the next slice of the map around the camera at (x, z), and a new map when a pass ends. */
 	static void update(ClientLevel level, double x, double z) {
-		boolean want = level != null && mcopt.metal.shade.ShadeConfig.HDR && ShadeWater.swellCompiled()
+		boolean want = level != null && level.dimension() == net.minecraft.world.level.Level.OVERWORLD
+			&& mcopt.metal.shade.ShadeConfig.HDR && ShadeWater.swellCompiled() && !ShadeWater.fast()
 			&& Live.f("mcopt.shade.water.swell", 1.3f) > 0f && Live.f("mcopt.shade.water.swellOpen", 1f) > 0f;
 		if (!want) {
 			if (active) ShadeWater.openNone();
@@ -80,6 +82,7 @@ public final class WaterOpenScan {
 			lastLevel = level;
 			cursor = 0;
 			complete = false;
+			dirty = true;
 			lastCx = Integer.MIN_VALUE;
 			java.util.Arrays.fill(CELL_X, Integer.MIN_VALUE);
 			java.util.Arrays.fill(QUART_X, Integer.MIN_VALUE);
@@ -100,23 +103,39 @@ public final class WaterOpenScan {
 				chunk = level.getChunkSource().getChunk(chunkX, chunkZ, ChunkStatus.FULL, false);
 			}
 			int idx = (cx & (N - 1)) + N * (cz & (N - 1));
-			CELL_X[idx] = cx;
-			CELL_Z[idx] = cz;
+			byte newState;
 			if (chunk == null) {
-				STATE[idx] = UNKNOWN;
+				newState = UNKNOWN;
 			} else {
 				int h = chunk.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, bx, bz); // the top block that blocks motion or holds a fluid
-				STATE[idx] = chunk.getFluidState(bx, h, bz).getType().isSame(Fluids.WATER) ? WATER : LAND;
+				newState = chunk.getFluidState(bx, h, bz).getType().isSame(Fluids.WATER) ? WATER : LAND;
 				if (((cx | cz) & 1) == 0) { // a biome sample every 4 blocks, at that surface
 					int qx = cx >> 1, qz = cz >> 1, qi = (qx & (Q - 1)) + Q * (qz & (Q - 1));
-					QUART_X[qi] = qx;
-					QUART_Z[qi] = qz;
-					GAIN[qi] = gain(chunk.getNoiseBiome(bx >> 2, h >> 2, bz >> 2));
+					float g = gain(chunk.getNoiseBiome(bx >> 2, h >> 2, bz >> 2));
+					if (QUART_X[qi] != qx || QUART_Z[qi] != qz || GAIN[qi] != g) {
+						QUART_X[qi] = qx;
+						QUART_Z[qi] = qz;
+						GAIN[qi] = g;
+						dirty = true;
+					}
 				}
 			}
-			if (++cursor == N * N) { // a pass is done: the map around where the camera is now
+			if (CELL_X[idx] != cx || CELL_Z[idx] != cz || STATE[idx] != newState) {
+				CELL_X[idx] = cx;
+				CELL_Z[idx] = cz;
+				STATE[idx] = newState;
+				dirty = true;
+			}
+			if (++cursor == N * N) { // a pass is done: rebuild + upload only if cells/params/camera actually changed
 				cursor = 0;
-				build(ccx, ccz);
+				float lake = Live.f("mcopt.shade.water.swellLake", 0.25f, 0f, 1f);
+				float fetch = Live.f("mcopt.shade.water.swellFetch", 48f, 8f, 120f);
+				if (!complete || dirty || ccx != lastCx || ccz != lastCz || lake != lastLake || fetch != lastFetch) {
+					build(ccx, ccz, lake, fetch);
+					lastLake = lake;
+					lastFetch = fetch;
+					dirty = false;
+				}
 				complete = true;
 				lastCx = ccx;
 				lastCz = ccz;
@@ -136,10 +155,8 @@ public final class WaterOpenScan {
 		return -1f; // inland: mcopt.shade.water.swellLake when the map is built (live)
 	}
 
-	private static void build(int ccx, int ccz) {
+	private static void build(int ccx, int ccz, float lake, float fetch) {
 		final int inf = 1 << 20;
-		float lake = Live.f("mcopt.shade.water.swellLake", 0.25f, 0f, 1f); // (candidate 5: calmer lakes, mirrors as Gael likes them)
-		float fetch = Live.f("mcopt.shade.water.swellFetch", 48f, 8f, 120f);
 		int ox = ccx - N / 2, oz = ccz - N / 2;
 		for (int j = 0; j < N; j++) {
 			for (int i = 0; i < N; i++) {
@@ -191,24 +208,26 @@ public final class WaterOpenScan {
 				TMP[k] = t * t * (3f - 2f * t) * g; // smoothstep(4, fetch, distance to land) x the biome's gain
 			}
 		}
-		// 3x3 box blur (edges clamped); the mean over the outer ring's water (96-128 blocks: 48-64 cells) for the water beyond it
+		// (2.0.1 opt) separable 1x3 + 3x1 box blur (exact same weights as 3x3, ~3x fewer reads)
+		for (int j = 0; j < N; j++) {
+			int row = N * j;
+			BLUR_H[row] = (TMP[row] * 2f + TMP[row + 1]) * (1f / 3f);
+			for (int i = 1; i < N - 1; i++) BLUR_H[row + i] = (TMP[row + i - 1] + TMP[row + i] + TMP[row + i + 1]) * (1f / 3f);
+			BLUR_H[row + N - 1] = (TMP[row + N - 2] + TMP[row + N - 1] * 2f) * (1f / 3f);
+		}
 		double ring = 0, all = 0;
 		int nRing = 0, nAll = 0;
 		for (int j = 0; j < N; j++) {
+			int r0 = N * Math.max(j - 1, 0), r1 = N * j, r2 = N * Math.min(j + 1, N - 1);
 			for (int i = 0; i < N; i++) {
-				float sum = 0f;
-				for (int dj = -1; dj <= 1; dj++) {
-					int jj = Math.clamp(j + dj, 0, N - 1);
-					for (int di = -1; di <= 1; di++) sum += TMP[Math.clamp(i + di, 0, N - 1) + N * jj];
-				}
-				int k = i + N * j;
-				float o = sum * (1f / 9f);
+				int k = r1 + i;
+				float o = (BLUR_H[r0 + i] + BLUR_H[k] + BLUR_H[r2 + i]) * (1f / 3f);
 				OPEN[k] = o;
 				if (WIN[k] == WATER) {
 					all += o;
 					nAll++;
-					int di = i - N / 2, dj = j - N / 2, r2 = di * di + dj * dj;
-					if (r2 >= 48 * 48 && r2 <= 64 * 64) {
+					int di = i - N / 2, dj = j - N / 2, r2d = di * di + dj * dj;
+					if (r2d >= 48 * 48 && r2d <= 64 * 64) {
 						ring += o;
 						nRing++;
 					}

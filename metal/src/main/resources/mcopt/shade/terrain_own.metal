@@ -108,14 +108,15 @@ static float4 soSampleRgss(texture2d<float> source, sampler s, float2 uv, float2
 	float4 color = float4(0.0);
 	if (blend < 1.0) color = soSampleNearestG(source, s, uv, pixelSize, du, dv, texelScreenSize);
 	if (blend > 0.0) {
-		float minDerivative = min(length(du), length(dv)), maxDerivative = max(length(du), length(dv));
-		float mipExact = max(0.0, log2(sqrt(minDerivative * maxDerivative) / minPixelSize));
+		// (2.0.1 opt) algebraic identity: log2(sqrt(length(du)*length(dv))/minPixelSize) = 0.25*log2(dot(du,du)*dot(dv,dv)) - log2(minPixelSize)
+		float mipExact = max(0.0, 0.25 * log2(max(dot(du, du), 1e-10) * max(dot(dv, dv), 1e-10)) - log2(minPixelSize));
 		float mipLow = floor(mipExact);
 		const float2 offsets[4] = {float2(0.125, 0.375), float2(-0.125, -0.375), float2(0.375, -0.125), float2(-0.375, 0.125)};
 #ifdef SHADE_RGSS_ONE
 		// (v12, ShadeMsl: on unless -Dmcopt.shade.rgssOne=false) 4 taps at the nearest whole mip instead of 8 across two: as 1.1
+		float mipNearest = floor(mipExact + 0.5);
 		float4 rgss = float4(0.0);
-		for (int i = 0; i < 4; ++i) rgss += source.sample(s, uv + offsets[i] * pixelSize, level(floor(mipExact + 0.5)));
+		for (int i = 0; i < 4; ++i) rgss += source.sample(s, uv + offsets[i] * pixelSize, level(mipNearest));
 		rgss *= 0.25;
 #else
 		float4 low = float4(0.0), high = float4(0.0);
@@ -226,7 +227,7 @@ static SO_OTHER_ATTR float3 shadeOwnOther(thread float &alpha, bool water, float
 		// (1.2.8) placed lights of a colour of their own light in it (colorlight.metal, per vertex)
 		radiance += float3(wetAlbedo) * sf.ambientBlock.xyz * float3(shadeColor);
 #endif
-#if defined(SHADE_UW_CAUSTICS) && !defined(SHADE_OWN_TRANSLUCENT)
+#if defined(SHADE_UW_CAUSTICS) && !defined(SHADE_OWN_TRANSLUCENT) && !defined(SHADE_LEAN_ABOVE)
 		// (1.2.8, issue #61: "caustics don't render underwater") the camera under water: the sunlit bottom and walls below the
 		// surface get the caustics the water's surface draws on them when seen from above (water.metal), on the sun's term only
 		if (SHADE_CAMERA_UNDERWATER(sf) && !dims && wph.tune.w > 0.0) {
@@ -281,8 +282,7 @@ static SO_OTHER_ATTR float3 shadeOwnOther(thread float &alpha, bool water, float
 #endif
 		// Light sources until a material mask: at block light 14-15, bright warm texels (torch and lantern flames, glowstone, lava,
 		// shroomlights) glow instead of being lit like the rest of the block (stronger in the Nether).
-		half tl = shadeLumaH(half3(texel.rgb));
-		if (blockLight > 0.92h && texel.r > 0.9 && tl > 0.62h && texel.r > texel.b + 0.12)
+		if (blockLight > 0.92h && texel.r > 0.9 && texel.r > texel.b + 0.12 && shadeLumaH(half3(texel.rgb)) > 0.62h)
 			radiance += float3(albedo) * float3(sf.ambientBlock.xyz) * ((netherLit ? 3.1 : 2.2) * sl.user0.w); // (1.1) user0.w: glowing blocks
 #ifdef SHADE_WEATHER
 #if defined(SHADE_COLOR_SHADOW) && defined(MCOPT_HDR)
@@ -336,6 +336,73 @@ static SO_OTHER_ATTR float3 shadeOwnOther(thread float &alpha, bool water, float
 	}
 	return radiance;
 }
+
+#if defined(SHADE_OWN_TRANSLUCENT) && defined(SHADE_WATER) && (defined(SHADE_WP_COLD) || defined(SHADE_OWN_COLD_OTHER))
+static __attribute__((noinline)) float3 shadeOwnOtherFull(thread float &alpha, thread half &shadowOut, bool water, float3 p, half3 n, float4 vertexColor,
+	half skyLight, half blockLight, half shadowSky, bool thin, bool foliage, bool dims, bool endLit, bool netherLit,
+	float3 dpx, float3 dpy, float2 uv, float2 pixelSize, float2 du, float2 dv, float2 pbrDu, float2 pbrDv, int useRgss, int debug, float ex, float2 fragXY, half3 shadeColor,
+	texture2d<float> atlas, sampler atlasSampler, depth2d_array<float> shadowMap, sampler shadowCompare,
+	constant ShadeFrame &sf, constant ShadeLook &sl, constant ShadeGpu &sg, texture2d<half> skyLut, sampler skyLutSmplr
+#ifdef SHADE_DYNLIGHT
+	, constant ShadeDynLights &dl, texture3d<half> dlIrr, texture3d<half> dlDir
+#endif
+#ifdef MCOPT_HDR
+	, constant ShadeResources &sr
+#endif
+	, texture2d<half> sceneCopy, depth2d<float> depthCopy, constant ShadeWaterParams &wp, texture2d<float> waterCoarse) {
+	float4 texel = useRgss == 1 ? soSampleRgss(atlas, atlasSampler, uv, pixelSize, du, dv)
+	                            : soSampleNearestG(atlas, atlasSampler, uv, pixelSize, du, dv, sqrt(du * du + dv * dv));
+	float4 color = texel * vertexColor;
+	if (SO_CUTOUT && color.a < SO_CUTOUT_LIMIT) discard_fragment();
+	alpha = color.a;
+	half3 albedo = debug == 3 ? half3(0.45h) : shadeToLinear(half3(texel.rgb) * half3(vertexColor.rgb));
+	half shadow = (skyLight <= 0.3h && !endLit) || netherLit ? half(1.0)
+		: shadeShadow2(shadowMap, shadowCompare, sf, sl, p, n, thin || foliage, foliage, fragXY, shadowSky);
+#ifdef MCOPT_HDR
+	if (!dims && skyLight > 0.3h && shadow > 0.0h) shadow *= half(shadeCloudShadow(p, sl, sr.cloudShadow));
+#endif
+	shadowOut = shadow;
+	half3 materialN = n;
+	float4 materialS = float4(0.0);
+	float materialAo = 1.0;
+#if defined(MCOPT_HDR) && defined(SHADE_PBR)
+	bool pbr = any(abs(sl.user3.yzw) > 0.0) && !water;
+	if (pbr) {
+		if (abs(sl.user3.y) > 0.0) {
+			float4 nm = useRgss == 1 ? soSampleRgss(sr.pbrNormal, atlasSampler, uv, pixelSize, du, dv)
+			    : soSampleNearestG(sr.pbrNormal, atlasSampler, uv, pixelSize, du, dv, sqrt(du * du + dv * dv));
+			float2 xy = nm.rg * 2.0 - 1.0;
+			if (all(abs(nm.rg - 128.0 / 255.0) < 0.001)) xy = float2(0.0);
+			if (sl.user3.y < 0.0) xy.y = -xy.y;
+			xy *= abs(sl.user3.y);
+			float3 nn = normalize(float3(xy, sqrt(max(1.0 - dot(xy, xy), 0.001))));
+			float det = pbrDu.x * pbrDv.y - pbrDu.y * pbrDv.x;
+			float3 T = (dpx * pbrDv.y - dpy * pbrDu.y) * sign(det);
+			float3 B = (dpy * pbrDu.x - dpx * pbrDv.x) * sign(det);
+			T -= float3(n) * dot(T, float3(n)); B -= float3(n) * dot(B, float3(n));
+			if (dot(T, T) > 1e-20 && dot(B, B) > 1e-20)
+				materialN = half3(normalize(normalize(T) * nn.x + normalize(B) * nn.y + float3(n) * nn.z));
+			materialAo = mix(1.0, nm.b, min(abs(sl.user3.y), 1.0));
+		}
+		if (sl.user3.z > 0.0 || sl.user3.w > 0.0)
+			materialS = useRgss == 1 ? soSampleRgss(sr.pbrSpecular, atlasSampler, uv, pixelSize, du, dv)
+			    : soSampleNearestG(sr.pbrSpecular, atlasSampler, uv, pixelSize, du, dv, sqrt(du * du + dv * dv));
+	}
+#else
+	const bool pbr = false;
+#endif
+	return shadeOwnOther(alpha, water, p, n, materialN, materialS, materialAo, pbr, texel, albedo, half3(vertexColor.rgb),
+		skyLight, blockLight, shadow, thin, foliage, dims, netherLit, dpx, dpy, uv, debug, ex, fragXY, shadeColor,
+		atlas, atlasSampler, sf, sl, sg, skyLut, skyLutSmplr
+#ifdef SHADE_DYNLIGHT
+		, dl, dlIrr, dlDir
+#endif
+#ifdef MCOPT_HDR
+		, sr
+#endif
+		, sceneCopy, depthCopy, wp, waterCoarse);
+}
+#endif
 
 fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [[buffer(28)]], constant SoTerrain &t [[buffer(29)]],
 	constant SoFog &fog [[buffer(30)]], texture2d<float> atlas [[texture(26)]], sampler atlasSampler [[sampler(14)]],
@@ -393,25 +460,26 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	float3 nf = cross(dpx, dpy); // before any discard: the whole 2x2 quad takes part
 #ifdef SHADE_WATER
 	float waterFootprint = max(length(dpx), length(dpy));
-	float2 waterFlow = shadeWaterFlowDir(dpx, dpy, du, dv);
 #endif
 	// TAA render scale (cameraBlock.w, 1 at native): gradients as at native resolution, i.e. mip bias log2(scale), so textures
 	// keep their native sharpness; the jitter and the temporal resolve take care of the extra texture aliasing
 	float mipScale = sf.cameraBlock.w > 0.0 ? sf.cameraBlock.w : 1.0;
 	du *= mipScale;
 	dv *= mipScale;
-#if defined(SHADE_WATER) && defined(SHADE_LEAN_ABOVE)
-	// the water module: water by its sprites (every face; vertex colour guess while the sprites are unknown), shaded in full
-	// when this frame's scene copy exists, else M1's stand-in for top faces seen from above. Quad-uniform (one triangle per 2x2
-	// quad; helper lanes' extrapolated uv may leave the sprite): SSR's lanes work together. Water pixels never use the block
-	// texture (the module shades them from its own waves): not sampled there (2026-10-08: -0.11 ms in the lake spin). Only in
-	// the variant for the camera above water: the full variant keeps FT1.3's code (the water shader is register-bound)
+#ifdef SHADE_WATER
+	// (2.0.1 opt) skip block atlas sampling for ALL full-water quads (including underwater!), not just LEAN_ABOVE
 	int waterSprite = int(shadeQuadMax(float(shadeWaterSprite(uv, wp))));
 	bool waterFull = waterSprite > 0 && wp.state.x > 0.5 && !shadeDev(sf, SHADE_DEV_NO_WATER);
 	bool skipTex = waterFull;
 #else
 	const bool skipTex = false;
 #endif
+#if defined(SHADE_OWN_TRANSLUCENT) && defined(SHADE_WATER) && (defined(SHADE_WP_COLD) || defined(SHADE_OWN_COLD_OTHER))
+	// (2.0.1 opt) Defer atlas sampling + albedo + PBR + non-water PCSS into noinline shadeOwnOther so the hot water
+	// fragment shader stays lean and free of RGSS / PCSS / labPBR register bloat!
+	float4 texel = float4(1.0);
+	float4 color = vertexColor;
+#else
 	float4 texel = float4(1.0);
 	if (!skipTex) {
 		if (g.UseRgss == 1) {
@@ -425,6 +493,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	if (in.fragCoord.x < -float(SHADE_OWN_NONCE)) discard_fragment(); // (dev: -Dmcopt.shade.terrain.nonce, a cold Metal cache)
 #endif
 	if (SO_CUTOUT && color.a < SO_CUTOUT_LIMIT) discard_fragment();
+#endif
 	float2 envFog = float2(fog.FogEnvironmentalStart, fog.FogEnvironmentalEnd), renderFog = float2(fog.FogRenderDistanceStart, fog.FogRenderDistanceEnd);
 	float4 fogColor = float4(fog.FogColor);
 	// (FT2.8, audit idx 60) vanilla's fog amount where it is used (the Nether/End's unlit path, then after the shading): not live
@@ -449,6 +518,14 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	bool dims = sf.flags.x != SHADE_DIM_OVERWORLD;
 #endif
 	if (dims && !shadeDimsLit(sf)) {
+#if defined(SHADE_OWN_TRANSLUCENT) && defined(SHADE_WATER) && (defined(SHADE_WP_COLD) || defined(SHADE_OWN_COLD_OTHER))
+		if (!skipTex) {
+			texel = g.UseRgss == 1 ? soSampleRgss(atlas, atlasSampler, uv, pixelSize, du, dv)
+			                       : soSampleNearestG(atlas, atlasSampler, uv, pixelSize, du, dv, sqrt(du * du + dv * dv));
+			color = texel * vertexColor;
+			if (SO_CUTOUT && color.a < SO_CUTOUT_LIMIT) discard_fragment();
+		}
+#endif
 		// vanilla's lightmap (own's vertices leave it out under shading: sampled here from the interpolated light) and its
 		// directional face shade (ShadeFaceShadeMixin flattened it in the vertices)
 		float2 lightUv = clamp(float2(in.shadeLight) * (240.0 / 256.0) + 0.5 / 16.0, float2(0.5 / 16.0), float2(15.5 / 16.0));
@@ -470,20 +547,11 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	}
 	if (shadeDev(sf, SHADE_DEV_FLAT_LIGHT)) return float4(shadeVanillaOut(color.rgb, sl), color.a);
 	float ex = shadeExposure(sf, sg);
-	half3 albedo = shadeToLinear(half3(texel.rgb) * half3(vertexColor.rgb));
 	int debug = sf.flags.w;
-	if (debug == 3) albedo = half3(0.45h);
 	bool foliage = SO_CUTOUT_PASS && !thin; // the cutout pass (not translucent): leaves, vines and the like
-#if defined(SHADE_WATER) && !defined(SHADE_LEAN_ABOVE)
-	// the water module: water by its sprites (as above), quad-uniform
-	int waterSprite = int(shadeQuadMax(float(shadeWaterSprite(uv, wp))));
-	bool waterFull = waterSprite > 0 && wp.state.x > 0.5 && !shadeDev(sf, SHADE_DEV_NO_WATER);
-#elif !defined(SHADE_WATER)
-	bool waterFull = false; // (LEAN_ABOVE: waterSprite / waterFull are found above, before the texture sampling)
+#ifndef SHADE_WATER
+	bool waterFull = false;
 #endif
-	// no map lookups where the direct light is gated off anyway (caves, under overhangs: sky light below ~4); the water module
-	// only gates its glint and caustics with it: M1's 4-tap tent there instead of PCSS (the End has no sky light: its key
-	// light's map is looked up everywhere, with full sky for the far fallback)
 #ifdef SHADE_LEAN_OW
 	const bool endLit = false, netherLit = false;
 #elif defined(SHADE_LEAN_NETHER)
@@ -492,6 +560,40 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	bool endLit = sf.flags.x == SHADE_DIM_END, netherLit = sf.flags.x == SHADE_DIM_NETHER;
 #endif
 	half shadowSky = endLit ? half(1.0) : skyLight;
+	float alpha = color.a;
+#ifdef SHADE_OWN_TRANSLUCENT
+	half3 tint = half3(vertexColor.rgb);
+	bool water = n.y > 0.5h && max3(tint.r, tint.g, tint.b) - min3(tint.r, tint.g, tint.b) > 0.08h && !SHADE_CAMERA_UNDERWATER(sf)
+		&& !shadeDev(sf, SHADE_DEV_NO_WATER);
+#ifdef SHADE_WATER
+	if (waterSprite == 0) water = false;
+#endif
+#else
+	bool water = false;
+#endif
+#if defined(SHADE_OWN_TRANSLUCENT) && defined(SHADE_WATER) && (defined(SHADE_WP_COLD) || defined(SHADE_OWN_COLD_OTHER))
+	half shadow = half(1.0);
+	if (waterFull) {
+#ifndef SHADE_PRICE_NOWSHADOW
+		shadow = (skyLight <= 0.3h && !endLit) || netherLit ? half(1.0)
+#ifdef SHADE_WOFF_WSHADOW
+			: shadeShadow(shadowMap, shadowCompare, sf, p, n, false);
+#elif defined(SHADE_WFAR_SHADOW)
+			: (n.y > 0.5h && sl.waterShadow.x > 0.0 ? (SHADE_FAR_NOSHADOW ? shadeWaterShadowFar(shadowMap, shadowCompare, sf, p, n)
+				: shadeShadowSoft(shadowMap, shadowCompare, sf, p, n, sl.waterShadow.x * (1.0 - shadeWaterFarT(wp, length(p))), in.fragCoord.xy, sl.waterShadow.z))
+			                                        : shadeShadow(shadowMap, shadowCompare, sf, p, n, false));
+#else
+			: (n.y > 0.5h && sl.waterShadow.x > 0.0 ? shadeShadowSoft(shadowMap, shadowCompare, sf, p, n, sl.waterShadow.x, in.fragCoord.xy, sl.waterShadow.z)
+			                                        : shadeShadow(shadowMap, shadowCompare, sf, p, n, false));
+#endif
+#endif
+#ifdef MCOPT_HDR
+		if (!dims && skyLight > 0.3h && shadow > 0.0h) shadow *= half(shadeCloudShadow(p, sl, sr.cloudShadow));
+#endif
+	}
+#else
+	half3 albedo = shadeToLinear(half3(texel.rgb) * half3(vertexColor.rgb));
+	if (debug == 3) albedo = half3(0.45h);
 #ifdef SHADE_PRICE_NOWSHADOW
 	half shadow = (skyLight <= 0.3h && !endLit) || netherLit || waterFull ? half(1.0)
 #else
@@ -514,19 +616,6 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	// M3: the volumetric clouds' shadows (shade_clouds.metal; 1 when they are off); overworld only (only where the sun or moon
 	// still reaches: a pixel already in terrain shadow needs no cloud-map fetch)
 	if (!dims && skyLight > 0.3h && shadow > 0.0h) shadow *= half(shadeCloudShadow(p, sl, sr.cloudShadow));
-#endif
-	float alpha = color.a;
-#ifdef SHADE_OWN_TRANSLUCENT
-	// the translucent pass: water (a top face tinted by the biome's water colour; stained glass and ice have white vertex
-	// colours) gets its own body colour, a sky reflection and a sun glint, seen from above water (M1's stand-in)
-	half3 tint = half3(vertexColor.rgb);
-	bool water = n.y > 0.5h && max3(tint.r, tint.g, tint.b) - min3(tint.r, tint.g, tint.b) > 0.08h && !SHADE_CAMERA_UNDERWATER(sf)
-		&& !shadeDev(sf, SHADE_DEV_NO_WATER);
-#ifdef SHADE_WATER
-	if (waterSprite == 0) water = false;
-#endif
-#else
-	bool water = false;
 #endif
 	// labPBR: derivatives are captured before discard; shadows continue to use the geometric normal.
 	half3 materialN = n;
@@ -557,6 +646,7 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 			    : soSampleNearestG(sr.pbrSpecular, atlasSampler, uv, pixelSize, du, dv, sqrt(du*du+dv*dv));
 	}
 #endif
+#endif
 	float3 radiance;
 #ifdef SHADE_WATER
 	if (waterFull) {
@@ -565,17 +655,13 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		wi.p = p;
 		wi.nFace = float3(n);
 		wi.footprint = waterFootprint;
-		wi.flowDir = waterSprite == 2 && n.y > 0.5h ? waterFlow : float2(0.0);
+		// (2.0.1 opt) only compute shadeWaterFlowDir on flowing top faces (saves 2x2 determinant + length + div on every still water pixel)
+		wi.flowDir = waterSprite == 2 && n.y > 0.5h ? shadeWaterFlowDir(dpx, dpy, pbrDu, pbrDv) : float2(0.0);
 		wi.pixel = in.fragCoord.xy;
 		wi.depth = in.fragCoord.z;
 		wi.tint = tint;
 		wi.sky = skyLight;
 		wi.shadow = shadow;
-		// (FT2.10) water the sky doesn't light (caves, cellars, a strip in a base): x the torch light's caustics on its bottom
-		// (block light, mcopt.shade.water.torchCaustics: ShadeLook.waterShadow.w), y how far its reflections follow the ripples
-		// (sky light under 0.5, mcopt.shade.water.caveRipples: ShadeLook.eye.z), z its surroundings' share in them
-		// (mcopt.shade.water.caveSky: ShadeLook.eye.y). See shadeWaterAbove. w (FT2.11): moving water's look (falling water's
-		// sides, currents; mcopt.shade.water.falls: ShadeLook.bloom.w)
 		{
 			float b = float(blockLight), s = saturate(float(skyLight) * 2.0), c = 1.0 - s * s;
 			wi.cave = half4(half(smoothstep(0.3, 0.8, b) * sl.waterShadow.w), half(c * sl.eye.z), half(saturate(c * sl.eye.y)), half(sl.bloom.w));
@@ -583,15 +669,11 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		wi.dxz = float4(dpx.xz, dpy.xz);
 		wi.detail = float4(0.0);
 #ifdef SHADE_WATER_DETAIL
-		// M2.1 fine ripples (baked waves): top faces, and the surface seen from below with the camera under water
 #ifndef SHADE_PRICE_NODETAIL
 		if (!SHADE_FAR_NODETAIL && !SHADE_WDEV_IS(sf, SHADE_WDEV_NO_DETAIL) && (n.y > 0.5h || (n.y < -0.5h && SHADE_CAMERA_UNDERWATER(sf))) && wp.state.w > 0.5) wi.detail = shadeWaterDetailIn(wi, sf, waterDetail);
 #endif
 #endif
 #ifdef SHADE_WATER_SWELL
-		// (2026-11-02, water round 1) the swell (water.metal shadeWaterSwell; mcopt.shade.water.swell, 0 = none): still water's top
-		// faces seen from above (currents and falls keep their own look), computed here like the fine ripples; rain and thunder raise it,
-		// (S2) the open-water map decides where (the sea swells, lakes and rivers stay calm, shores calm it; HDR: ShadeResources)
 		wi.swell = float4(0.0);
 		float swellOpen = 0.0;
 		if (n.y > 0.5h && waterSprite == 1 && wp.swell.x > 0.0 && !SHADE_CAMERA_UNDERWATER(sf)) {
@@ -603,7 +685,10 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 			float amp = wp.swell.x * (1.0 + 0.8 * wp.state.z) * (1.0 + 0.6 * sf.weather.y) * swellOpen;
 #ifndef SHADE_PRICE_NOSWELL
 			if (amp > 0.0) {
-#ifdef MCOPT_HDR
+#if defined(MCOPT_HDR) && defined(SHADE_WATER_SWELL_BAKED)
+				// (2.0.1 opt) baked swell only: strips dead SHADE_COLD shadeWaterSwell call from waterFull
+				if (wp.far.w > 0.5) wi.swell = shadeWaterSwellSample(shadeWaterXZ(p.xz, sf), wi.dxz, amp, sr.waterSwell);
+#elif defined(MCOPT_HDR)
 				wi.swell = wp.far.w > 0.5 ? shadeWaterSwellSample(shadeWaterXZ(p.xz, sf), wi.dxz, amp, sr.waterSwell)
 				                          : shadeWaterSwell(shadeWaterXZ(p.xz, sf), shadeWaterTime(sf), wi.dxz, amp);
 #else
@@ -614,17 +699,17 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 		}
 #endif
 #if defined(SHADE_WAVE_BAKE) && !defined(SHADE_LEAN_NOFALLS)
-		// (FT2.11) falling water's sides (only in the variant drawn while moving water is near: WaterFlowScan): the ripples tilt
-		// the face normal the surface is shaded with (shadeWaterFallNormal)
 		if (shadeWaterIsFall(float(n.y), sl.bloom.w, wp)) wi.nFace = shadeWaterFallNormal(wi, sf, waterWaves);
 #endif
-		wi.lit = shadeLit2(half3(1.0h), up, skyLight, blockLight, shadow, false, false, sf, sl);
+		// (2.0.1 opt) shadeWaterBelow never reads wi.lit or dlSpec: skip shadeLit2 + dynlights when looking up from underwater!
+		bool underBelow = SHADE_CAMERA_UNDERWATER(sf) && n.y < -0.5h;
+		wi.lit = underBelow ? float3(0.0) : shadeLit2(half3(1.0h), up, skyLight, blockLight, shadow, false, false, sf, sl);
 #ifdef SHADE_COLOR_LIGHT
-		wi.lit += sf.ambientBlock.xyz * float3(in.shadeColor);
+		if (!underBelow) wi.lit += sf.ambientBlock.xyz * float3(in.shadeColor);
 #endif
 #ifdef SHADE_DYNLIGHT
 		float3 dlSpec = float3(0.0);
-		if (dl.info.x > 0u) {
+		if (!underBelow && dl.info.x > 0u) {
 			if (n.y > 0.5h) { // the surface seen from above: torchlight on the water body and its glint on the ripples
 				uint2 dlm = shadeDlMask(dl, p);
 				if ((dlm.x | dlm.y) != 0u) {
@@ -690,6 +775,25 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #endif
 	} else
 #endif
+#if defined(SHADE_OWN_TRANSLUCENT) && defined(SHADE_WATER) && (defined(SHADE_WP_COLD) || defined(SHADE_OWN_COLD_OTHER))
+	{
+	radiance = shadeOwnOtherFull(alpha, shadow, water, p, n, vertexColor, skyLight, blockLight, shadowSky, thin, foliage, dims, endLit, netherLit,
+		dpx, dpy, uv, pixelSize, du, dv, pbrDu, pbrDv, g.UseRgss, debug, ex, in.fragCoord.xy,
+#ifdef SHADE_COLOR_LIGHT
+		in.shadeColor,
+#else
+		half3(0.0h),
+#endif
+		atlas, atlasSampler, shadowMap, shadowCompare, sf, sl, sg, skyLut, skyLutSmplr
+#ifdef SHADE_DYNLIGHT
+		, dl, dlIrr, dlDir
+#endif
+#ifdef MCOPT_HDR
+		, sr
+#endif
+		, sceneCopy, depthCopy, wp, waterCoarse);
+	}
+#else
 	{
 	radiance = shadeOwnOther(alpha, water, p, n, materialN, materialS, materialAo,
 #if defined(MCOPT_HDR) && defined(SHADE_PBR)
@@ -724,7 +828,8 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 #endif
 		);
 	}
-	float fogValue = SHADE_FOG_VALUE;
+#endif
+	float fogValue = (SO_LEAN && sf.fogColor.a <= 0.0 && sl.fogMisc.z <= 0.0) ? 0.0 : SHADE_FOG_VALUE;
 #undef SHADE_FOG_VALUE
 #ifdef SHADE_PRICE_NOWFOG
 	if (!dims && !waterFull) {
@@ -732,9 +837,9 @@ fragment float4 shade_own_fs(ShadeOwnIn in [[stage_in]], constant SoGlobals &g [
 	if (!dims && !(waterFull && SHADE_WDEV_IS(sf, SHADE_WDEV_NO_FOG))) { // Nether/End: the final pass fogs
 #endif
 #ifdef MCOPT_HDR
-		radiance = shadeFogAir2(radiance, p, fogValue, 1.0 - float(fade), skyLut, skyLutSmplr, sf, sl, &sr);
+		radiance = shadeFogAir2(radiance, p, fogValue, 1.0 - float(fade), skyLut, skyLutSmplr, sf, sl, &sr, SO_LEAN);
 #else
-		radiance = shadeFogAir2(radiance, p, fogValue, 1.0 - float(fade), skyLut, skyLutSmplr, sf, sl);
+		radiance = shadeFogAir2(radiance, p, fogValue, 1.0 - float(fade), skyLut, skyLutSmplr, sf, sl, nullptr, SO_LEAN);
 #endif
 	}
 	float3 rgb = shadeFinish2(radiance, fogValue, sf, sl, ex);

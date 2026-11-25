@@ -100,7 +100,8 @@ public final class ShadeAurora {
 			if (pipeline == 0) {
 				long t0 = mcopt.metal.shade.ShadeCompile.now();
 				library = ShadeRender.library(source());
-				pipeline = ShadeRender.pipeline(library, "shade_fs_vs", "shade_aurora_pass", ShadeRender.RGBA16F, ShadeRender.BLEND_NONE);
+				// (2.0.1 opt) RG11B10F (4 B/px vs RGBA16F 8 B/px): aurora is non-negative RGB emission
+				pipeline = ShadeRender.pipeline(library, "shade_fs_vs", "shade_aurora_pass", ShadeRender.RG11B10F, ShadeRender.BLEND_NONE);
 				mcopt.metal.shade.ShadeCompile.setup("aurora", t0);
 			}
 			var window = Minecraft.getInstance().getWindow();
@@ -110,7 +111,7 @@ public final class ShadeAurora {
 			int w = Math.max(16, Math.round(outSize[0] * scale)), h = Math.max(16, Math.round(outSize[1] * scale));
 			if (texture == 0 || w != width || h != height) {
 				if (texture != 0) retired.add(new long[] {texture, frame + 8});
-				texture = ShadeRender.texture(ShadeRender.RGBA16F, w, h, false, "mcopt shade: aurora");
+				texture = ShadeRender.texture(ShadeRender.RG11B10F, w, h, false, "mcopt shade: aurora");
 				width = w;
 				height = h;
 			}

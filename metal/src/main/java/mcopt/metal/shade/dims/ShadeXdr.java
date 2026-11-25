@@ -184,6 +184,10 @@ public final class ShadeXdr {
 
 	public static boolean highlights() {
 		if (fullScene()) return fullSceneFrame();
+		// (2.0.1 opt) skip 23.8 MB xdrExcess write while a menu/inventory screen is open (finalPass discards it anyway)
+		var mc = net.minecraft.client.Minecraft.getInstance();
+		var screen = mc != null ? mc.gui.screen() : null;
+		if (screen != null && !(screen instanceof net.minecraft.client.gui.screens.ChatScreen)) return false;
 		// (v12-opt, mcopt.shade.xdrPeakSkip, live, default true; false = 1.2) with a peak of SDR white (the screen reports no EDR
 		// headroom: maximumExtendedDynamicRangeColorComponentValue 1, as in many bench runs; or mcopt.shade.xdrPeak=1) the XDR final
 		// pass writes an excess of 0 (shade_final_xdr: boost = (peak - 1) x ... only where peak > 1) and the compose adds it: the SDR

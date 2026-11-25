@@ -61,14 +61,17 @@ public final class ShadeWaterPano {
 	public static void update(long enc, ShadeFrame f) {
 		if (!ShadeWater.ON || !ShadeWater.PANO || !mcopt.metal.shade.taa.TaaConfig.ENABLED || failed || enc == 0) return;
 		try {
-			if (!on()) {
-				frames = 0;
+			if (!on() || f.dimension == ShadeFrame.DIM_NETHER || f.underwater) {
+				if (!on()) frames = 0;
 				return;
 			}
 			int captures = ShadeWater.captures();
 			sinceWater = captures != lastCaptures ? 0 : Math.min(sinceWater + 1, 1 << 20);
 			lastCaptures = captures;
 			int every = sinceWater < 600 ? Math.clamp((int) mcopt.metal.shade.Live.f("mcopt.shade.water.reflPanoEvery", 3f, 1f, 60f), 1, 60) : 12;
+			// (2.0.1 opt) when the camera is still and the panorama is already warmed up, throttle updates (the view hasn't panned)
+			var taa = mcopt.metal.shade.taa.ShadeTaa.current();
+			if (frames >= 3 && taa != null && taa.still() && every < 20) every = 20;
 			double mx = lastX - panoX, my = lastY - panoY, mz = lastZ - panoZ;
 			boolean reset = frames == 0 || f.dimension != dimension || Math.abs(mx) + Math.abs(my) + Math.abs(mz) > 16;
 			if (!reset && Boolean.getBoolean("mcopt.shade.water.devNoPano")) return; // (1.2.9 pricing, read every frame: the pass skipped, the panorama kept)

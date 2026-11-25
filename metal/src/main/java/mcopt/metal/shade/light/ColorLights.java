@@ -65,11 +65,13 @@ public final class ColorLights {
 	private static final long BUDGET_NS = Long.getLong("mcopt.shade.coloredLights.budgetUs", 1200L) * 1000L;
 
 	private static long state, idsAddress, header;
+	private static ByteBuffer headerBuf, idsBuf;
 	private static boolean failed, fallback;
 	private static int slot, frame;
 	private static ClientLevel lastLevel;
 	private static int fx0 = Integer.MIN_VALUE, fy0, fz0, cx0 = Integer.MIN_VALUE, cy0, cz0;
 	private static long levelFrame;
+	private static boolean fineSettled, coarseSettled;
 
 	private static final long[] fineKey = new long[FINE];
 	/** 0 unread, 1 read, 2 not loaded when last tried. */
@@ -100,6 +102,7 @@ public final class ColorLights {
 	private static final byte[] fineBuf = new byte[CELLS], coarseBuf = new byte[64];
 	private static final short[] palMap = new short[CELLS];
 	private static final int[] cellOpaque = new int[64], cellLight = new int[64];
+	private static final boolean[] prevFineNear = new boolean[FINE], prevCoarseNear = new boolean[COARSE];
 	private static final Map<BlockState, Byte> IDS = new IdentityHashMap<>();
 	private static Map<Block, Integer> classes;
 
@@ -143,7 +146,9 @@ public final class ColorLights {
 				MemoryUtil.memFree(src);
 			}
 			idsAddress = DynLightNative.clIds(state);
+			idsBuf = MemoryUtil.memByteBuffer(idsAddress, (int) TOTAL);
 			header = MemoryUtil.nmemCalloc(1, HEADER);
+			headerBuf = MemoryUtil.memByteBuffer(header, HEADER).order(ByteOrder.nativeOrder());
 			DynLightNative.clHeader(state, header);
 			Arrays.fill(fineKey, NONE);
 			Arrays.fill(coarseKey, NONE);
@@ -228,18 +233,41 @@ public final class ColorLights {
 		Palette<BlockState> p = OwnPalette.unpack(sec.getStates(), pal);
 		int n = p.getSize();
 		boolean local = n <= CELLS;
-		if (local) Arrays.fill(palMap, 0, n, (short) -1);
+		// (2.0.1 opt) pre-scan palette entries once (O(paletteSize) instead of O(4096) checks) and fast-path single-entry & uniform coarse sections
+		if (local && n > 0) {
+			boolean anyOpaque = false, anyLight = false, anyNonOpaque = false;
+			for (int k = 0; k < n; k++) {
+				int id = idOf(p.valueFor(k));
+				palMap[k] = (short) id;
+				if (id == 15) anyOpaque = true;
+				else {
+					anyNonOpaque = true;
+					if (id >= 16) anyLight = true;
+				}
+			}
+			if (n == 1) {
+				int id = palMap[0];
+				if (fine) Arrays.fill(fineBuf, (byte) id);
+				Arrays.fill(coarseBuf, (byte) (id >= 16 ? id : id == 15 ? 15 : 0));
+				return LOADED | (id >= 32 ? COLORED : 0);
+			}
+			if (!fine) {
+				if (!anyOpaque && !anyLight) {
+					Arrays.fill(coarseBuf, (byte) 0);
+					return LOADED;
+				}
+				if (!anyNonOpaque) {
+					Arrays.fill(coarseBuf, (byte) 15);
+					return LOADED;
+				}
+			}
+		}
 		Arrays.fill(cellOpaque, 0);
 		Arrays.fill(cellLight, 0);
 		boolean colored = false;
 		for (int i = 0; i < CELLS; i++) {
-			int k = pal[i], id;
-			if (local && k < n) {
-				id = palMap[k];
-				if (id < 0) palMap[k] = (short) (id = idOf(p.valueFor(k)));
-			} else {
-				id = idOf(p.valueFor(k));
-			}
+			int k = pal[i];
+			int id = local && k < n ? palMap[k] : idOf(p.valueFor(k));
 			if (fine) fineBuf[i] = (byte) id;
 			int x = i & 15, z = (i >> 4) & 15, y = i >> 8, c = ((y >> 2) * 4 + (z >> 2)) * 4 + (x >> 2);
 			if (id == 15) {
@@ -308,6 +336,8 @@ public final class ColorLights {
 	private static void place(int nfx0, int nfy0, int nfz0, int ncx0, int ncy0, int ncz0) {
 		if (nfx0 != fx0 || nfy0 != fy0 || nfz0 != fz0 || ncx0 != cx0 || ncy0 != cy0 || ncz0 != cz0) nearDirty = true;
 		if (nfx0 != fx0 || nfy0 != fy0 || nfz0 != fz0) {
+			fineSettled = false;
+			coarseSettled = false;
 			fx0 = nfx0;
 			fy0 = nfy0;
 			fz0 = nfz0;
@@ -327,6 +357,7 @@ public final class ColorLights {
 			}
 		}
 		if (ncx0 != cx0 || ncy0 != cy0 || ncz0 != cz0) {
+			coarseSettled = false;
 			cx0 = ncx0;
 			cy0 = ncy0;
 			cz0 = ncz0;
@@ -386,12 +417,14 @@ public final class ColorLights {
 		int s = fineSlot(sx, sy, sz);
 		if (s >= 0 && fineKey[s] == key(sx, sy, sz)) {
 			fineState[s] = 0;
+			fineSettled = false;
 			markFine(s, LINGER);
 		}
 		int cx = Math.floorDiv(sx, 4), cy = Math.floorDiv(sy, 4), cz = Math.floorDiv(sz, 4);
 		int c = coarseSlot(cx, cy, cz);
 		if (c >= 0 && coarseKey[c] == key(cx, cy, cz)) {
 			coarseRead[c] &= ~(1L << (((sy - cy * 4) * 4 + (sz - cz * 4)) * 4 + (sx - cx * 4)));
+			coarseSettled = false;
 			markCoarse(c, COARSE_CONVERGE);
 		}
 	}
@@ -402,7 +435,7 @@ public final class ColorLights {
 	static void frame(long enc, ClientLevel level, double camX, double camY, double camZ) {
 		if (state == 0) return;
 		boolean on = level != null && Live.b("mcopt.shade.coloredLights", true);
-		ByteBuffer h = MemoryUtil.memByteBuffer(header, HEADER).order(ByteOrder.nativeOrder());
+		ByteBuffer h = headerBuf;
 		if (!on) {
 			h.putInt(12, 0);
 			DynLightNative.clHeader(state, header);
@@ -416,6 +449,7 @@ public final class ColorLights {
 			Arrays.fill(fineDirty, 0);
 			Arrays.fill(coarseDirty, 0);
 			fx0 = cx0 = Integer.MIN_VALUE;
+			fineSettled = coarseSettled = false;
 			for (int s = 0; s < FINE; s++) if (fineLinger[s] != 0) clear(s, false);
 			for (int s = 0; s < COARSE; s++) if (coarseLinger[s] != 0) clear(s, true);
 			levelFrame = frame;
@@ -427,50 +461,69 @@ public final class ColorLights {
 		// reads: the fine window nearest first, then the coarse window's sections past it (within the render distance)
 		long t0 = System.nanoTime(), end = t0 + (frame - levelFrame < 240 ? 3 * BUDGET_NS : BUDGET_NS);
 		boolean retry = frame % 60 == 0;
-		for (int o : FINE_ORDER) {
-			int sx = fx0 + (o & 255), sy = fy0 + ((o >> 8) & 255), sz = fz0 + (o >> 16);
-			int s = fineSlot(sx, sy, sz);
-			if (fineState[s] == 1 || fineState[s] == 2 && !retry) continue;
-			if (System.nanoTime() > end) break;
-			int f = read(level, sx, sy, sz, true);
-			boolean was = fineColored[s];
-			if ((f & LOADED) != 0) {
-				MemoryUtil.memByteBuffer(idsAddress + (long) s * CELLS, CELLS).put(0, fineBuf);
-				fineState[s] = 1;
-				fineColored[s] = (f & COLORED) != 0;
-				markFine(s, LINGER);
-			} else {
-				fineState[s] = 2;
-				fineColored[s] = false;
+		if (!fineSettled || retry) {
+			boolean budgetHit = false;
+			for (int o : FINE_ORDER) {
+				int sx = fx0 + (o & 255), sy = fy0 + ((o >> 8) & 255), sz = fz0 + (o >> 16);
+				int s = fineSlot(sx, sy, sz);
+				if (fineState[s] == 1 || fineState[s] == 2 && !retry) continue;
+				if (System.nanoTime() > end) {
+					budgetHit = true;
+					break;
+				}
+				int f = read(level, sx, sy, sz, true);
+				boolean was = fineColored[s];
+				if ((f & LOADED) != 0) {
+					idsBuf.put(s * CELLS, fineBuf);
+					fineState[s] = 1;
+					fineColored[s] = (f & COLORED) != 0;
+					markFine(s, LINGER);
+				} else {
+					fineState[s] = 2;
+					fineColored[s] = false;
+				}
+				if (was != fineColored[s]) nearDirty = true;
+				putCoarse(sx, sy, sz, f);
 			}
-			if (was != fineColored[s]) nearDirty = true;
-			putCoarse(sx, sy, sz, f);
+			if (!budgetHit) fineSettled = true;
 		}
-		int rd = Minecraft.getInstance().options.getEffectiveRenderDistance() + 1;
-		int csx = bx >> 4, csz = bz >> 4;
-		for (int o : COARSE_ORDER) {
-			if (System.nanoTime() > end) break;
-			int cx = cx0 + (o & 255), cy = cy0 + ((o >> 8) & 255), cz = cz0 + (o >> 16);
-			int s = coarseSlot(cx, cy, cz);
-			if (retry) {
-				coarseRead[s] &= ~coarseUnloaded[s];
-				coarseUnloaded[s] = 0L;
-			}
-			long missing = ~coarseRead[s];
-			while (missing != 0L && System.nanoTime() <= end) {
-				int b = Long.numberOfTrailingZeros(missing);
-				missing &= missing - 1;
-				int sx = cx * 4 + (b & 3), sz = cz * 4 + ((b >> 2) & 3), sy = cy * 4 + (b >> 4);
-				if (fineSlot(sx, sy, sz) >= 0) { // (the fine read writes its coarse cells; unreadCoarse when it leaves the fine window)
-					coarseRead[s] |= 1L << b;
-					continue;
+		if (!coarseSettled || retry) {
+			int rd = Minecraft.getInstance().options.getEffectiveRenderDistance() + 1;
+			int csx = bx >> 4, csz = bz >> 4;
+			boolean budgetHit = false;
+			for (int o : COARSE_ORDER) {
+				if (System.nanoTime() > end) {
+					budgetHit = true;
+					break;
 				}
-				if (Math.max(Math.abs(sx - csx), Math.abs(sz - csz)) > rd) {
-					putCoarse(sx, sy, sz, 0); // (beyond the render distance: never loaded, asked again on a retry)
-					continue;
+				int cx = cx0 + (o & 255), cy = cy0 + ((o >> 8) & 255), cz = cz0 + (o >> 16);
+				int s = coarseSlot(cx, cy, cz);
+				if (retry) {
+					coarseRead[s] &= ~coarseUnloaded[s];
+					coarseUnloaded[s] = 0L;
 				}
-				putCoarse(sx, sy, sz, read(level, sx, sy, sz, false));
+				long missing = ~coarseRead[s];
+				while (missing != 0L) {
+					if (System.nanoTime() > end) {
+						budgetHit = true;
+						break;
+					}
+					int b = Long.numberOfTrailingZeros(missing);
+					missing &= missing - 1;
+					int sx = cx * 4 + (b & 3), sz = cz * 4 + ((b >> 2) & 3), sy = cy * 4 + (b >> 4);
+					if (fineSlot(sx, sy, sz) >= 0) { // (the fine read writes its coarse cells; unreadCoarse when it leaves the fine window)
+						coarseRead[s] |= 1L << b;
+						continue;
+					}
+					if (Math.max(Math.abs(sx - csx), Math.abs(sz - csz)) > rd) {
+						putCoarse(sx, sy, sz, 0); // (beyond the render distance: never loaded, asked again on a retry)
+						continue;
+					}
+					putCoarse(sx, sy, sz, read(level, sx, sy, sz, false));
+				}
+				if (budgetHit) break;
 			}
+			if (!budgetHit) coarseSettled = true;
 		}
 
 		// what spreads: the slots within a section of a coloured light, and a while after; then emptied
@@ -485,7 +538,7 @@ public final class ColorLights {
 
 	private static void near() {
 		nearDirty = false;
-		boolean[] prevFine = Arrays.copyOf(fineNear, FINE);
+		System.arraycopy(fineNear, 0, prevFineNear, 0, FINE);
 		Arrays.fill(fineNear, false);
 		for (int s = 0; s < FINE; s++) {
 			if (!fineColored[s]) continue;
@@ -497,8 +550,8 @@ public final class ColorLights {
 				fineNear[fineSlot(fx0 + x, fy0 + y, fz0 + z)] = true;
 			}
 		}
-		for (int s = 0; s < FINE; s++) if (fineNear[s] != prevFine[s]) markFine(s, LINGER);
-		boolean[] prevCoarse = Arrays.copyOf(coarseNear, COARSE);
+		for (int s = 0; s < FINE; s++) if (fineNear[s] != prevFineNear[s]) markFine(s, LINGER);
+		System.arraycopy(coarseNear, 0, prevCoarseNear, 0, COARSE);
 		Arrays.fill(coarseNear, false);
 		for (int s = 0; s < COARSE; s++) {
 			long bits = coarseColored[s];
@@ -521,7 +574,7 @@ public final class ColorLights {
 				coarseNear[coarseSlot(cx0 + x, cy0 + y, cz0 + z)] = true;
 			}
 		}
-		for (int s = 0; s < COARSE; s++) if (coarseNear[s] != prevCoarse[s]) markCoarse(s, COARSE_CONVERGE);
+		for (int s = 0; s < COARSE; s++) if (coarseNear[s] != prevCoarseNear[s]) markCoarse(s, COARSE_CONVERGE);
 	}
 
 	private static void emit(long enc, ByteBuffer h, long t0) {
@@ -531,12 +584,10 @@ public final class ColorLights {
 		for (int i = 0; i < clearCount; i++) MemoryUtil.memPutInt(list + 4L * n++, clears[i]);
 		int nClear = n;
 		clearCount = 0;
-		// one step a frame for the fine slots (a light's 15 levels in ~0.2 s at 80 fps), the coarse ones every other frame (4 cells)
-		// (-Dmcopt.shade.coloredLights.spread=false, live, dev: no spread, to price it apart from the shading's reads)
-		// (2.0.1 opt, mcopt.shade.coloredLights.converge=true: skip converged static slots once their light has settled; 100% bit-identical)
 		boolean spread = Live.b("mcopt.shade.coloredLights.spread", true);
 		boolean converge = Live.b("mcopt.shade.coloredLights.converge", true);
 		boolean coarseStep = spread && (frame & 1) == 0;
+		int activeFine = 0, activeCoarse = 0;
 		for (int s = 0; s < FINE; s++) {
 			if (fineNear[s]) fineLinger[s] = frame;
 			else if (fineLinger[s] != 0 && frame - fineLinger[s] >= LINGER) {
@@ -544,9 +595,12 @@ public final class ColorLights {
 				fineDirty[s] = 0;
 				clear(s, false); // (next frame's list)
 			}
-			if (fineLinger[s] != 0 && (!converge || fineDirty[s] > 0)) {
-				MemoryUtil.memPutInt(list + 4L * n++, s);
-				if (spread && fineDirty[s] > 0) fineDirty[s]--;
+			if (fineLinger[s] != 0) {
+				activeFine++;
+				if (!converge || fineDirty[s] > 0) {
+					MemoryUtil.memPutInt(list + 4L * n++, s);
+					if (spread && fineDirty[s] > 0) fineDirty[s]--;
+				}
 			}
 		}
 		int nFine = n - nClear;
@@ -557,17 +611,22 @@ public final class ColorLights {
 				coarseDirty[s] = 0;
 				clear(s, true);
 			}
-			if (coarseLinger[s] != 0 && (!converge || coarseDirty[s] > 0)) {
-				MemoryUtil.memPutInt(list + 4L * n++, s | 0x80000000);
-				if (coarseStep && coarseDirty[s] > 0) coarseDirty[s]--;
+			if (coarseLinger[s] != 0) {
+				activeCoarse++;
+				if (!converge || coarseDirty[s] > 0) {
+					MemoryUtil.memPutInt(list + 4L * n++, s | 0x80000000);
+					if (coarseStep && coarseDirty[s] > 0) coarseDirty[s]--;
+				}
 			}
 		}
 		int nCoarse = n - nClear - nFine;
 
-		h.putInt(0, fx0).putInt(4, fy0).putInt(8, fz0).putInt(12, 1);
-		h.putInt(16, FX).putInt(20, FY).putInt(24, FZ).putInt(28, 0);
+		// (2.0.1 opt) fineMin.w = 0 when zero coloured lights exist anywhere in either window: skips all per-vertex 3D texture reads!
+		// fineDim.w / coarseDim.w signal per-cascade activity so fine-only worlds skip coarse 3D fetches too.
+		h.putInt(0, fx0).putInt(4, fy0).putInt(8, fz0).putInt(12, (activeFine > 0 || activeCoarse > 0) ? 1 : 0);
+		h.putInt(16, FX).putInt(20, FY).putInt(24, FZ).putInt(28, activeFine > 0 ? 1 : 0);
 		h.putInt(32, cx0).putInt(36, cy0).putInt(40, cz0).putInt(44, FINE * CELLS);
-		h.putInt(48, CX).putInt(52, CY).putInt(56, CZ).putInt(60, 0);
+		h.putInt(48, CX).putInt(52, CY).putInt(56, CZ).putInt(60, activeCoarse > 0 ? 1 : 0);
 		h.putFloat(64, Live.f("mcopt.shade.coloredLights.strength", 1f, 0f, 1f)).putFloat(68, Live.f("mcopt.shade.coloredLights.glow", 1f, 0f, 3f))
 			.putFloat(72, 16f).putFloat(76, 0f);
 		DynLightNative.clHeader(state, header);
