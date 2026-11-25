@@ -35,6 +35,12 @@ final class MetalEncoder implements CommandEncoderBackend {
 	 */
 	private static final int MAX_IN_FLIGHT = Integer.getInteger("mcopt.metal.inFlight", 2);
 	/**
+	 * (2.0.1f) -Dmcopt.metal.vsyncInFlight=N (set to 1 by Shade.init unless specified): cap in-flight submits under direct
+	 * FIFO VSync (without changing VSync-off MAX_IN_FLIGHT=2) so 3 frames don't pile up on the GPU and trigger 2 ms + 14 ms
+	 * drawable bursts. Negative disables the override.
+	 */
+	private static final int VSYNC_IN_FLIGHT = Integer.getInteger("mcopt.metal.vsyncInFlight", -1);
+	/**
 	 * -Dmcopt.metal.trace=N prints every encoder operation of submit N, the tool for finding pass boundaries worth removing,
 	 * and the average per-encoder GPU time of submits N to N + PROFILE_FRAMES - 1. Traced runs are a few % slower; don't bench them.
 	 */
@@ -268,7 +274,8 @@ final class MetalEncoder implements CommandEncoderBackend {
 			Native.passTest(this.enc, PASS_TEST_N, PASS_TEST_MODE);
 			this.passTestPending = false;
 		}
-		while (this.inFlight.size() > MAX_IN_FLIGHT) this.retire(this.inFlight.poll(), WaitStats.INFLIGHT);
+		int maxInFlight = FrameWait.isVsyncDirect() && VSYNC_IN_FLIGHT >= 0 ? Math.min(MAX_IN_FLIGHT, VSYNC_IN_FLIGHT) : MAX_IN_FLIGHT;
+		while (this.inFlight.size() > maxInFlight) this.retire(this.inFlight.poll(), WaitStats.INFLIGHT);
 		if (STATS) this.stats();
 		if (WaitStats.ON) WaitStats.frame(this.submitIndex - 1);
 	}

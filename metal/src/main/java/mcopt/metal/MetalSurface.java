@@ -125,6 +125,7 @@ final class MetalSurface implements GpuSurfaceBackend {
 	@Override
 	public void present() {
 		// The present was scheduled on the frame's command buffer in blitFromTexture and happens when it's committed.
+		if (this.vsync && VSYNC_DIRECT) FrameWait.paceVsync();
 	}
 
 	@Override

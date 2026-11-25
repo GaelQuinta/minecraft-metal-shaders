@@ -37,6 +37,7 @@ abstract class FramerateLimiterMixin {
 		}
 		// (2.0.1e) Phase-lock when we woke on time so ~30 us kernel timer overshoot doesn't accumulate into 119.6 fps drift.
 		lastFrameTime = FrameWait.VSYNC_LIMITER && now - target >= 0 && now - target < period ? target : now;
+		FrameWait.onLimiterEnd(now);
 		ci.cancel();
 	}
 }
