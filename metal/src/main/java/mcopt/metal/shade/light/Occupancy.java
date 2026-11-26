@@ -63,6 +63,8 @@ final class Occupancy {
 	private final int[] retry = new int[SLOTS];
 	private final int[] scratch = new int[WORDS];
 	private final int[] air = new int[WORDS];
+	private final int[] palIdx = new int[4096];
+	private final boolean[] palOcc = new boolean[4096];
 	private int ox = Integer.MIN_VALUE, oy, oz; // the window's min section
 	private int refresh;
 	private ClientLevel level;
@@ -199,15 +201,25 @@ final class Occupancy {
 						if (!states.maybeHas(CLEAR)) {
 							java.util.Arrays.fill(w, -1);
 						} else {
-							int i = 0;
-							for (int y = 0; y < 16; y++) {
-								for (int z = 0; z < 16; z++) {
-									int word = 0;
-									for (int x = 0; x < 16; x++) {
-										if (occludes(states.get(x, y, z))) word |= 1 << ((i + x) & 31);
+							// (2.0.1 opt) unpack palette once instead of 4096 virtual states.get(x,y,z) calls
+							var p = mcopt.metal.own.OwnPalette.unpack(states, this.palIdx);
+							int ps = p.getSize();
+							if (ps <= this.palOcc.length) {
+								for (int k = 0; k < ps; k++) this.palOcc[k] = occludes(p.valueFor(k));
+								for (int wIdx = 0; wIdx < WORDS; wIdx++) {
+									int base = wIdx << 5, word = 0;
+									for (int b = 0; b < 32; b++) {
+										if (this.palOcc[this.palIdx[base + b]]) word |= 1 << b;
 									}
-									w[i >> 5] |= word;
-									i += 16;
+									w[wIdx] = word;
+								}
+							} else {
+								for (int wIdx = 0; wIdx < WORDS; wIdx++) {
+									int base = wIdx << 5, word = 0;
+									for (int b = 0; b < 32; b++) {
+										if (occludes(p.valueFor(this.palIdx[base + b]))) word |= 1 << b;
+									}
+									w[wIdx] = word;
 								}
 							}
 						}

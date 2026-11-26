@@ -155,7 +155,21 @@ static float3 shadeDynamicLights(constant ShadeDynLights &D, texture3d<half> vis
 // blends toward 0.6, as if lit from around). Same units and day/placed-light attenuation as shadeDynamicLights.
 // (FT2.9) dirs.w: the share of the light that is omnidirectional (the player's own); the directions are those of the others.
 static float3 shadeDynamicLightsVol(constant ShadeDynLights &D, texture3d<half> irr, texture3d<half> dirs, float3 p, float3 n, bool thin, half block) {
-	if (D.info.x == 0u || D.irr.w <= 0.0) return float3(0.0);
+	if (D.info.x == 0u) return float3(0.0);
+	if (D.info.w != 0u) {
+		// (2.0.1 opt) single unshadowed omnidirectional player-hand light: exact analytic path with instant distance reject & zero 3D texture reads!
+		constant ShadeDynLight &L = D.lights[0];
+		float3 v = L.pos.xyz - (p + n * 0.5);
+		float reach = L.pos.w, cut = reach - SHADE_DL_CUT;
+		float d2 = dot(v, v);
+		if (d2 >= cut * cut) return float3(0.0);
+		float d = sqrt(d2);
+		float b = saturate((reach - max(d, L.shape.x)) * (1.0 / 15.0));
+		float f = shadeDlCurve(b) * saturate(cut - d);
+		float att = block > 0.0h ? (1.0 - 0.5 * shadeDlCurve(float(block))) : 1.0;
+		return L.color.rgb * (f * D.params.y * att);
+	}
+	if (D.irr.w <= 0.0) return float3(0.0);
 	const float3 size = float3(SHADE_DL_IRR_X, SHADE_DL_IRR_Y, SHADE_DL_IRR_Z);
 	float3 q = p + n * 0.5 - D.irr.xyz; // voxel units
 	float3 edge = min(q, size - q);     // distance to the volume's nearest face
@@ -171,7 +185,8 @@ static float3 shadeDynamicLightsVol(constant ShadeDynLights &D, texture3d<half> 
 	float c = dot(n, dir) / max(r, 1e-3);
 	float w = thin ? 0.55 + 0.45 * abs(c) : mix(0.6, saturate((c + 0.3) * (1.0 / 1.3)), saturate(r));
 	w = mix(w, 1.0, saturate(dd.w));
-	return e * (w * D.params.y * (1.0 - 0.5 * shadeDlCurve(float(block))));
+	float att = block > 0.0h ? (1.0 - 0.5 * shadeDlCurve(float(block))) : 1.0;
+	return e * (w * D.params.y * att);
 }
 
 // The irradiance volume (compute, mcdynlight.m, after the visibility slabs): per block voxel around the camera, every light
@@ -227,8 +242,9 @@ kernel void shade_dl_irr(uint3 t0 [[thread_position_in_grid]], constant ShadeDyn
 // Diffuse plus a glossy highlight (water, wet or polished surfaces): v = unit direction from p toward the camera,
 // shininess the Blinn-Phong exponent, spec its strength (Fresnel-weighted by the caller). Returns diffuse in rgb as
 // shadeDynamicLights and adds the specular radiance factor (same units) into specOut.
-static float3 shadeDynamicLightsSpec(constant ShadeDynLights &D, texture3d<half> vis, float3 p, float3 n, half block, float3 v, float shininess,
-                                     thread float3 &specOut) {
+// (2.0.1 opt) noinline: keeps dynamic-light loop registers out of the register-bound water fragment shader (98% of ocean pixels skip it).
+static __attribute__((noinline)) float3 shadeDynamicLightsSpec(constant ShadeDynLights &D, texture3d<half> vis, float3 p, float3 n, half block, float3 v, float shininess,
+                                      thread float3 &specOut) {
 	uint2 m = shadeDlMask(D, p);
 	specOut = float3(0.0);
 	if ((m.x | m.y) == 0u) return float3(0.0);

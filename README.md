@@ -4,7 +4,7 @@
 reflective water, HDR and more, written directly in Metal instead of going through OpenGL, at the full resolution of a
 Retina display.
 
-![Sunset over the lake](media/hero.jpg)
+![Jungle island at sunset — Metal Shaders 2.0](media/2.0/jungle_island_sunset.jpg)
 
 <p align="center">
   <a href="https://github.com/GaelQuinta/minecraft-metal-shaders/releases/latest"><b>Download</b></a> ·
@@ -24,35 +24,49 @@ MacBook Pro M4 at its native 3024×1964, Iris + Complementary Reimagined runs at
 
 Metal Shaders is a fork of [mcopt](https://github.com/noahdunnagan/mcopt), a mod that gives Minecraft 26.3 a Metal
 renderer and, since mcopt 0.3, its own terrain renderer (no Sodium needed). On top of it, every effect is written from
-scratch in Metal Shading Language and runs inside the game's own frame, with Apple-GPU-specific tricks (tile memory, compressed render targets, a custom temporal upscaler). Same Mac,
-same resolution: **90–120 FPS** with the balanced preset, and **135–150 FPS** at 1440p.
+scratch in Metal Shading Language and runs inside the game's own frame, with Apple-GPU-specific tricks (tile memory,
+compressed render targets, a custom temporal upscaler, and true 120 Hz ProMotion pacing). Same Mac: **140–160 FPS** at
+1440p (Balanced + Auto dynamic resolution, or locked **120 FPS** with VSync on), and **85–115+ FPS** at full native
+3024×1964.
 
 ## Videos
 
-Recorded in-game on a MacBook Pro M4 (the camera paths were scripted with the test harness in `bench/`).
+Recorded in-game on a base 14" MacBook Pro M4 (10-core GPU), unedited:
 
-| [![Showcase video](media/video-showcase.jpg)](https://github.com/GaelQuinta/minecraft-metal-shaders/releases/download/v1.0-alpha/metal-shaders-showcase.mp4) | [![Presets video](media/video-presets.jpg)](https://github.com/GaelQuinta/minecraft-metal-shaders/releases/download/v1.0-alpha/metal-shaders-presets.mp4) |
+| [![2.0 Showcase video](media/2.0/video-showcase-2.0.jpg)](https://github.com/GaelQuinta/minecraft-metal-shaders/releases/download/v2.0.1-alpha/metal-shaders-2.0-alpha.mp4) | [![2.0.1 Real-time 1440p F3 gameplay](media/2.0/video-f3-2.0.1.jpg)](https://github.com/GaelQuinta/minecraft-metal-shaders/releases/download/v2.0.1-alpha/metal-shaders-2.0.1-1440p-lake-f3.mp4) |
 |---|---|
-| **Showcase** (85 s): sunsets, god rays, water, survival, auroras | **Every preset × every resolution** with F3 (49 s) |
+| **2.0 Atmosphere Showcase** (105 s): sunsets, god rays, caves, caustics, auroras, Distant Horizons (Quality preset, scripted camera) | **2.0.1 Real-time 1440p with F3** (16 s): Balanced + Auto DRS, unlocked FPS (**141.7 fps** average while recording) |
 
-### Gallery
+### Gallery (2.0+ Atmosphere)
 
 | | |
 |---|---|
-| ![Lake at sunset](media/lake_sunset.jpg) | ![Cherry grove at sunset](media/cherry_high_sunset.jpg) |
-| ![God rays in the jungle](media/jungle_sunset.jpg) | ![Above the clouds](media/clouds_above_sunset.jpg) |
-| ![Red sunset over a snowy taiga](media/snowy_red_sunset.jpg) | ![Red sunset on the lake](media/lake_red_sunset.jpg) |
-| ![Aurora over the snowy slopes](media/aurora_slopes.jpg) | ![Aurora and stars over the lake](media/night_lake_stars.jpg) |
-| ![Morning in the cherry grove](media/cherry_walk_morning.jpg) | ![Badlands at sunset](media/badlands_sunset.jpg) |
-
-Full-resolution photos (3024×1964) are in the [release](https://github.com/GaelQuinta/minecraft-metal-shaders/releases/latest).
+| ![Sunset with 2.0 atmosphere](media/2.0/sunset_2.0.jpg) | ![Morning clouds over the lake](media/2.0/lake_morning.jpg) |
+| ![Cherry grove god rays](media/2.0/cherry_god_rays.jpg) | ![Birch hills at golden hour](media/2.0/birch_hills.jpg) |
+| ![Coloured lights in a cave](media/2.0/cave_coloured_lights.jpg) | ![Underwater reef and light rays](media/2.0/reef_light_rays.jpg) |
+| ![Aurora over the lake](media/2.0/aurora_lake.jpg) | ![Distant Horizons peaks at sunset](media/2.0/dh_peaks_sunset.jpg) |
+| ![Lake at dusk](media/2.0/lake_dusk.jpg) | ![River valley sunset](media/2.0/river_sunset.jpg) |
+| ![Thunderstorm and lightning](media/2.0/storm_lightning.jpg) | ![Nether soul sand valley](media/2.0/nether_soul_valley.jpg) |
 
 ## Performance
 
-MacBook Pro 14" M4 (10-core GPU), macOS 26, Minecraft 26.3, measured in-game with 1.0-alpha while recording the videos
-above (the recorder costs a few FPS). F3 shows the numbers in each clip. 1.2 (mcopt 0.3, no Sodium) runs at the same speed as before: measured against 1.1 on the same Mac, +0.8 % in a lake test and −1.1 % in a fast flight over new terrain (+1.6 % / −0.5 % with Distant Horizons).
+Measured in-game on a base **MacBook Pro 14" M4 (10-core GPU, 16 GB)**, macOS 26, Minecraft 26.3, **2.0.1-alpha**:
 
-Average FPS over each 10-second clip, 16 chunks, while recording the video (F3 on):
+### 2.0.1-alpha real-world measurements (Balanced preset)
+
+| Scenario | Output / Scaling | Measured FPS (2.0.1-alpha) | Notes |
+|---|---|---|---|
+| Lake shoreline (real-time F3 clip) | 2218×1440 · Auto DRS | **141.7 FPS** avg | Recorded live with F3 on, VSync off |
+| Autumn forest god rays (real-time F3 clip) | 2218×1440 · Auto DRS | **157.9 FPS** avg | Recorded live with F3 on, VSync off |
+| 120 Hz ProMotion gameplay (VSync ON or OFF) | 2218×1440 · Auto DRS | **120.0 FPS** locked | `99.5–99.8%` frames in `7–10 ms`, `0.0%` late frames, −12 ms E2E latency |
+| Benchmark route (turn / flight, DRS off) | 2218×1440 · 75% fixed | **104.0 / 111.1 FPS** | `1% low` 74.6 / 97.0 FPS (`9.62 / 9.01 ms` GPU) |
+| Full optimization + culling gain vs 2.0-alpha | 3024×1964 · DRS off | **+8.5–13.5% day / +13–17% night** | `1% low` up ~20% at night with dynamic lights + aurora; **+6.5–10%** with Distant Horizons |
+| Water quality `Fast` (open sea, M4) | 3024×1964 | **93 → 132 FPS** | `Auto` picks `Fast` on 8-core or smaller Macs (M1 / base M2) |
+
+For reference on the same M4 MacBook Pro: **Iris + Complementary Reimagined (OpenGL)** runs at **≈ 22 FPS** at native 3024×1964 and **≈ 43 FPS** at 1080p.
+
+<details>
+<summary>Preset × resolution baseline table (16 chunks, measured on M4 with F3 while recording)</summary>
 
 | Preset | Output | Lake sunset | Cherry forest | Mountain sunrise |
 |---|---|---|---|---|
@@ -69,10 +83,17 @@ Average FPS over each 10-second clip, 16 chunks, while recording the video (F3 o
 | Ultra | 2218×1440 | 66 | 105 | 89 |
 | Ultra | 1662×1080 | 92 | 155 | 126 |
 
-For reference, on the same Mac: Iris + Complementary Reimagined (OpenGL) at 3024×1964 ≈ 22 FPS, at 1080p ≈ 43 FPS.
+*(Baseline recorded on 1.0-alpha; 2.0.1-alpha adds +8.5–17% FPS on top of 2.0-alpha plus overlap-aware DRS and true 120 Hz pacing.)*
+
+</details>
 
 ## Features
 
+- **New in 2.0.1: performance, true 120 Hz ProMotion smoothness, and cleaner reflections & god rays.** Full optimization pass
+  across the Metal renderer and every shader pass (+5–10% FPS by day and with Distant Horizons, +13–17% at night), smart
+  leaf and entity/block-entity occlusion culling, true tear-free 120 Hz VSync pacing (direct presentation, no 60 Hz frame-pairing
+  cycle, no silent frame drops with VSync off, and overlap-aware dynamic resolution), cleaner water reflections without
+  vertical tree-overhang curtains, and rock-steady god rays and leaf silhouettes without dark blotches or distant flickering.
 - **New in 2.0: a new default atmosphere.** Golden light in the morning and afternoon, deeper shade, darker and more dramatic
   sunsets with pink and orange clouds, a blue-violet dusk, higher and smaller clouds with darker undersides, and grass and
   leaves that glow against the sun. Distant land at the edge of the render distance now melts into the sky behind it (no pale
@@ -234,8 +255,8 @@ Made by Gael Quintanilla, with Claude (Anthropic) writing most of the code.
 **Shaders nativos en Metal para Minecraft Java en Macs con Apple Silicon.** Sombras, nubes volumétricas, rayos de sol
 (godrays), agua con reflejos, HDR y más, escritos directamente en Metal en lugar de pasar por OpenGL.
 
-En una MacBook Pro M4 a resolución completa (3024×1964), Iris + Complementary corre a ~22 FPS. Con Metal Shaders,
-la misma Mac a la misma resolución da **90–120 FPS** (preset balanceado), y **135–150 FPS** a 1440p.
+En una MacBook Pro M4 (GPU de 10 núcleos) a resolución completa (3024×1964), Iris + Complementary corre a ~22 FPS. Con Metal Shaders `2.0.1-alpha`,
+la misma Mac da **140–160 FPS** a 1440p (preset balanceado + resolución dinámica Auto, o **120 FPS** clavados en pantalla ProMotion de 120 Hz) y **85–115+ FPS** en nativo 3024×1964.
 
 **Instalación:** Mac con Apple Silicon y macOS 15 Sequoia o más nuevo (también 26 y 27), Minecraft 26.3 con Fabric 0.19.5 y
 Java 25. Desde la 1.2 **ya no hace falta Sodium** (mcopt 0.3 dibuja el terreno por su cuenta; con Sodium instalado el juego no
@@ -252,6 +273,8 @@ Minecraft con volumen, luz y sombras), las normales del juego, o ninguna. **Gene
 **"Salida"** del menú de pausa, y la interna con **"Resolución"** (desde la 1.2.4, en % de la salida: 85, 75, 67, 59 o 50 %, o Auto; también en **Shaders... → Rendimiento**). Compatible con Distant Horizons 3.3.4 + Fabric API (opcional); desde la 1.2.2, en **Shaders... → Rendimiento → Distant Horizons** eliges presets de DH probados con los shaders (Rendimiento, Balanceado, Calidad, Ultra), y el agua lejana de DH siempre tiene los reflejos de los shaders. El preset gráfico **Fabulous** ya funciona (antes el agua se volvía invisible). Desde la 1.2.3, cuando estás alto (a la altura de las nubes o arriba de ellas), los bordes de las nubes ya no se ven a través de las lomas y los árboles que tienes enfrente; con DH, una nube detrás de una montaña lejana de DH, por debajo del horizonte, todavía puede verse encima de ella. Si con DH la mitad de
 abajo de la pantalla se ve oscura (versión 1.0-alpha): en `config/DistantHorizons.toml` pon `vanillaFadeMode = "NONE"` y
 reinicia el juego; desde la 1.0-alpha.2 el mod lo hace solo.
+
+**Novedades de la 2.0.1:** optimización completa del renderizador Metal y todos los shaders (+5–10 % de FPS de día y con Distant Horizons, +13–17 % de noche) más culling de hojas y entidades ocultas; fluidez real a 120 Hz ProMotion (presentación directa en VSync, sin ciclo oculto de 60 Hz, sin cuadros descartados con VSync apagado y resolución dinámica consciente del solapamiento GPU); reflejos de agua sin cortinas verticales bajo árboles ni parpadeo, y god rays y bordes de hojas limpios sin manchas oscuras ni titileo lejano.
 
 **Novedades de la 2.0:** **atmósfera nueva de fábrica**: luz dorada en la mañana y la tarde, sombras más profundas, atardeceres más oscuros con nubes rosa y naranja, anochecer azul-violeta, nubes más altas y chicas, y pasto y hojas que brillan a contraluz; el terreno en el borde de la distancia de render se funde con el cielo de atrás (sin halos pálidos alrededor de las montañas), la neblina de la mañana es más ligera y las sombras del pasto son suaves. **Shaders... → Atmósfera: Clásica (1.2.8)** regresa al look anterior. También: **Agua → Calidad del agua** (Rápida / Media / Normal / Auto) para Macs chicas (y lo que apagues en el agua ya no cuesta nada), **Cielo de noche → Sol del shader** para usar el sol de tu resource pack, y las cuevas ya no cambian de color con la lluvia o de noche.
 

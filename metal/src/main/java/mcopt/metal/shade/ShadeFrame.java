@@ -60,6 +60,7 @@ public final class ShadeFrame {
 	public final Matrix4f[] shadowViewProj = {new Matrix4f(), new Matrix4f()};
 	public double cameraX, cameraY, cameraZ;
 	public final Vector3f sunDir = new Vector3f(0, 1, 0), moonDir = new Vector3f(0, -1, 0);
+	private final Vector3f scratchSunView = new Vector3f();
 	public float moonPhase = 1f;
 	public final ShadeSky.Result sky = new ShadeSky.Result();
 	public float sunIntensity, moonIntensity, mie = 1f;
@@ -198,7 +199,7 @@ public final class ShadeFrame {
 		put4(b, CAMERA_BLOCK, (float) bx, (float) by, (float) bz, this.mipScale);
 		put4(b, CAMERA_FRACT, (float) (this.cameraX - bx), (float) (this.cameraY - by), (float) (this.cameraZ - bz), (float) (this.cameraY - 63));
 		put4(b, SUN_DIR_WORLD, this.sunDir.x, this.sunDir.y, this.sunDir.z, this.sunDir.y);
-		Vector3f sv = this.view.transformDirection(new Vector3f(this.sunDir));
+		Vector3f sv = this.view.transformDirection(this.scratchSunView.set(this.sunDir));
 		put4(b, SUN_DIR_VIEW, sv.x, sv.y, sv.z, 0);
 		put4(b, MOON_DIR_WORLD, this.moonDir.x, this.moonDir.y, this.moonDir.z, this.moonPhase);
 		float[] l = this.sky.lightDir;

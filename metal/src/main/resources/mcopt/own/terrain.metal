@@ -1810,7 +1810,11 @@ static float3 ownSway(uint vi, int3 origin, float3 cam, device const void *arena
 	uint k = uint(cls.read(uint2(clamp(mid * sw.info.xy, float2(0), sw.info.xy - 1.0))).r * 255.0 + 0.5);
 	if (k == 0 || k > 6) return float3(0);
 	float3 a = float3(origin & 1023) + p;  // (wrapped: every wavelength below divides 1024)
-	float gate = smoothstep(0.55, 0.9, saturate(float(v.uv2.y) / 240.0)) * sw.wind.y * fade;
+	float sky01 = saturate(float(v.uv2.y) / 240.0);
+	// (2.0.1, issue #72) Leaves sample sky light per face: a high gate (0.55..0.9) froze shaded side/bottom faces of wide cherry
+	// and Terralith canopies or leaf blocks on the ground while letting only the top face wave. Gating leaves on 0.02..0.30
+	// (sky light ~0.3..4.5) keeps caves/interiors (sky 0) completely still while moving all 6 faces of outdoor leaves uniformly.
+	float gate = smoothstep(k == 1 ? 0.02 : 0.55, k == 1 ? 0.30 : 0.9, sky01) * sw.wind.y * fade;
 	const float K = 6.2831853 / 32.0;
 	float3 d = float3(0);
 	if (k == 1 || k == 5) {

@@ -114,9 +114,11 @@ DlState *mc_dl_new(Ctx *ctx, const char *source, int bytes, int ring, int slabs,
 		td.width = irrW;
 		td.height = irrH;
 		td.depth = irrD;
-		td.pixelFormat = MTLPixelFormatRGBA16Float;
+		// (2.0.1 opt) half-bandwidth 3D dynamic light volumes (9.4 MB -> 4.7 MB): irr is non-negative RGB (alpha unused), dir is [-1,1]^3 + [0,1]
+		td.pixelFormat = MTLPixelFormatRG11B10Float;
 		s->irr = [ctx->device newTextureWithDescriptor:td];
 		s->irr.label = @"mcopt shade: dynamic light irradiance";
+		td.pixelFormat = MTLPixelFormatRGBA8Snorm;
 		s->dir = [ctx->device newTextureWithDescriptor:td];
 		s->dir.label = @"mcopt shade: dynamic light direction";
 		dl = s;
@@ -176,8 +178,9 @@ int mc_dl_fallback(Ctx *ctx, int bytes) {
 		td.storageMode = MTLStorageModePrivate;
 		td.usage = MTLTextureUsageShaderRead;
 		s->vis = [ctx->device newTextureWithDescriptor:td];
-		td.pixelFormat = MTLPixelFormatRGBA16Float;
+		td.pixelFormat = MTLPixelFormatRG11B10Float;
 		s->irr = [ctx->device newTextureWithDescriptor:td];
+		td.pixelFormat = MTLPixelFormatRGBA8Snorm;
 		s->dir = [ctx->device newTextureWithDescriptor:td];
 		fb = s;
 		return 1;

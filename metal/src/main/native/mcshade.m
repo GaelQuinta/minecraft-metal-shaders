@@ -207,14 +207,20 @@ void mc_shade_reopen_hook(int on) {
 	mc_reopen_hook = on ? reopenBind : NULL;
 }
 
-// (FT2.8, audit idx 46) the ShadeResources textures made resident for the encoder in one call (16 useResource calls per pass
-// before: hundreds of Metal calls per frame on the render thread)
-static void useResources(id<MTLRenderCommandEncoder> r, MTLRenderStages stages) {
+// (2.0.1 opt) deduplicate dummyTexture and never mark an active render-pass attachment as read-resident
+static void useResources(id<MTLRenderCommandEncoder> r, MTLRenderStages stages, id<MTLTexture> skipTarget) {
 	id<MTLResource> list[SHADE_RESOURCES];
 	NSUInteger n = 0;
+	BOOL dummyAdded = NO;
 	for (int i = 0; i < SHADE_RESOURCES; i++) {
-		id<MTLTexture> t = resourceTextures[i] ? resourceTextures[i] : dummyTexture;
-		if (t) list[n++] = t;
+		id<MTLTexture> t = resourceTextures[i];
+		if (!t) {
+			if (dummyAdded || !dummyTexture) continue;
+			t = dummyTexture;
+			dummyAdded = YES;
+		}
+		if (t == skipTarget) continue;
+		list[n++] = t;
 	}
 	if (n) [r useResources:list count:n usage:MTLResourceUsageRead stages:stages];
 }
@@ -254,9 +260,27 @@ int mc_shade_bind_render(id<MTLRenderCommandEncoder> r) {
 	if (resourceBuffer) {
 		[r setVertexBuffer:resourceBuffer offset:0 atIndex:19];
 		[r setFragmentBuffer:resourceBuffer offset:0 atIndex:19];
-		useResources(r, MTLRenderStageVertex | MTLRenderStageFragment);
+		useResources(r, MTLRenderStageVertex | MTLRenderStageFragment, nil);
 	}
 	return 1;
+}
+
+// (2.0.1 opt) Minimal fragment-only bindings for cloud march/dome (ShadeFrame + skyLut only; avoids binding ShadeResources + 16 useResources)
+void mc_shade_bind_sky_lut(id<MTLRenderCommandEncoder> r) {
+	if (!r || !frameBuffer) return;
+	[r setFragmentBuffer:frameBuffer offset:frameOffset atIndex:16];
+	if (state && state->lut) {
+		[r setFragmentTexture:state->lut atIndex:17];
+		[r setFragmentSamplerState:state->linear atIndex:13];
+	}
+}
+
+// (2.0.1 opt) Minimal fragment-only bindings for passes reading ShadeFrame, ShadeLook, ShadeGpu only (e.g. cloud_over)
+void mc_shade_bind_frame_look_gpu(id<MTLRenderCommandEncoder> r) {
+	if (!r || !frameBuffer) return;
+	[r setFragmentBuffer:frameBuffer offset:frameOffset atIndex:16];
+	if (lookBuffer) [r setFragmentBuffer:lookBuffer offset:lookOffset atIndex:17];
+	if (gpuBuffer) [r setFragmentBuffer:gpuBuffer offset:0 atIndex:18];
 }
 
 // For a compute encoder of our own: ShadeFrame at buffer(16), ShadeLook 17, ShadeGpu 18 (device-writable for kernels that
@@ -424,13 +448,13 @@ id<MTLBuffer> mc_shade_buffer(Ctx *ctx, uint64_t size) {
 	return b;
 }
 
-static void bindGlobalsRender(id<MTLRenderCommandEncoder> r) {
+static void bindGlobalsRender(id<MTLRenderCommandEncoder> r, id<MTLTexture> skipTarget) {
 	if (frameBuffer) [r setFragmentBuffer:frameBuffer offset:frameOffset atIndex:16];
 	if (lookBuffer) [r setFragmentBuffer:lookBuffer offset:lookOffset atIndex:17];
 	if (gpuBuffer) [r setFragmentBuffer:gpuBuffer offset:0 atIndex:18];
 	if (resourceBuffer) {
 		[r setFragmentBuffer:resourceBuffer offset:0 atIndex:19];
-		useResources(r, MTLRenderStageFragment);
+		useResources(r, MTLRenderStageFragment, skipTarget);
 	}
 	if (state && state->lut) {
 		[r setFragmentTexture:state->lut atIndex:17];
@@ -440,12 +464,8 @@ static void bindGlobalsRender(id<MTLRenderCommandEncoder> r) {
 	if (shadowSampler) [r setFragmentSamplerState:shadowSampler atIndex:12];
 }
 
-// One full-screen triangle of pso into target, in an encoder of its own on the frame's command buffer (ending whatever was
-// open: the backend reopens its own for its next pass). load: 0 don't care (the pass writes every pixel), 1 load, 2 clear to
-// 0. textures: count inputs at texture(0..count-1) (nil entries skipped); bytes (length <= 4 KB, may be NULL) at buffer(0);
-// the globals at buffers 16-19, the shadow map and LUT at textures 16/17 as everywhere. Viewport: the whole target.
-void mc_shade_pass(Enc *enc, id<MTLRenderPipelineState> pso, id<MTLTexture> target, int load, id<MTLTexture> const *textures, int count,
-                   const void *bytes, int length, const char *label) {
+static void encodeFullscreenPass(Enc *enc, id<MTLRenderPipelineState> pso, id<MTLTexture> target, int load, id<MTLTexture> const *textures, int count,
+                                 const void *bytes, int length, int bindMode, const char *label) {
 	if (!pso || !target) return;
 	@autoreleasepool {
 		id<MTLCommandBuffer> cb = mc_frame_cmd(enc);
@@ -466,11 +486,45 @@ void mc_shade_pass(Enc *enc, id<MTLRenderPipelineState> pso, id<MTLTexture> targ
 		id<MTLRenderCommandEncoder> r = [cb renderCommandEncoderWithDescriptor:rp];
 		if (label) r.label = [NSString stringWithUTF8String:label];
 		[r setRenderPipelineState:pso];
-		bindGlobalsRender(r);
+		if (bindMode == 2) bindGlobalsRender(r, target);
+		else if (bindMode == 1 && gpuBuffer) [r setFragmentBuffer:gpuBuffer offset:0 atIndex:18];
 		for (int i = 0; i < count; i++) if (textures[i]) [r setFragmentTexture:textures[i] atIndex:i];
 		if (bytes && length > 0) [r setFragmentBytes:bytes length:length atIndex:0];
 		[r drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
 		[r endEncoding];
+	}
+}
+
+void mc_shade_pass(Enc *enc, id<MTLRenderPipelineState> pso, id<MTLTexture> target, int load, id<MTLTexture> const *textures, int count,
+                   const void *bytes, int length, const char *label) {
+	encodeFullscreenPass(enc, pso, target, load, textures, count, bytes, length, 2, label);
+}
+
+// (2.0.1 opt) Bare fullscreen pass without ShadeResources / global bindings (bindGpu=1 binds ShadeGpu at buffer 18 only, e.g. bloom_down0)
+void mc_shade_pass_plain(Enc *enc, id<MTLRenderPipelineState> pso, id<MTLTexture> target, int load, id<MTLTexture> const *textures, int count,
+                         const void *bytes, int length, int bindGpu, const char *label) {
+	encodeFullscreenPass(enc, pso, target, load, textures, count, bytes, length, bindGpu ? 1 : 0, label);
+}
+
+// (2.0.1 opt) Fuses shade_histogram (2x2 rotating strided grid) and shade_exposure into ONE serial compute encoder
+void mc_shade_exposure_run(Enc *enc, id<MTLComputePipelineState> histPso, id<MTLComputePipelineState> expPso, id<MTLTexture> histTex) {
+	if (!expPso) return;
+	@autoreleasepool {
+		id<MTLCommandBuffer> cb = mc_frame_cmd(enc);
+		id<MTLComputeCommandEncoder> c = [cb computeCommandEncoder];
+		c.label = @"mcopt shade: histogram + exposure";
+		if (lookBuffer) [c setBuffer:lookBuffer offset:lookOffset atIndex:17];
+		if (gpuBuffer) [c setBuffer:gpuBuffer offset:0 atIndex:18];
+		if (histPso && histTex) {
+			int gw = ((int) histTex.width + 1) / 2;
+			int gh = ((int) histTex.height + 1) / 2;
+			[c setComputePipelineState:histPso];
+			[c setTexture:histTex atIndex:0];
+			[c dispatchThreads:MTLSizeMake((NSUInteger) gw, (NSUInteger) gh, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+		}
+		[c setComputePipelineState:expPso];
+		[c dispatchThreads:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+		[c endEncoding];
 	}
 }
 

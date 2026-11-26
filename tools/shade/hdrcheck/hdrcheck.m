@@ -264,7 +264,7 @@ static void benchmark(NSString *folder) {
                 for(int i=0;i<2;i++) { rp.colorAttachments[i].loadAction=MTLLoadActionDontCare; rp.colorAttachments[i].storeAction=MTLStoreActionStore; }
                 id<MTLRenderCommandEncoder> r=[enc.cmd renderCommandEncoderWithDescriptor:rp];
                 [r setRenderPipelineState:pipes[mode]];
-                for(int i=0;i<6;i++) [r setFragmentTexture:i==2?depth:inputs[f%2] atIndex:i];
+                for(int i=0;i<7;i++) [r setFragmentTexture:i==2?depth:inputs[f%2] atIndex:i];
                 [r setFragmentTexture:inputs[0] atIndex:17]; [r setFragmentSamplerState:sampler atIndex:13];
                 [r setFragmentBytes:p length:sizeof p atIndex:0]; [r setFragmentBytes:frame length:sizeof frame atIndex:16];
                 [r setFragmentBytes:look length:sizeof look atIndex:17]; [r setFragmentBytes:gpu length:sizeof gpu atIndex:18];

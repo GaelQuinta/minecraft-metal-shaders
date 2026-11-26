@@ -15,16 +15,17 @@ vertex ShadeMotionOut shade_motion_vs(uint id [[vertex_id]]) {
 constexpr sampler motionLinear(filter::linear,address::clamp_to_edge);
 constexpr sampler motionPoint(filter::nearest,address::clamp_to_edge);
 struct ShadeMotionParams { float4 config; float4 size; };
-fragment float4 shade_motion_fs(ShadeMotionOut in [[stage_in]], texture2d<float> scene [[texture(0)]],
+fragment half4 shade_motion_fs(ShadeMotionOut in [[stage_in]], texture2d<half> scene [[texture(0)]],
     depth2d<float> depth [[texture(1)]], constant ShadeMotionParams &p [[buffer(0)]],
     constant ShadeFrame &f [[buffer(16)]], constant ShadeLook &L [[buffer(17)]]) {
     float2 uv = in.uv / p.config.yz;
-    if (any(uv>1.0)) return float4(0.0);
+    if (any(uv>1.0)) return half4(0.0h);
     float2 jitter = f.jitter.xy*0.5;
-    float2 depthUv = uv + (p.config.w>0.5 ? jitter : float2(0.0));
+    float2 jOff = p.config.w>0.5 ? jitter : float2(0.0);
+    float2 depthUv = uv + jOff;
     float2 depthScale = p.size.xy / float2(depth.get_width(),depth.get_height());
     float z = depth.sample(motionPoint,clamp(depthUv,0.0,1.0)*depthScale);
-    float4 center = scene.sample(motionLinear,in.uv);
+    half4 center = scene.sample(motionLinear,in.uv);
     // f.invViewProj includes current jitter. Matrix reprojection uses unjittered screen coordinates.
     float4 world = f.invViewProj * float4(depthUv*2.0-1.0,z,1.0);
     float viewDepth = 1.0 / max(abs(world.w),1e-8);
@@ -33,27 +34,31 @@ fragment float4 shade_motion_fs(ShadeMotionOut in [[stage_in]], texture2d<float>
     if (old.w <= 1e-6) return center;
     float2 oldUv = old.xy/old.w*0.5+0.5;
     float2 unjitteredUv = depthUv-jitter;
-    // Fixed 1/120 s shutter at 100%; velocity / dt makes the appearance independent of frame rate.
-    float2 velocity = (unjitteredUv-oldUv) * (p.config.x / (120.0*max(L.dt.x,0.001)));
-    float len = length(velocity);
+    float2 delta = unjitteredUv-oldUv;
     // Camera cuts/teleports: skip rather than smear a new view. Cap the normal trail to 4% of the image.
-    if (length(unjitteredUv-oldUv)>0.25) return center;
+    if (dot(delta,delta)>0.0625) return center;
+    // Fixed 1/120 s shutter at 100%; velocity / dt makes the appearance independent of frame rate.
+    float2 velocity = delta * (p.config.x / (120.0*max(L.dt.x,0.001)));
+    float len = length(velocity);
+    float scW = float(scene.get_width());
+    if (len*scW<0.5) return center;
     velocity *= min(1.0,0.04/max(len,1e-8));
-    if (len*float(scene.get_width())<0.5) return center;
-    // 1.2.7 (audit A1): taps about 3 px apart along the trail (4..16) at a per-pixel offset. Ten fixed taps drew a flick's 60-90 px
-    // trail as ten separate copies of every sharp edge; the offset turns what stepping is left into fine noise TAA has already passed
-    int n = clamp(int(min(len,0.04)*float(scene.get_width())/3.0), 4, 16);
+    // (2.0.1 opt) half-precision accumulation + 4 px dithered spacing capped at 12 taps (~30% fewer taps, smooth at 120 Hz)
+    int n = clamp(int(min(len,0.04)*scW*0.25), 4, 12);
+    float invN = 1.0 / float(n);
     float jit = shadeNoise(in.position.xy, f.flags2.x);
-    float3 sum = center.rgb; float weight = 1.0;
+    half3 sum = center.rgb; half weight = 1.0h;
+    float2 uvScale = p.config.yz;
+    bool zSky = z <= 1e-7;
     for (int i=0; i<n; i++) {
-        float t = (float(i)+jit)/float(n)-0.5;
+        float t = (float(i)+jit)*invN-0.5;
         float2 at = uv+velocity*t;
         if (any(at<0.0)||any(at>1.0)) continue;
-        float dz = depth.sample(motionPoint,clamp(at+(p.config.w>0.5?jitter:float2(0.0)),0.0,1.0)*depthScale);
+        float dz = depth.sample(motionPoint,clamp(at+jOff,0.0,1.0)*depthScale);
         // Reject samples across strong silhouettes; do not smear the background over a near surface.
-        float ratio = z>1e-7 && dz>1e-7 ? min(z,dz)/max(z,dz) : (z<=1e-7 && dz<=1e-7 ? 1.0 : 0.0);
-        float w = smoothstep(0.5,0.9,ratio);
-        sum += scene.sample(motionLinear,at*p.config.yz).rgb*w; weight += w;
+        float ratio = !zSky && dz>1e-7 ? min(z,dz)/max(z,dz) : (zSky && dz<=1e-7 ? 1.0 : 0.0);
+        half w = half(smoothstep(0.5,0.9,ratio));
+        sum += scene.sample(motionLinear,at*uvScale).rgb*w; weight += w;
     }
-    return float4(sum/weight,center.a);
+    return half4(sum/weight,center.a);
 }

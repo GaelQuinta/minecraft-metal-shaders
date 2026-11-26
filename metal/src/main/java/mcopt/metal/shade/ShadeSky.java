@@ -186,42 +186,44 @@ public final class ShadeSky {
 		float l = luma(out[0], out[1], out[2]);
 		for (int k = 0; k < 3; k++) out[k] = Math.max(l + (out[k] - l) * SKY_SATURATION, out[k] * 0.5f);
 		float gh = goldenHourWeight(s.sunY, s.rain), h = 1f - Math.min(Math.abs(dy), 1f);
-		if (sunsetArt) { // shade_common.metal shadeSunsetGrade
-			float dl = dx * dx + dz * dz, sl = s.sunX * s.sunX + s.sunZ * s.sunZ;
-			float toward = dl > 1e-8f && sl > 1e-8f ? (float) ((dx * s.sunX + dz * s.sunZ) / Math.sqrt(dl * sl)) * 0.5f + 0.5f : 0.5f;
-			float band = (float) Math.pow(Math.max(h, 1e-4f), 9f + (2f - 9f) * toward * toward);
-			float t = toward > 0.5f ? (float) Math.pow(toward * 2f - 1f, 2.5) : toward * 2f;
-			float[] a = toward > 0.5f ? ART_SIDE : ART_AWAY, b = toward > 0.5f ? ART_TOWARD : ART_SIDE;
-			float sl3 = (float) Math.sqrt(s.sunX * s.sunX + s.sunY * s.sunY + s.sunZ * s.sunZ);
-			float cs = Math.max((dx * s.sunX + dy * s.sunY + dz * s.sunZ) / Math.max(sl3, 1e-6f), 0f);
-			float glow = (float) Math.pow(cs, 10.0);
-			float k = gh * Math.min(0.2f + 0.8f * band + 0.4f * glow, 1f);
-			for (int c = 0; c < 3; c++) {
-				float col = a[c] + (b[c] - a[c]) * t;
-				col += (ART_HALO[c] - col) * glow * 0.4f;
-				out[c] *= 1f + (col - 1f) * k;
+		if (gh > 0f) {
+			if (sunsetArt) { // shade_common.metal shadeSunsetGrade
+				float dl = dx * dx + dz * dz, sl = s.sunX * s.sunX + s.sunZ * s.sunZ;
+				float toward = dl > 1e-8f && sl > 1e-8f ? (float) ((dx * s.sunX + dz * s.sunZ) / Math.sqrt(dl * sl)) * 0.5f + 0.5f : 0.5f;
+				float band = (float) Math.pow(Math.max(h, 1e-4f), 9f + (2f - 9f) * toward * toward);
+				float t = toward > 0.5f ? (float) Math.pow(toward * 2f - 1f, 2.5) : toward * 2f;
+				float[] a = toward > 0.5f ? ART_SIDE : ART_AWAY, b = toward > 0.5f ? ART_TOWARD : ART_SIDE;
+				float sl3 = (float) Math.sqrt(s.sunX * s.sunX + s.sunY * s.sunY + s.sunZ * s.sunZ);
+				float cs = Math.max((dx * s.sunX + dy * s.sunY + dz * s.sunZ) / Math.max(sl3, 1e-6f), 0f);
+				float glow = (float) Math.pow(cs, 10.0);
+				float k = gh * Math.min(0.2f + 0.8f * band + 0.4f * glow, 1f);
+				for (int c = 0; c < 3; c++) {
+					float col = a[c] + (b[c] - a[c]) * t;
+					col += (ART_HALO[c] - col) * glow * 0.4f;
+					out[c] *= 1f + (col - 1f) * k;
+				}
+				// shade_common.metal shadeSunsetChroma
+				float mx = Math.max(out[0], Math.max(out[1], out[2])), mn = Math.min(out[0], Math.min(out[1], out[2]));
+				if (mx > 1e-6f) {
+					float kc = smoothstep(0.55f, 1f, 1f - mn / mx) * gh, lc = luma(out[0], out[1], out[2]);
+					float cr = (out[0] - lc) * (1f - 0.36f * kc), cg = (out[1] - lc) * (1f - 0.36f * kc), cb = (out[2] - lc) * (1f - 0.36f * kc);
+					cg -= 0.06f * kc * Math.max(cr, 0f);
+					out[0] = Math.max(lc + cr, 0f); out[1] = Math.max(lc + cg, 0f); out[2] = Math.max(lc + cb, 0f);
+				}
+			} else {
+				float ghw = gh * (0.55f + 0.45f * h * h * h);
+				out[0] *= 1f + 0.45f * ghw; out[1] *= 1f + 0.02f * ghw; out[2] *= 1f - 0.28f * ghw;
 			}
-			// shade_common.metal shadeSunsetChroma
-			float mx = Math.max(out[0], Math.max(out[1], out[2])), mn = Math.min(out[0], Math.min(out[1], out[2]));
-			if (gh > 0f && mx > 1e-6f) {
-				float kc = smoothstep(0.55f, 1f, 1f - mn / mx) * gh, lc = luma(out[0], out[1], out[2]);
-				float cr = (out[0] - lc) * (1f - 0.36f * kc), cg = (out[1] - lc) * (1f - 0.36f * kc), cb = (out[2] - lc) * (1f - 0.36f * kc);
-				cg -= 0.06f * kc * Math.max(cr, 0f);
-				out[0] = Math.max(lc + cr, 0f); out[1] = Math.max(lc + cg, 0f); out[2] = Math.max(lc + cb, 0f);
-			}
-		} else {
-			gh *= 0.55f + 0.45f * h * h * h;
-			out[0] *= 1f + 0.45f * gh; out[1] *= 1f + 0.02f * gh; out[2] *= 1f - 0.28f * gh;
 		}
 		float grey = 1f - 0.45f * s.thunder, w = s.rain * 0.75f;
 		out[0] = mix(out[0], l * 0.92f * grey, w) * SKY_BRIGHTNESS;
 		out[1] = mix(out[1], l * 0.96f * grey, w) * SKY_BRIGHTNESS;
 		out[2] = mix(out[2], l * grey, w) * SKY_BRIGHTNESS;
 		// Same brightness-preserving directional chroma control as shadeAwaySunset (issue #18).
-		if (sunsetAway < 1f) {
+		if (sunsetAway < 1f && gh > 0f) {
 			float dl = dx * dx + dz * dz, sl = s.sunX * s.sunX + s.sunZ * s.sunZ;
 			float az = dl > 1e-8f && sl > 1e-8f ? (float) ((dx * s.sunX + dz * s.sunZ) / Math.sqrt(dl * sl)) : 0f;
-			float k = (1f - sunsetAway) * (1f - smoothstep(-0.2f, 0.4f, az)) * goldenHourWeight(s.sunY, s.rain);
+			float k = (1f - sunsetAway) * (1f - smoothstep(-0.2f, 0.4f, az)) * gh;
 			float lum = luma(out[0], out[1], out[2]);
 			for (int c = 0; c < 3; c++) out[c] = mix(out[c], lum, k);
 		}
@@ -269,9 +271,56 @@ public final class ShadeSky {
 		public float sceneLuma;
 		// Each result owns its scratch: no frame-by-frame array garbage and no mutable global scratch between callers.
 		private final float[] transmittance = new float[3], sample = new float[3], up = new float[3], toward = new float[3], away = new float[3];
+		// (2.0.1 opt) cache un-mutated physical atmosphere outputs (callers like ShadeLook/ShadeDims grade/overwrite Result fields in place!)
+		private boolean cached;
+		private float cSunX, cSunY, cSunZ, cMoonX, cMoonY, cMoonZ, cMoonPhase, cRain, cThunder, cSunsetAway;
+		private boolean cSunsetArt;
+		private final float[] rawLightDir = new float[3], rawLight = new float[3], rawAmbientSky = new float[3], rawAmbientGround = new float[3],
+			rawZenith = new float[3], rawAmbientToward = new float[3], rawAmbientAway = new float[3];
+		private final float[][] rawHorizon = new float[8][3];
+		private boolean rawSunLight;
+		private float rawSceneLuma;
+
+		private void saveRaw() {
+			System.arraycopy(lightDir, 0, rawLightDir, 0, 3);
+			System.arraycopy(light, 0, rawLight, 0, 3);
+			System.arraycopy(ambientSky, 0, rawAmbientSky, 0, 3);
+			System.arraycopy(ambientGround, 0, rawAmbientGround, 0, 3);
+			System.arraycopy(zenith, 0, rawZenith, 0, 3);
+			System.arraycopy(ambientToward, 0, rawAmbientToward, 0, 3);
+			System.arraycopy(ambientAway, 0, rawAmbientAway, 0, 3);
+			for (int i = 0; i < 8; i++) System.arraycopy(horizon[i], 0, rawHorizon[i], 0, 3);
+			rawSunLight = sunLight;
+			rawSceneLuma = sceneLuma;
+		}
+
+		private void restoreRaw() {
+			System.arraycopy(rawLightDir, 0, lightDir, 0, 3);
+			System.arraycopy(rawLight, 0, light, 0, 3);
+			System.arraycopy(rawAmbientSky, 0, ambientSky, 0, 3);
+			System.arraycopy(rawAmbientGround, 0, ambientGround, 0, 3);
+			System.arraycopy(rawZenith, 0, zenith, 0, 3);
+			System.arraycopy(rawAmbientToward, 0, ambientToward, 0, 3);
+			System.arraycopy(rawAmbientAway, 0, ambientAway, 0, 3);
+			for (int i = 0; i < 8; i++) System.arraycopy(rawHorizon[i], 0, horizon[i], 0, 3);
+			sunLight = rawSunLight;
+			sceneLuma = rawSceneLuma;
+		}
 	}
 
 	public static void compute(Sky s, Result r) {
+		if (r.cached && r.cSunsetArt == sunsetArt && r.cSunsetAway == sunsetAway
+			&& Math.abs(s.sunX - r.cSunX) < 1e-4f && Math.abs(s.sunY - r.cSunY) < 1e-4f && Math.abs(s.sunZ - r.cSunZ) < 1e-4f
+			&& Math.abs(s.moonX - r.cMoonX) < 1e-4f && Math.abs(s.moonY - r.cMoonY) < 1e-4f && Math.abs(s.moonZ - r.cMoonZ) < 1e-4f
+			&& Math.abs(s.moonPhase - r.cMoonPhase) < 1e-4f && Math.abs(s.rain - r.cRain) < 1e-4f && Math.abs(s.thunder - r.cThunder) < 1e-4f) {
+			r.restoreRaw();
+			return;
+		}
+		r.cached = true;
+		r.cSunX = s.sunX; r.cSunY = s.sunY; r.cSunZ = s.sunZ;
+		r.cMoonX = s.moonX; r.cMoonY = s.moonY; r.cMoonZ = s.moonZ;
+		r.cMoonPhase = s.moonPhase; r.cRain = s.rain; r.cThunder = s.thunder;
+		r.cSunsetArt = sunsetArt; r.cSunsetAway = sunsetAway;
 		float mie = s.mie();
 		float[] t = r.transmittance, tmp = r.sample;
 		// The light: the sun while it's up, the moon once the sun is well down (both are near zero at the switch).
@@ -327,6 +376,7 @@ public final class ShadeSky {
 			radiance(s, x, 0.0f, (float) Math.sqrt(Math.max(0f, 1f - x * x)), r.horizon[i]);
 		}
 		r.sceneLuma = luma(r.light[0], r.light[1], r.light[2]) * 0.55f * Math.max(r.lightDir[1], 0.35f) + luma(r.ambientSky[0], r.ambientSky[1], r.ambientSky[2]);
+		r.saveRaw();
 	}
 
 	private static void desaturate(float[] c, float amount) {

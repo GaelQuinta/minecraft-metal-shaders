@@ -90,12 +90,27 @@ public final class Shade {
 		// that nextDrawable blocks the render thread (the 1% lows). Present (and acquire) on mcopt's second queue instead,
 		// unless the user chose otherwise.
 		if (System.getProperty("mcopt.metal.presentQueue") == null) System.setProperty("mcopt.metal.presentQueue", "acquire");
+		// (2.0.1e) With VSync (FIFO) on, present directly on the render thread instead of routing through presentQueue=acquire
+		// (which bypasses VSync back-pressure and drops/skips frames while reporting 120 fps), and avoid fighting hardware VSync
+		// with a drifting software frame cap when framerateLimit >= the display's refresh rate. VSync-off is unchanged.
+		if (System.getProperty("mcopt.metal.vsyncDirect") == null) System.setProperty("mcopt.metal.vsyncDirect", "true");
+		if (System.getProperty("mcopt.metal.vsyncLimiter") == null) System.setProperty("mcopt.metal.vsyncLimiter", "true");
+		// (2.0.1f) Under direct FIFO VSync, cap in-flight submits to 1 (2 total with current, while CAMetalLayer keeps 3 drawables
+		// so ProMotion stays at 120 Hz) and enforce a minimum frame spacing floor (~96% of refresh period = 8.0 ms at 120 Hz):
+		// prevents the 3-drawable FIFO queue from collapsing into 2 ms + 14 ms (60 Hz) frame pairs when GPU time nears 8.33 ms.
+		if (System.getProperty("mcopt.metal.vsyncInFlight") == null) System.setProperty("mcopt.metal.vsyncInFlight", "1");
+		if (System.getProperty("mcopt.metal.vsyncMinPace") == null) System.setProperty("mcopt.metal.vsyncMinPace", "0.96");
 		// (1.1.1, macOS 27) VSync off: the paced presents (one per refresh) still wait for a vblank, as with VSync. Without display
 		// sync a present that goes direct to the display (fullscreen) can land mid-scanout (tearing), and on the 120 Hz panel
 		// paced presents reached the screen in pairs (MetalSurface.PACE_SYNC). The game still renders every frame. And the
 		// refresh grid follows the display the window is on (MetalSurface.PACE_FOLLOW).
 		if (System.getProperty("mcopt.metal.paceSync") == null) System.setProperty("mcopt.metal.paceSync", "true");
 		if (System.getProperty("mcopt.metal.paceFollow") == null) System.setProperty("mcopt.metal.paceFollow", "true");
+		// (2.0.1g) With VSync off near display refresh (e.g. maxFps=120 on 120 Hz or shaded ~100-150 fps), stop mc_pace from
+		// false-dropping presents on noisy gpuLatency jitter, and acquire drawables before popping pqHandoff in presentQueue=acquire
+		// so every vblank receives the freshest frame with 0 false drops/skips.
+		if (System.getProperty("mcopt.metal.paceMinRatio") == null) System.setProperty("mcopt.metal.paceMinRatio", "0.55");
+		if (System.getProperty("mcopt.metal.presentFreshAcquire") == null) System.setProperty("mcopt.metal.presentFreshAcquire", "true");
 		System.out.println("[mcopt] shade: native shading on (shadows " + SHADOWS + ", " + mcopt.metal.shade.shadow.ShadowConfig.RES + " px, "
 			+ mcopt.metal.shade.shadow.ShadowConfig.DIST + " blocks"
 			+ (DEBUG != 0 ? ", debug view " + DEBUG : "") + ")");

@@ -104,7 +104,8 @@ public final class EntityCasters {
 		if (shadow != 0 && recorded + dropped > 0) ShadowNative.entityReset(shadow);
 		recorded = dropped = 0;
 		boolean was = active;
-		active = shadow != 0 && p.nearThisFrame();
+		// (2.0.1 opt) night already uses vanilla blob shadows (dropBlob checks !lightIsMoon): skip recording, copying and drawing entity casters under moonlight
+		active = shadow != 0 && p.nearThisFrame() && !ShadowPass.lightIsMoon();
 		// no near cascade this frame (Nether, End): forget the ready casters once (their textures are released)
 		if (was && !active && shadow != 0) {
 			fresh = false;

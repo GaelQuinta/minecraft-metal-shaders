@@ -54,7 +54,8 @@ public final class WaterFlowScan {
 
 	/** Once per frame (WaterFrame.update): the next slice of the box around the camera at (x, y, z). */
 	static void update(ClientLevel level, double x, double y, double z) {
-		if (level == null) {
+		if (level == null || level.dimension() != net.minecraft.world.level.Level.OVERWORLD
+			|| mcopt.metal.shade.Live.f("mcopt.shade.water.falls", 1f, 0f, 2f) <= 0f) {
 			lastLevel = null;
 			return;
 		}
@@ -64,26 +65,35 @@ public final class WaterFlowScan {
 			seenThisPass = false;
 			lastSeen = Long.MIN_VALUE / 2;
 		}
+		long nowNs = System.nanoTime();
+		// (2.0.1 opt) once moving water is detected, skip scanning for 1 s (half of HOLD_NANOS)
+		if (nowNs - lastSeen < HOLD_NANOS / 2) return;
 		int csx = (int) Math.floor(x) >> 4, csy = (int) Math.floor(y) >> 4, csz = (int) Math.floor(z) >> 4;
 		int minSy = level.getMinSectionY(), count = level.getSectionsCount();
 		for (int n = 0; n < COLUMNS_PER_FRAME; n++) {
 			int sx = csx - RANGE + cursor % SIDE, sz = csz - RANGE + cursor / SIDE;
 			LevelChunk chunk = level.getChunkSource().getChunk(sx, sz, ChunkStatus.FULL, false);
 			if (chunk != null) {
-				for (int sy = csy - RANGE; sy <= csy + RANGE && !seenThisPass; sy++) {
+				for (int sy = csy - RANGE; sy <= csy + RANGE; sy++) {
 					int index = sy - minSy;
 					if (index < 0 || index >= count) continue;
 					LevelChunkSection section = chunk.getSection(index);
-					if (!section.hasOnlyAir() && section.getStates().maybeHas(MOVING)) seenThisPass = true;
+					if (!section.hasOnlyAir() && section.getStates().maybeHas(MOVING)) {
+						seenThisPass = true;
+						break;
+					}
 				}
 			}
-			if (++cursor == SIDE * SIDE) { // a pass is done
-				if (seenThisPass) lastSeen = System.nanoTime();
+			if (seenThisPass) {
+				lastSeen = nowNs;
 				cursor = 0;
 				seenThisPass = false;
+				break;
+			}
+			if (++cursor == SIDE * SIDE) { // a pass is done
+				cursor = 0;
 			}
 		}
-		if (seenThisPass) lastSeen = System.nanoTime(); // seen part way through a pass: yes already
 		boolean now = near();
 		if (now != logged) { // a line per change (the bench's logs show which variant a shot used)
 			logged = now;

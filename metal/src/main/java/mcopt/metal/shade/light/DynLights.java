@@ -217,7 +217,6 @@ public final class DynLights {
 		DynLightNative.slot(state, slot);
 		ByteBuffer b = ring[slot];
 
-		if (occupancy != null && DynLightConfig.OCCLUSION) occupancy.update(level, camX, camY, camZ, DynLightConfig.OCC_BUDGET_US * 1000L);
 		for (Src s : SOURCES.values()) s.seen = false;
 		if (level != null) gather(level, camera, partial);
 		// fade: toward 1 while seen, toward 0 once gone; drop what has faded out
@@ -233,41 +232,28 @@ public final class DynLights {
 				continue;
 			}
 			double dx = s.x - camX, dy = s.y - camY, dz = s.z - camZ;
-			// rank by what the light is (a visible one at full weight even while it fades in), with hysteresis: lights already
-			// in the list (x1.15) and those holding a visibility slab (x1.15 more) keep their place against a near tie, so
-			// lights around the 64-light or 16-slab cut don't flip in and out (or between occluded and not) as the camera moves
 			s.score = (s.seen ? 1f : s.cur) * s.reach / (1f + (float) (dx * dx + dy * dy + dz * dz) / 256f) * (s.selected ? 1.15f : 1f)
 				* (s.slab >= 0 ? 1.15f : 1f) + (s.hand ? 1000f : 0f);
 			s.wantVolume = false;
 			ACTIVE.add(s);
 		}
 		ACTIVE.sort((p, q) -> Float.compare(q.score, p.score));
-		// -Dmcopt.shade.dynLights.pause (read every frame; the bench sets it at run time for an A/B in one session): no lights
 		if (Boolean.getBoolean("mcopt.shade.dynLights.pause")) ACTIVE.clear();
 		int count = Math.min(ACTIVE.size(), DynLightConfig.max()); // (1.1) live cap
 		lastCount = count;
 		for (int i = 0; i < ACTIVE.size(); i++) {
 			Src s = ACTIVE.get(i);
 			s.selected = i < count;
-			if (!s.selected) s.cur = 0f; // left out (past the cap): fades in again when it makes the list, no pop at full strength
+			if (!s.selected) s.cur = 0f;
 		}
 
-		// visibility volumes: the strongest lights near enough for the occupancy window keep a slab of the 3D texture while
-		// they stay selected; a slab is recomputed only when its light moved, changed reach or the occupancy changed.
-		// (FT2.11, both read every frame) -Dmcopt.shade.dynLights.playerShadows (false): the player's own light (at the eye: the
-		// camera sees nothing it doesn't reach) gets no volume, no shadows at all, as in Photon, Complementary and BSL (Gael
-		// 2026-10-11: hard shadows and a sudden step from shadow to light around his torch); true = FT2.10. -Dmcopt.shade.dynLights.soft
-		// (true): the volumes hold the detour light takes around what stands in its way (it bends around corners and fades behind
-		// them, like a placed torch's); false = FT2.10's rays.
 		boolean playerShadows = Boolean.parseBoolean(System.getProperty("mcopt.shade.dynLights.playerShadows", "false").trim());
 		boolean soft = flood && !"false".equalsIgnoreCase(System.getProperty("mcopt.shade.dynLights.soft", "true").trim());
 		int volumes = 0, dirty = 0;
 		if (DynLightConfig.OCCLUSION && occupancy != null) {
-			int gen = occupancy.generation;
 			for (int i = 0; i < ACTIVE.size(); i++) {
 				Src s = ACTIVE.get(i);
 				boolean want = false;
-				// lightning and other wide flashes: open sky anyway
 				if (i < count && volumes < DynLightConfig.VOLUMES && s.reach <= 16f && (playerShadows || !s.omni)) {
 					double dx = s.x - camX, dy = s.y - camY, dz = s.z - camZ;
 					want = Math.abs(dx) <= DynLightConfig.VOLUME_RANGE && Math.abs(dy) <= DynLightConfig.VOLUME_RANGE && Math.abs(dz) <= DynLightConfig.VOLUME_RANGE;
@@ -276,104 +262,109 @@ public final class DynLights {
 				else freeSlab(s);
 				s.wantVolume = want;
 			}
-			for (int i = 0; i < count; i++) {
-				Src s = ACTIVE.get(i);
-				if (!s.wantVolume) continue;
-				boolean fresh = false;
-				if (s.slab < 0) {
-					s.slab = allocSlab();
-					fresh = true;
+			// (2.0.1 opt) only update block occupancy when at least one light actually needs a visibility volume!
+			if (volumes > 0) {
+				occupancy.update(level, camX, camY, camZ, DynLightConfig.OCC_BUDGET_US * 1000L);
+				int gen = occupancy.generation;
+				for (int i = 0; i < count; i++) {
+					Src s = ACTIVE.get(i);
+					if (!s.wantVolume) continue;
+					boolean fresh = false;
+					if (s.slab < 0) {
+						s.slab = allocSlab();
+						fresh = true;
+					}
+					if (s.slab < 0) continue;
+					if (!fresh && s.volReach == s.reach && s.volSoft == soft && Math.abs(s.volX - s.x) < 0.04 && Math.abs(s.volY - s.y) < 0.04
+						&& Math.abs(s.volZ - s.z) < 0.04 && (s.volGen == gen || !occupancy.changedSince(s.x, s.y, s.z, s.reach, s.volGen))) {
+						s.volGen = gen;
+						continue;
+					}
+					int ox = (int) Math.floor(s.x) - 16, oy = (int) Math.floor(s.y) - 16, oz = (int) Math.floor(s.z) - 16;
+					long p = visParams + 16 + dirty * 32L;
+					MemoryUtil.memPutInt(p, ox);
+					MemoryUtil.memPutInt(p + 4, oy);
+					MemoryUtil.memPutInt(p + 8, oz);
+					MemoryUtil.memPutInt(p + 12, s.slab);
+					MemoryUtil.memPutFloat(p + 16, (float) (s.x - ox));
+					MemoryUtil.memPutFloat(p + 20, (float) (s.y - oy));
+					MemoryUtil.memPutFloat(p + 24, (float) (s.z - oz));
+					MemoryUtil.memPutFloat(p + 28, s.reach);
+					s.volX = s.x;
+					s.volY = s.y;
+					s.volZ = s.z;
+					s.volReach = s.reach;
+					s.volSoft = soft;
+					s.volGen = gen;
+					dirty++;
 				}
-				if (s.slab < 0) continue;
-				if (!fresh && s.volReach == s.reach && s.volSoft == soft && Math.abs(s.volX - s.x) < 0.04 && Math.abs(s.volY - s.y) < 0.04
-					&& Math.abs(s.volZ - s.z) < 0.04 && (s.volGen == gen || !occupancy.changedSince(s.x, s.y, s.z, s.reach, s.volGen))) {
-					s.volGen = gen; // nothing it reaches changed: keep the slab
-					continue;
-				}
-				int ox = (int) Math.floor(s.x) - 16, oy = (int) Math.floor(s.y) - 16, oz = (int) Math.floor(s.z) - 16;
-				long p = visParams + 16 + dirty * 32L;
-				MemoryUtil.memPutInt(p, ox);
-				MemoryUtil.memPutInt(p + 4, oy);
-				MemoryUtil.memPutInt(p + 8, oz);
-				MemoryUtil.memPutInt(p + 12, s.slab);
-				MemoryUtil.memPutFloat(p + 16, (float) (s.x - ox));
-				MemoryUtil.memPutFloat(p + 20, (float) (s.y - oy));
-				MemoryUtil.memPutFloat(p + 24, (float) (s.z - oz));
-				MemoryUtil.memPutFloat(p + 28, s.reach);
-				s.volX = s.x;
-				s.volY = s.y;
-				s.volZ = s.z;
-				s.volReach = s.reach;
-				s.volSoft = soft;
-				s.volGen = gen;
-				dirty++;
 			}
 		}
 		MemoryUtil.memPutInt(visParams, dirty);
-		MemoryUtil.memPutInt(visParams + 4, soft ? 1 : 0); // DlVisParams.info.y: the flood fill (FT2.11)
+		MemoryUtil.memPutInt(visParams + 4, soft ? 1 : 0);
 		volumesLastFrame = volumes;
 		volumesComputed = dirty;
+
+		// (2.0.1 opt) single unshadowed omnidirectional player-hand light: evaluate analytically in terrain shaders, skipping 3D irr compute + 2x 3D tex fetches/px!
+		boolean fastOmni = count == 1 && ACTIVE.get(0).slab < 0 && ACTIVE.get(0).omni;
 
 		// header
 		int gx0 = Math.floorDiv((int) Math.floor(camX) + 4, CELL) * CELL - GRID_X * CELL / 2;
 		int gy0 = Math.floorDiv((int) Math.floor(camY) + 4, CELL) * CELL - GRID_Y * CELL / 2;
 		int gz0 = Math.floorDiv((int) Math.floor(camZ) + 4, CELL) * CELL - GRID_Z * CELL / 2;
-		b.putInt(0, count).putInt(4, volumes).putInt(8, frame).putInt(12, 0);
+		b.putInt(0, count).putInt(4, volumes).putInt(8, frame).putInt(12, fastOmni ? 1 : 0);
 		b.putFloat(16, (float) (gx0 - camX)).putFloat(20, (float) (gy0 - camY)).putFloat(24, (float) (gz0 - camZ)).putFloat(28, 1f / CELL);
-		// (1.1) strength, spec and entity live
 		b.putFloat(32, Math.max(1, DynLightConfig.VOLUMES)).putFloat(36, DynLightConfig.strength()).putFloat(40, DynLightConfig.spec()).putFloat(44, DynLightConfig.entity());
 		int ix0 = (int) Math.floor(camX) - IRR_X / 2, iy0 = (int) Math.floor(camY) - IRR_Y / 2, iz0 = (int) Math.floor(camZ) - IRR_Z / 2;
-		b.putFloat(48, (float) (ix0 - camX)).putFloat(52, (float) (iy0 - camY)).putFloat(56, (float) (iz0 - camZ)).putFloat(60, count > 0 ? 1f : 0f);
-		// lights + grid
-		java.util.Arrays.fill(cells, 0L);
-		boolean flickers = DynLightConfig.flicker(); // (1.1) live
-		for (int i = 0; i < count; i++) {
-			Src s = ACTIVE.get(i);
-			float flick = s.fire && flickers ? flicker(s.seed) : 1f;
-			float k = s.cur * flick;
-			int at = LIGHTS_OFFSET + i * LIGHT_BYTES;
-			b.putFloat(at + 48, s.core).putFloat(at + 52, s.omni ? 1f : 0f).putFloat(at + 56, s.slab >= 0 && s.volSoft ? 1f : 0f).putFloat(at + 60, 0f);
-			float rx = (float) (s.x - camX), ry = (float) (s.y - camY), rz = (float) (s.z - camZ);
-			b.putFloat(at, rx).putFloat(at + 4, ry).putFloat(at + 8, rz).putFloat(at + 12, s.reach);
-			b.putFloat(at + 16, s.r * k).putFloat(at + 20, s.g * k).putFloat(at + 24, s.b * k).putFloat(at + 28, s.spec);
-			if (s.slab >= 0) {
-				// (FT2.8, audit idx 76) the origin the slab was BUILT with (vol*: a light that moved under 0.04 keeps its slab, and a
-				// block line crossed in between shifted every lookup by a block: the wall's occlusion one block off)
-				int ox = (int) Math.floor(s.volX) - 16, oy = (int) Math.floor(s.volY) - 16, oz = (int) Math.floor(s.volZ) - 16;
-				b.putFloat(at + 32, (float) (ox - camX)).putFloat(at + 36, (float) (oy - camY)).putFloat(at + 40, (float) (oz - camZ)).putFloat(at + 44, s.slab);
-			} else {
-				b.putFloat(at + 32, 0f).putFloat(at + 36, 0f).putFloat(at + 40, 0f).putFloat(at + 44, -1f);
-			}
-			// cells the light's sphere reaches (radius: the reach less the shader's cut, SHADE_DL_CUT), corners of its box dropped
-			double rr = Math.max(s.reach - CUT, 0.5), rr2 = rr * rr;
-			int x0 = clamp((int) Math.floor((s.x - rr - gx0) / CELL), GRID_X), x1 = clamp((int) Math.floor((s.x + rr - gx0) / CELL), GRID_X);
-			int y0 = clamp((int) Math.floor((s.y - rr - gy0) / CELL), GRID_Y), y1 = clamp((int) Math.floor((s.y + rr - gy0) / CELL), GRID_Y);
-			int z0 = clamp((int) Math.floor((s.z - rr - gz0) / CELL), GRID_Z), z1 = clamp((int) Math.floor((s.z + rr - gz0) / CELL), GRID_Z);
-			if (x0 < 0 || y0 < 0 || z0 < 0) continue;
-			long bit = 1L << i;
-			for (int y = y0; y <= y1; y++) {
-				double cy = Math.max(gy0 + y * CELL, Math.min(s.y, gy0 + (y + 1) * CELL)) - s.y;
-				for (int z = z0; z <= z1; z++) {
-					double cz = Math.max(gz0 + z * CELL, Math.min(s.z, gz0 + (z + 1) * CELL)) - s.z;
-					for (int x = x0; x <= x1; x++) {
-						double cx = Math.max(gx0 + x * CELL, Math.min(s.x, gx0 + (x + 1) * CELL)) - s.x;
-						if (cx * cx + cy * cy + cz * cz <= rr2) cells[(y * GRID_Z + z) * GRID_X + x] |= bit;
+		b.putFloat(48, (float) (ix0 - camX)).putFloat(52, (float) (iy0 - camY)).putFloat(56, (float) (iz0 - camZ)).putFloat(60, count > 0 && !fastOmni ? 1f : 0f);
+		// (2.0.1 opt) skip zeroing + uploading 24 KB cells grid when count == 0 (shaders early-exit on info.x == 0)
+		if (count > 0) {
+			java.util.Arrays.fill(cells, 0L);
+			boolean flickers = DynLightConfig.flicker();
+			for (int i = 0; i < count; i++) {
+				Src s = ACTIVE.get(i);
+				float flick = s.fire && flickers ? flicker(s.seed) : 1f;
+				float k = s.cur * flick;
+				int at = LIGHTS_OFFSET + i * LIGHT_BYTES;
+				b.putFloat(at + 48, s.core).putFloat(at + 52, s.omni ? 1f : 0f).putFloat(at + 56, s.slab >= 0 && s.volSoft ? 1f : 0f).putFloat(at + 60, 0f);
+				float rx = (float) (s.x - camX), ry = (float) (s.y - camY), rz = (float) (s.z - camZ);
+				b.putFloat(at, rx).putFloat(at + 4, ry).putFloat(at + 8, rz).putFloat(at + 12, s.reach);
+				b.putFloat(at + 16, s.r * k).putFloat(at + 20, s.g * k).putFloat(at + 24, s.b * k).putFloat(at + 28, s.spec);
+				if (s.slab >= 0) {
+					int ox = (int) Math.floor(s.volX) - 16, oy = (int) Math.floor(s.volY) - 16, oz = (int) Math.floor(s.volZ) - 16;
+					b.putFloat(at + 32, (float) (ox - camX)).putFloat(at + 36, (float) (oy - camY)).putFloat(at + 40, (float) (oz - camZ)).putFloat(at + 44, s.slab);
+				} else {
+					b.putFloat(at + 32, 0f).putFloat(at + 36, 0f).putFloat(at + 40, 0f).putFloat(at + 44, -1f);
+				}
+				double rr = Math.max(s.reach - CUT, 0.5), rr2 = rr * rr;
+				int x0 = clamp((int) Math.floor((s.x - rr - gx0) / CELL), GRID_X), x1 = clamp((int) Math.floor((s.x + rr - gx0) / CELL), GRID_X);
+				int y0 = clamp((int) Math.floor((s.y - rr - gy0) / CELL), GRID_Y), y1 = clamp((int) Math.floor((s.y + rr - gy0) / CELL), GRID_Y);
+				int z0 = clamp((int) Math.floor((s.z - rr - gz0) / CELL), GRID_Z), z1 = clamp((int) Math.floor((s.z + rr - gz0) / CELL), GRID_Z);
+				if (x0 < 0 || y0 < 0 || z0 < 0) continue;
+				long bit = 1L << i;
+				for (int y = y0; y <= y1; y++) {
+					double cy = Math.max(gy0 + y * CELL, Math.min(s.y, gy0 + (y + 1) * CELL)) - s.y;
+					for (int z = z0; z <= z1; z++) {
+						double cz = Math.max(gz0 + z * CELL, Math.min(s.z, gz0 + (z + 1) * CELL)) - s.z;
+						for (int x = x0; x <= x1; x++) {
+							double cx = Math.max(gx0 + x * CELL, Math.min(s.x, gx0 + (x + 1) * CELL)) - s.x;
+							if (cx * cx + cy * cy + cz * cz <= rr2) cells[(y * GRID_Z + z) * GRID_X + x] |= bit;
+						}
 					}
 				}
 			}
+			b.position(CELLS_OFFSET);
+			b.asLongBuffer().put(cells);
+			b.position(0);
 		}
-		b.position(CELLS_OFFSET);
-		b.asLongBuffer().put(cells);
-		b.position(0);
-		// lights that fall off the list keep the cells' bits clear; unused light slots are never named by a cell
 		if (dirty > 0) {
-			if (occupancy.generation != occUploaded) { // the bits changed since the copy the GPU has: a fresh ring slot
+			if (occupancy.generation != occUploaded) {
 				DynLightNative.occupancy(state, occAddress);
 				occUploaded = occupancy.generation;
 			}
 			DynLightNative.vis(enc, state, visParams, VIS_PARAMS, dirty);
 		}
-		if (count > 0) { // the terrain's irradiance volume from these lights and slabs, only where they reach (+ last frame's box)
+		if (count > 0 && !fastOmni) {
 			int bx0 = IRR_X, by0 = IRR_Y, bz0 = IRR_Z, bx1 = -1, by1 = -1, bz1 = -1;
 			for (int i = 0; i < count; i++) {
 				Src s = ACTIVE.get(i);
@@ -390,6 +381,8 @@ public final class DynLights {
 			if (ux1 >= ux0 && uy1 >= uy0 && uz1 >= uz0) DynLightNative.irr(enc, state, ux0, uy0, uz0, ux1 - ux0 + 1, uy1 - uy0 + 1, uz1 - uz0 + 1);
 			irrBox[0] = bx0; irrBox[1] = by0; irrBox[2] = bz0; irrBox[3] = bx1; irrBox[4] = by1; irrBox[5] = bz1;
 			irrVoxels = ux1 >= ux0 ? (ux1 - ux0 + 1) * (uy1 - uy0 + 1) * (uz1 - uz0 + 1) : 0;
+		} else if (fastOmni) {
+			irrVoxels = 0;
 		}
 		cpuNanos = System.nanoTime() - t0;
 		ColorLights.frame(enc, level, camX, camY, camZ); // (1.2.8) the coloured light volume, same command buffer, before the world

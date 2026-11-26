@@ -212,9 +212,17 @@ fragment float4 main0(DhIn in [[stage_in]], constant DhFrag &u [[buffer(MCOPT_SL
 			float3 ns = float3(0.0, 1.0, 0.0), nr = ns;
 			float lost = 0.0;
 			if (sl.user2.z > 0.0) {
-				float t = sf.sunPath.w;
 				float2 x = p.xz + sf.cameraFract.xz + fmod(sf.cameraBlock.xz, 2048.0);
-				float4 sw = dhWaterSwell(x, t, pdxz, sl.user2.z * (1.0 + 0.6 * sf.weather.y));
+				float amp = sl.user2.z * (1.0 + 0.6 * sf.weather.y);
+				float4 sw;
+				if (sr.waterSwell.get_width() > 1) {
+					constexpr sampler swellSmplr(filter::linear, mip_filter::linear, address::repeat, max_anisotropy(4));
+					half4 sb = sr.waterSwell.sample(swellSmplr, x * (1.0 / 512.0), gradient2d(pdxz.xy * (1.0 / 512.0), pdxz.zw * (1.0 / 512.0)));
+					float2 sg2 = float2(sb.xy);
+					sw = float4(sg2 * amp, float(sb.z), max(float(sb.w) - dot(sg2, sg2), 0.0) * (amp * amp));
+				} else {
+					sw = dhWaterSwell(x, sf.sunPath.w, pdxz, amp);
+				}
 				float2 s = dhWaterSwellMask(sw.xy, v, 0.45);
 				ns = normalize(float3(-s.x, 1.0, -s.y));
 				nr = normalize(float3(-s.x * sl.user2.w, 1.0, -s.y * sl.user2.w));

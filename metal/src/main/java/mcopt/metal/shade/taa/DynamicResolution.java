@@ -62,6 +62,17 @@ public final class DynamicResolution {
 	/** The player set mcopt.shade.scaleMin: the hold controller keeps it instead of its own floor. */
 	private static final boolean USER_MIN = System.getProperty("mcopt.shade.scaleMin") != null;
 	private static final double HOLD_FIXED = TaaConfig.clamp(floatProp("mcopt.shade.drsFixed", 0.5f), 0f, 0.9f);
+	/**
+	 * (2.0.1g) Share of single-command-buffer GPU wall-time span (gpuEnd - gpuStart) used as a floor under overlapping-frame
+	 * busy time (mcopt.shade.drsSpanWeight, 0..1, default 0.75; 0 = legacy busy-only). Under VSync at 120 Hz, overlapping frames
+	 * cap busy at 8.33 ms even when each frame spends 12-15 ms on the GPU (causing 35-38 ms latency and late presents); a 0.75
+	 * floor stays quiet during healthy ~9-10.5 ms TBDR overlap (<= 7.9 ms) and triggers step-down once span exceeds ~10.8 ms.
+	 */
+	private static final float SPAN_WEIGHT = TaaConfig.clamp(floatProp("mcopt.shade.drsSpanWeight", 0.75f), 0f, 1f);
+
+	static float spanWeight() {
+		return mcopt.metal.shade.Live.f("mcopt.shade.drsSpanWeight", SPAN_WEIGHT, 0f, 1f);
+	}
 
 	private final float min, max;
 	/** (1.1) mutable: mcopt.shade.drsFps is live ({@link #retarget}). */
@@ -69,7 +80,8 @@ public final class DynamicResolution {
 	private double targetSeconds;
 	private float scale;
 	private double average, lastEnd;
-	private int samples, sinceChange, skip, pinned;
+	private int samples, sinceChange, skip, pinned, outlierStreak;
+	private volatile boolean paused;
 	/** M3.3 (mcopt.shade.drsLog): a status line about once a second: what the controller sees, frames and changes since. */
 	private long statusStart;
 	private int statusFrames, statusChanges;
@@ -119,17 +131,42 @@ public final class DynamicResolution {
 		return this.average * 1e3;
 	}
 
+	/** (2.0.1e) Pause DRS timing updates while unfocused or paused/in a menu so non-gameplay GPU times don't skew render scale. */
+	public void setPaused(boolean paused) {
+		if (paused && !this.paused) {
+			this.skip = Math.max(this.skip, IN_FLIGHT + 2);
+		} else if (!paused && this.paused) {
+			this.skip = Math.max(this.skip, IN_FLIGHT + 2);
+			this.outlierStreak = 0;
+			this.statusStart = 0;
+			this.statusFrames = 0;
+			this.statusChanges = 0;
+			this.statusMin = Float.MAX_VALUE;
+			this.statusMax = 0f;
+		}
+		this.paused = paused;
+	}
+
 	/** A retired frame's command buffer GPU times (seconds; 0 when unknown). */
 	public void frame(double gpuStart, double gpuEnd) {
 		if (!(gpuEnd > 0) || !(gpuStart > 0) || gpuEnd < gpuStart) return;
 		double busy = gpuEnd - Math.max(gpuStart, this.lastEnd);
 		this.lastEnd = Math.max(this.lastEnd, gpuEnd);
-		if (busy <= 0 || busy > 0.5) return; // overlapped entirely, or a stall (loading, a hitch): not the steady cost
+		if (this.paused || busy <= 0 || busy > 0.5) return; // unfocused, overlapped entirely, or a stall (loading, a hitch): not the steady cost
+		double span = gpuEnd - gpuStart;
+		float sw = spanWeight();
+		double sample = sw > 0f && span <= 0.5 ? Math.max(busy, span * sw) : busy;
 		if (this.skip > 0) {
 			this.skip--;
 			return;
 		}
-		this.average = this.samples == 0 ? busy : this.average + (busy - this.average) / AVERAGE_FRAMES;
+		// (2.0.1 fix) reject single-frame OS/screenshot/GC spikes (>2.5x EMA and >35 ms) unless sustained for 3 frames
+		if (this.samples >= 4 && sample > Math.max(this.average * 2.5, 0.035)) {
+			if (++this.outlierStreak < 3) return;
+		} else {
+			this.outlierStreak = 0;
+		}
+		this.average = this.samples == 0 ? sample : this.average + (sample - this.average) / AVERAGE_FRAMES;
 		this.samples++;
 	}
 

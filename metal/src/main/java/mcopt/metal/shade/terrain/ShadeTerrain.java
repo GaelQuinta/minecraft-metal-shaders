@@ -131,7 +131,7 @@ public final class ShadeTerrain {
 		if (!prewarmed) prewarm();
 		int tag = ShadeLean.tag();
 		int pbr = mcopt.metal.shade.ShadePbr.active() ? ShadeMsl.PBR_MATERIALS : 0;
-		int opaqueBits = (tag & ShadeMsl.LEAN_TERRAIN) | pbr, translucentBits = (tag & (ShadeMsl.LEAN_TERRAIN | ShadeMsl.LEAN_WATER)) | pbr;
+		int opaqueBits = (tag & (ShadeMsl.LEAN_TERRAIN | ShadeMsl.LEAN_ABOVE)) | pbr, translucentBits = (tag & (ShadeMsl.LEAN_TERRAIN | ShadeMsl.LEAN_WATER)) | pbr;
 		// (1.2.9, issue #68) the water settings that are off: their code compiled out, once that variant (library and pipelines) is
 		// ready in the background; until then the variant without (the same image, the settings' uniforms skip that code)
 		int woff = ShadeLean.waterOff();
@@ -278,10 +278,13 @@ public final class ShadeTerrain {
 		prewarmed = true;
 		int tag = ShadeLean.tag();
 		List<int[]> sets = new ArrayList<>();
-		sets.add(new int[] {0, tag & ShadeMsl.LEAN_TERRAIN});
+		sets.add(new int[] {0, tag & (ShadeMsl.LEAN_TERRAIN | ShadeMsl.LEAN_ABOVE)});
 		sets.add(new int[] {1, tag & (ShadeMsl.LEAN_TERRAIN | ShadeMsl.LEAN_WATER)});
 		if (ShadeLean.ON) {
-			for (int t = 7; t >= 0; t--) sets.add(new int[] {0, t});
+			for (int t = 7; t >= 0; t--) {
+				sets.add(new int[] {0, t | ShadeMsl.LEAN_ABOVE});
+				sets.add(new int[] {0, t});
+			}
 			for (int t = 0; t < 4; t++) sets.add(new int[] {0, ShadeMsl.LEAN_NETHER | t << 1});
 			for (int t = 7; t >= 0; t--) sets.add(new int[] {1, t});
 			for (int t = 0; t < 4; t++) sets.add(new int[] {1, ShadeMsl.LEAN_NETHER | t << 1});

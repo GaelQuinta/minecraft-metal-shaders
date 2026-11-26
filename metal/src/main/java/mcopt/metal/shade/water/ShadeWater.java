@@ -173,14 +173,18 @@ public final class ShadeWater {
 	 */
 	public static final boolean EDGE_REFL = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.edgeRefl", "true"));
 	/**
-	 * FT2.6 (Gael's FT2.5 lake: white blocks in the mirrored forest, where rays passed behind trunks and leaves and fell back to
-	 * the clouds' dome): the SSR march's thickness in steps' depth extents (mcopt.shade.water.ssrThick, 3 as Photon MIT allows;
-	 * FT2.5 1) and, with no hit, the first crossing behind something instead of the sky (mcopt.shade.water.ssrBehind, true).
-	 * Lake p6 (bug-ssr3): pixels above 200/255 in the mirrored forest 0.88 % -> 0.05 %; open water (bug-ssrchk): ~1/255. With
-	 * -Dmcopt.shade.wdev=true, mcopt.shade.dev variants 2-5 switch them live.
+	 * FT2.6 (Gael's FT2.5 lake: white blocks in the mirrored forest on the old coarse 24-step march): the SSR march's thickness
+	 * in steps' depth extents ({@code mcopt.shade.water.ssrThick}) and, with no hit, the first crossing behind something instead
+	 * of the sky ({@code mcopt.shade.water.ssrBehind}).
+	 * <p>2.0.1d: with the exact per-pixel hierarchical march ({@link #SSR_EXACT}, 2-px steps), {@code ssrBehind=true} pinned rays
+	 * passing underneath overhanging tree canopies and roof eaves onto the bottom row of swaying leaves, drawing noisy flickering
+	 * vertical curtains all the way to the shoreline (Photon MIT, Spectrum, Complementary and BSL never accept unbounded behind-hits).
+	 * With {@link #SSR_EXACT}, {@code ssrBehind} now defaults to {@code false} and {@code ssrThick} to {@code 1.5} (every continuous
+	 * surface crossing lies within 1.0 step extent, while preventing wide-lake overhangs from smearing tens of blocks deep); the legacy
+	 * coarse march ({@code ssrExact=false}) keeps {@code ssrBehind=true} and {@code ssrThick=3.0}.
 	 */
-	public static final float SSR_THICK = Math.clamp(floatProperty("mcopt.shade.water.ssrThick", 3f), 0.5f, 8f);
-	public static final boolean SSR_BEHIND = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrBehind", "true"));
+	public static final float SSR_THICK = Math.clamp(floatProperty("mcopt.shade.water.ssrThick", SSR_EXACT ? 1.5f : 3f), 0.5f, 8f);
+	public static final boolean SSR_BEHIND = Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrBehind", String.valueOf(!SSR_EXACT)));
 	/**
 	 * 1.2.7 (water.metal SHADE_SSR_TOP): how far past the top screen edge (NDC) the march goes on against the top row, fading to
 	 * nothing there (mcopt.shade.water.ssrTop, 0.15; 0 = candidate 3: the top edge ends it; candidate 4 went 0.5 at half weight and
@@ -402,7 +406,11 @@ public final class ShadeWater {
 		if (SMOOTH && SSR_QUAD && Boolean.parseBoolean(System.getProperty("mcopt.shade.water.ssrLane", "true"))) b.append("#define SHADE_SSR_LANE 1\n");
 		if (SMOOTH) b.append("#define SHADE_WATER_SMOOTH 1\n"); // (2026-11-02: calm and ripple are read every frame, ShadeWaterParams.swell2.zw)
 		if (GLINT_GRAZE) b.append("#define SHADE_WATER_GLINT_GRAZE 1\n");
-		if (SWELL_CODE) b.append("#define SHADE_WATER_SWELL 1\n"); // (2026-11-02, water round 1)
+		if (SWELL_CODE) {
+			b.append("#define SHADE_WATER_SWELL 1\n"); // (2026-11-02, water round 1)
+			if (mcopt.metal.shade.ShadeConfig.HDR && Boolean.parseBoolean(System.getProperty("mcopt.shade.water.swellBake", "true")))
+				b.append("#define SHADE_WATER_SWELL_BAKED 1\n");
+		}
 		if (GLITTER_CODE) b.append("#define SHADE_WATER_GLITTER 1\n");
 		if (BAKE) b.append("#define SHADE_WAVE_BAKE 1\n#define SHADE_WAVE_BAKE_SIZE ").append(BAKE_SIZE).append('\n');
 		// TAAU (mcopt.shade.taa): the world draws into a live sub-rect of fixed-size targets (so do the copies), and the SSR
@@ -457,9 +465,11 @@ public final class ShadeWater {
 		return state != 0;
 	}
 
-	private static long bakePso, bakeDetailPso, library;
+	private static long bakePso, bakeDetailPso, bakeSwellPso, swellTex, library;
 	private static boolean bakeFailed, bakedOnce;
-	private static int capturesAtBake = -1;
+	private static int capturesAtBake = -1, swellFrame;
+	/** (2.0.1 opt) ShadeResources entry for the baked 256^2 mipmapped sea swell texture (shade_look.metal waterSwell). */
+	static final int RES_SWELL = 15;
 
 	/** The module's own passes (wave bake, coarse depth): prelude + post (shade_fs_vs) + this prelude. */
 	/** How many scene copies (= frames that drew translucent terrain) so far. */
@@ -487,12 +497,14 @@ public final class ShadeWater {
 	 */
 	public static void bake(long ctx, long enc) {
 		if (!BAKE || bakeFailed || enc == 0 || !ready(ctx)) return;
-		// no translucent terrain drew last frame (no scene copy: no water on screen, the Nether, caves): skip the bake; the
-		// shaders use the analytic waves on the frame water comes back (ShadeWaterParams.state.w = 0)
+		// (2.0.1 opt) keep the last baked waves/swell bound whenever we skip baking (no water last frame, waves=0, devNoBake),
+		// so the frame water re-enters view immediately samples valid baked textures and never needs the analytic fallback!
 		boolean recent = captures != capturesAtBake;
 		capturesAtBake = captures;
-		if (!recent && bakedOnce) return;
-		if (bakedOnce && Boolean.getBoolean("mcopt.shade.water.devNoBake")) { // (1.2.9 pricing, read every frame: the waves stand still)
+		boolean wavesOff = mcopt.metal.shade.ShadeSettings.waves() <= 0f;
+		if (bakedOnce && (!recent || wavesOff || Boolean.getBoolean("mcopt.shade.water.devNoBake"))) {
+			if (swellTex != 0 && mcopt.metal.shade.ShadeConfig.HDR && mcopt.metal.shade.ShadeRender.ready())
+				mcopt.metal.shade.ShadeRender.resource(RES_SWELL, swellTex);
 			WaterNative.wavesKeep(state);
 			return;
 		}
@@ -516,6 +528,25 @@ public final class ShadeWater {
 				}
 				long det = WaterNative.wavesDetail(ctx, state, DETAIL_SIZE);
 				mcopt.metal.shade.ShadeRender.pass(enc, bakeDetailPso, det, mcopt.metal.shade.ShadeRender.DONT_CARE, null, null, "mcopt shade water: ripple bake");
+			}
+			boolean wantSwell = SWELL_CODE && mcopt.metal.shade.ShadeConfig.HDR && mcopt.metal.shade.ShadeRender.ready()
+				&& !fast() && mcopt.metal.shade.Live.b("mcopt.shade.water.swellBake", true)
+				&& mcopt.metal.shade.Live.f("mcopt.shade.water.swell", 1.3f, 0f, 3f) > 0f;
+			if (wantSwell) {
+				// (2.0.1 opt) sea swell has 23-41 block wavelengths (slowly moving): bake every 2nd frame (~45-60 Hz)
+				if (swellTex == 0 || (swellFrame++ & 1) == 0) {
+					if (bakeSwellPso == 0) {
+						long t0 = mcopt.metal.shade.ShadeCompile.now();
+						bakeSwellPso = mcopt.metal.shade.ShadeRender.pipeline(library(), "shade_fs_vs", "shade_water_bake_swell_fs",
+							mcopt.metal.shade.ShadeRender.RGBA16F, mcopt.metal.shade.ShadeRender.BLEND_NONE);
+						mcopt.metal.shade.ShadeCompile.setup("water", t0);
+					}
+					swellTex = WaterNative.wavesSwell(ctx, state, 256);
+					mcopt.metal.shade.ShadeRender.pass(enc, bakeSwellPso, swellTex, mcopt.metal.shade.ShadeRender.DONT_CARE, null, null, "mcopt shade water: swell bake");
+				}
+				mcopt.metal.shade.ShadeRender.resource(RES_SWELL, swellTex);
+			} else if (swellTex != 0 && mcopt.metal.shade.ShadeConfig.HDR && mcopt.metal.shade.ShadeRender.ready()) {
+				mcopt.metal.shade.ShadeRender.resource(RES_SWELL, swellTex);
 			}
 			WaterNative.wavesDone(enc, state);
 		} catch (Throwable e) {

@@ -152,6 +152,22 @@ public final class ShadeRender {
 		}
 	}
 
+	/** (2.0.1 opt) Full-screen pass without ShadeResources / global bindings (bindGpu=true binds ShadeGpu at buffer 18 only). */
+	public static void passPlain(long enc, long pipeline, long target, int load, long @Nullable [] textures, @Nullable ByteBuffer params, boolean bindGpu, String label) {
+		try (MemoryStack stack = MemoryStack.stackPush()) {
+			int n = textures == null ? 0 : textures.length;
+			long t = stack.nmalloc(8, Math.max(1, n) * 8);
+			for (int i = 0; i < n; i++) MemoryUtil.memPutAddress(t + i * 8L, textures[i]);
+			ShadeNative.passPlain(enc, pipeline, target, load, t, n, params == null ? 0 : MemoryUtil.memAddress(params), params == null ? 0 : params.remaining(),
+				bindGpu ? 1 : 0, MemoryUtil.memAddress(stack.UTF8(label)));
+		}
+	}
+
+	/** (2.0.1 opt) Fuses shade_histogram (2x2 rotating strided grid) + shade_exposure into one serial compute encoder. */
+	public static void exposureRun(long enc, long histPso, long expPso, long histTex) {
+		ShadeNative.exposureRun(enc, histPso, expPso, histTex);
+	}
+
 	/** A compute dispatch of width x height threads in groups of tw x th, inputs at texture(0..), params at buffer(0). */
 	public static void dispatch(long enc, long pipeline, int width, int height, int tw, int th, long @Nullable [] textures, @Nullable ByteBuffer params,
 		String label) {

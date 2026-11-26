@@ -47,6 +47,11 @@
 #define MCOPT_SHADE_VL
 
 constant bool VL_HDR [[function_constant(0)]];
+// (2.0.1 opt) optional specialized air-mode + far-cascade PSO (guarded with is_function_constant_defined so offline tools compile identically)
+constant bool VL_FC_AIR_ONLY [[function_constant(1)]];
+constant bool VL_FC_FAR_ONLY [[function_constant(2)]];
+constant bool vlAirOnly = is_function_constant_defined(VL_FC_AIR_ONLY) && VL_FC_AIR_ONLY;
+constant bool vlFarOnlyFc = is_function_constant_defined(VL_FC_FAR_ONLY) && VL_FC_FAR_ONLY;
 
 // Per-frame parameters (mcopt.metal.shade.vl.ShadeVl packs exactly this layout; 33 x float4 = 528 bytes since 2026-11 (air9), in
 // mcvl.m's local copy of 160 floats).
@@ -142,7 +147,8 @@ struct VlParams {
 #define VL_GRID_Z 64
 #define VL_GRID_TAPS 24
 #define VL_GRID_TAPS_UP 12 // (FT2.6) the canopy test's taps, in the box above (look2.y)
-#define VL_GRID_ROUNDS 4
+// (2.0.1 opt) 8 smooth z-slice rounds (1/8 of grid per frame, ~66 ms full cycle at 120 fps)
+#define VL_GRID_ROUNDS 8
 #define VL_FAR_STEPS 8
 
 struct VlState { float4 canopy; }; // x smoothed canopy factor 0..1, y raw shadowed fraction, zw 0
@@ -280,83 +286,100 @@ kernel void vl_canopy(uint tid [[thread_index_in_threadgroup]], uint lane [[thre
 // texel = its world cell index mod the grid's size), so a quarter of the cells per frame keeps it current (the shade changes
 // slowly; cells that just came in at the far edge, faded there, wait at most 4 frames); after a reset all of them.
 // One shade grid tap: 1 where the sun reaches point q (far cascade, linear compare), outside the far square or above it lit.
-static inline float vlGridTap(float3 q, constant ShadeFrame &f, depth2d_array<float> map) {
+static inline float vlGridTapClip(float3 h, depth2d_array<float> map) {
 	constexpr sampler cmpLin(coord::normalized, filter::linear, address::clamp_to_edge, compare_func::greater_equal);
-	float4 h = f.shadowViewProj[1] * float4(q, 1.0);
 	if (max(abs(h.x), abs(h.y)) >= 0.995 || h.z >= 1.0) return 1.0;
-	return h.z > 0.0 ? map.sample_compare(cmpLin, shadeShadowUV(h.xyz), 1u, h.z) : 0.0;
+	return h.z > 0.0 ? map.sample_compare(cmpLin, shadeShadowUV(h), 1u, h.z) : 0.0;
 }
 
-// (FT2.7) the same, but only a blocker within dmax blocks toward the light counts as shade (the far cascade's depth: zB blocks per
-// unit; a 2x2 gather): leaves over the point, not a tree's shadow from far off at a low sun
-static inline float vlGridTapNear(float3 q, constant ShadeFrame &f, depth2d_array<float> map, float zB, float dmax) {
+static inline float vlGridTap(float3 q, constant ShadeFrame &f, depth2d_array<float> map) {
+	return vlGridTapClip((f.shadowViewProj[1] * float4(q, 1.0)).xyz, map);
+}
+
+static inline float vlGridTapNearClip(float3 h, depth2d_array<float> map, float zB, float dmax) {
 	constexpr sampler pt(filter::nearest, address::clamp_to_edge);
-	float4 h = f.shadowViewProj[1] * float4(q, 1.0);
 	if (max(abs(h.x), abs(h.y)) >= 0.995 || h.z >= 1.0) return 1.0;
 	if (h.z <= 0.0) return 0.0;
-	float4 d = map.gather(pt, shadeShadowUV(h.xyz), 1u);
+	float4 d = map.gather(pt, shadeShadowUV(h), 1u);
 	float4 near = select(float4(0.0), float4(1.0), d > h.z && (d - h.z) * zB < dmax);
 	return 1.0 - dot(near, float4(0.25));
 }
 
-kernel void vl_shade_grid(uint3 tid [[thread_position_in_grid]], constant ShadeFrame &f [[buffer(16)]], constant VlParams &p [[buffer(0)]],
+static inline float vlGridTapNear(float3 q, constant ShadeFrame &f, depth2d_array<float> map, float zB, float dmax) {
+	return vlGridTapNearClip((f.shadowViewProj[1] * float4(q, 1.0)).xyz, map, zB, dmax);
+}
+
+// (2.0.1 opt) (8,8,1) dispatch + threadgroup-shared shadow-clip offsets (1 matmul per cell instead of 24+) + out-of-cascade & 8-tap octant early exit
+kernel void vl_shade_grid(uint3 tid [[thread_position_in_grid]], uint ltid [[thread_index_in_threadgroup]],
+                          constant ShadeFrame &f [[buffer(16)]], constant VlParams &p [[buffer(0)]],
                           depth2d_array<float> map [[texture(16)]], texture3d<half, access::write> grid [[texture(0)]]) {
+	threadgroup float3 tgOff[VL_GRID_TAPS];
+	threadgroup float3 tgExtent;
+	float r = p.grid2.w;
+	if (ltid < VL_GRID_TAPS) {
+		float3 u = fract(0.5 + float(ltid) * float3(0.8191725134, 0.6710436067, 0.5497004779));
+		float3 wOff = float3((u.x * 2.0 - 1.0) * r, 0.5 + u.y * (r - 0.5), (u.z * 2.0 - 1.0) * r);
+		tgOff[ltid] = (f.shadowViewProj[1] * float4(wOff, 0.0)).xyz;
+	}
+	if (ltid == 0u) {
+		float3 ax = abs(f.shadowViewProj[1][0].xyz), ay = abs(f.shadowViewProj[1][1].xyz), az = abs(f.shadowViewProj[1][2].xyz);
+		tgExtent = (ax + ay + az) * r;
+	}
+	threadgroup_barrier(mem_flags::mem_threadgroup);
 	uint3 gid = p.air4.w < 0.0 ? tid : uint3(tid.x, tid.y, tid.z * VL_GRID_ROUNDS + uint(p.air4.w));
 	if (gid.x >= VL_GRID_X || gid.y >= VL_GRID_Y || gid.z >= VL_GRID_Z) return;
-	float3 c = p.grid.xyz + (float3(gid) + 0.5) * p.grid.w;
-	float r = p.grid2.w;
-	float lit = 0.0;
+	uint3 dst = (gid + uint3(p.grid2.xyz)) % uint3(VL_GRID_X, VL_GRID_Y, VL_GRID_Z);
 	if (f.flags.z == 0) {
-		lit = float(VL_GRID_TAPS);
-	} else {
-		for (int k = 0; k < VL_GRID_TAPS; k++) {
-			float3 u = fract(0.5 + float(k) * float3(0.8191725134, 0.6710436067, 0.5497004779));
-			lit += vlGridTap(c + float3((u.x * 2.0 - 1.0) * r, 0.5 + u.y * (r - 0.5), (u.z * 2.0 - 1.0) * r), f, map);
-		}
+		grid.write(half4(1.0h), dst);
+		return;
 	}
-	float share = lit / float(VL_GRID_TAPS);
-	// (FT2.6, look2.y > r) the canopy test: the share of sunlit points in a box above that one, from r up to look2.y blocks. Under
-	// trees the canopy shades it (a gap in the canopy too: its ring of leaves lies within the box); over a sunlit crest, in a wide
-	// clearing or at the sunlit edge of a hill's shadow the sky is open above. There the low box alone read the hill's own
-	// shadow beside and below the air as shade, so the air got the forest's density and glowed toward the sun as white puffs
-	// along every ridge (Gael's FT2.5 screenshots 3-5): where the box above is mostly sunlit (look2.z..w) the cell reads as
-	// sunlit land
-	// (air5.w > 0: the box reaches that far sideways, else r: wide enough to hold the ring of leaves around a big gap in the canopy,
-	// where the shafts are)
-	// (FT2.7, air6.x > 0: audit idx 16) as columns, not a box: oak and birch leaves sit 3-7 blocks above the ground, so most of
-	// the box (4-16 blocks above a cell near the ground) lay above them, in the sun, and the autumn forest read as sunlit land
-	// (its shafts were gone). A column is open only where all its taps are lit (one shaded tap = leaves or an overhang above
-	// the cell, at any height up to look2.y); its taps are packed toward the low end (where short canopies are) and it stops
-	// at its first shaded one. The open share of the columns plays the box's lit share.
-	// Default (rounds r1-r4 / gs1-gs4, notes/canopy-cols-2026-10-09): ONE column on the cell's axis from 1.5 blocks up, 5 taps,
-	// counting only a blocker within 12 blocks toward the sun (air7.y: leaves over the cell; at a low sun a far tree's shadow
-	// across the column had made the air over crests forest = halos and plumes). Gael's taiga: the veil at or below FT2.6's
-	// (p3 0.6 -> 0.05, p4 0.7 -> 0.2); his autumn forest: the shafts back (g2 rays 1.83 -> 1.97, FT2.5 1.94).
+	float3 c = p.grid.xyz + (float3(gid) + 0.5) * p.grid.w;
+	float3 hC = (f.shadowViewProj[1] * float4(c, 1.0)).xyz;
+	// Out-of-cascade / above-far-shadow early exit: every tap in the cell's box is guaranteed sunlit
+	if (abs(hC.x) >= 0.995 + tgExtent.x || abs(hC.y) >= 0.995 + tgExtent.y || hC.z >= 1.0 + tgExtent.z) {
+		grid.write(half4(1.0h), dst);
+		return;
+	}
+	float lit = 0.0;
+	for (int k = 0; k < 8; k++) lit += vlGridTapClip(hC + tgOff[k], map);
+	float share;
+	if (lit >= 7.999) {
+		// All 8 octants fully sunlit: open sky/plains (~65% of volume)
+		grid.write(half4(1.0h), dst);
+		return;
+	} else if (lit <= 0.001) {
+		// All 8 octants fully shadowed: deep shadow/underground (still runs canopy column test below)
+		share = 0.0;
+	} else {
+		for (int k = 8; k < VL_GRID_TAPS; k++) lit += vlGridTapClip(hC + tgOff[k], map);
+		share = lit / float(VL_GRID_TAPS);
+	}
 	float up = p.look2.y, rUp = p.air5.w > 0.0 ? p.air5.w : r;
-	// (FT2.8, audit idx 4: not where every low tap is already lit, share ~1, the most of open land: the test can only raise share;
-	// not merely >= air3.y, since the grid is sampled trilinearly and a higher share there still moves the values toward a neighbour)
-	if (up > r && f.flags.z != 0 && share < 0.999) {
+	if (up > r && share < 0.999) {
 		float open = 0.0;
 		int cols = min(int(p.air6.x), 12);
 		if (cols > 0) {
 			int taps = clamp(int(p.air6.y), 2, 6);
-			float rho = cols == 1 ? 0.0 : p.air6.z > 0.0 ? p.air6.z : 0.75 * rUp, lo = p.air7.x > 0.0 ? p.air7.x : r; // (1: the cell's own axis)
+			float rho = cols == 1 ? 0.0 : p.air6.z > 0.0 ? p.air6.z : 0.75 * rUp, lo = p.air7.x > 0.0 ? p.air7.x : r;
 			float3 m2 = float3(f.shadowViewProj[1][0][2], f.shadowViewProj[1][1][2], f.shadowViewProj[1][2][2]);
 			float zB = 1.0 / max(length(m2), 1e-6), dmax = p.air7.y;
+			float3 colY = f.shadowViewProj[1][1].xyz;
 			for (int i = 0; i < cols; i++) {
-				float a = (float(i) + 0.5) * (6.2831853 / float(cols));
-				float2 o = float2(cos(a), sin(a)) * rho;
+				float3 hBase = hC;
+				if (cols > 1) {
+					float a = (float(i) + 0.5) * (6.2831853 / float(cols));
+					float2 o = float2(cos(a), sin(a)) * rho;
+					hBase += f.shadowViewProj[1][0].xyz * o.x + f.shadowViewProj[1][2].xyz * o.y;
+				}
 				float col = 1.0;
 				for (int j = 0; j < taps && col > 0.02; j++) {
 					float s = float(j) / float(taps - 1);
-					float3 q = c + float3(o.x, lo + s * s * (up - lo), o.y);
-					col = min(col, dmax > 0.0 ? vlGridTapNear(q, f, map, zB, dmax) : vlGridTap(q, f, map));
+					float3 hq = hBase + colY * (lo + s * s * (up - lo));
+					col = min(col, dmax > 0.0 ? vlGridTapNearClip(hq, map, zB, dmax) : vlGridTapClip(hq, map));
 				}
 				open += col;
 			}
 			open /= float(cols);
-			// (air7.z > 0) both tests: open land only where the box above is mostly lit too (FT2.6's crests that cast the shafts
-			// toward the sun stay forest; leaves right above a cell make it forest even where the box above them is lit)
 			if (p.air7.z > 0.0) {
 				float box = 0.0;
 				for (int k = 0; k < VL_GRID_TAPS_UP; k++) {
@@ -374,7 +397,7 @@ kernel void vl_shade_grid(uint3 tid [[thread_position_in_grid]], constant ShadeF
 		}
 		share = max(share, smoothstep(p.look2.z, p.look2.w, open));
 	}
-	grid.write(half4(half(share)), (gid + uint3(p.grid2.xyz)) % uint3(VL_GRID_X, VL_GRID_Y, VL_GRID_Z));
+	grid.write(half4(half(share)), dst);
 }
 
 // Canopy mist: the humid air under trees and overhangs, around the camera, scaled by the canopy factor. Density
@@ -427,123 +450,119 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 	float canopy = p.gate.z >= 0.0 ? p.gate.z : max(st.canopy.x, p.tune.x);
 	float3 scatter = float3(0.0);
 	float od = 0.0; // (2026-11, air8.z) what dims the scene behind this pixel (air mode; vl_temporal_fold)
-	bool underwater = p.water2.y > 0.5;
+	bool underwater = !vlAirOnly && p.water2.y > 0.5;
 	int n = int(p.shape.z);
-	float3 c0o = (f.shadowViewProj[0] * float4(0.0, 0.0, 0.0, 1.0)).xyz, c0d = (f.shadowViewProj[0] * float4(dir, 0.0)).xyz;
+	bool farOnly = vlFarOnlyFc || (int(p.sunPx.w) & 64) != 0; // (FT2.3) shafts from the far cascade only (see vlShadow)
+	float3 c0o = vlFarOnlyFc ? float3(0.0) : (f.shadowViewProj[0] * float4(0.0, 0.0, 0.0, 1.0)).xyz;
+	float3 c0d = vlFarOnlyFc ? float3(0.0) : (f.shadowViewProj[0] * float4(dir, 0.0)).xyz;
 	float3 c1o = (f.shadowViewProj[1] * float4(0.0, 0.0, 0.0, 1.0)).xyz, c1d = (f.shadowViewProj[1] * float4(dir, 0.0)).xyz;
 	bool shadows = f.flags.z != 0;
-	bool farOnly = (int(p.sunPx.w) & 64) != 0; // (FT2.3) shafts from the far cascade only (see vlShadow)
-	// (2026-10-09, tune2.z) soft shafts: each step looks the shadow up a little across the light direction (a Vogel disk of radius
-	// tune2.z blocks, turned per texel and frame), so a shaft's edge is a gradient of ~2 radii instead of a cut (Gael: the lit air
-	// under a big gap read as a hard-edged glass sheet); the temporal pass averages it. o0/o1: one block along e1/e2 in each
-	// cascade's clip xy
 	float softR = p.tune2.z;
 	float2 o0a = 0.0, o0b = 0.0, o1a = 0.0, o1b = 0.0;
 	float softRot = 0.0;
+	float2 softCs = float2(1.0, 0.0);
 	if (softR > 0.0) {
 		float3 e1 = normalize(abs(L.y) < 0.95 ? cross(L, float3(0.0, 1.0, 0.0)) : cross(L, float3(1.0, 0.0, 0.0)));
 		float3 e2 = cross(L, e1);
-		o0a = (f.shadowViewProj[0] * float4(e1 * softR, 0.0)).xy;
-		o0b = (f.shadowViewProj[0] * float4(e2 * softR, 0.0)).xy;
+		if (!vlFarOnlyFc) {
+			o0a = (f.shadowViewProj[0] * float4(e1 * softR, 0.0)).xy;
+			o0b = (f.shadowViewProj[0] * float4(e2 * softR, 0.0)).xy;
+		}
 		o1a = (f.shadowViewProj[1] * float4(e1 * softR, 0.0)).xy;
 		o1b = (f.shadowViewProj[1] * float4(e2 * softR, 0.0)).xy;
 		softRot = 6.2831853 * vlNoise(in.position.xy + 29.0, p.temporal.z);
+		softCs = float2(cos(softRot), sin(softRot));
 	}
+	// (2.0.1 opt) guard vlClouds on sl.clouds0.z > 0.0 so night/sun-down frames skip cloudRay setup and shadow fetches
 	ShadeCloudRay cloudRay = {};
-	// M3.1: the cloud shadow is fetched on at most every other lit step and held for the next one (its texels are 4 blocks, the
-	// shafts from cloud gaps tens of blocks wide; the steps jitter per frame). SHADE_CLOUD_DEV_OLD_VL: every lit step (M3);
-	// SHADE_CLOUD_DEV_NO_VL: no clouds in VL (pricing)
-	bool vlClouds = VL_HDR && !shadeCloudDev(sl, SHADE_CLOUD_DEV_NO_VL);
+	bool vlClouds = VL_HDR && sl.clouds0.z > 0.0 && !shadeCloudDev(sl, SHADE_CLOUD_DEV_NO_VL);
 	int cloudEvery = VL_HDR && shadeCloudDev(sl, SHADE_CLOUD_DEV_OLD_VL) ? 1 : 2;
 	int cloudAt = -8;
 	float cloudHeld = 1.0;
-	if (VL_HDR) cloudRay = shadeCloudRay(dir, sl); // (ShadeLook is read only in the HDR variant)
+	if (vlClouds) cloudRay = shadeCloudRay(dir, sl);
+	// (2.0.1 opt) fetch sky cloud transmittance ONCE and reuse for both golden-hour skyMistK and crepuscular sky mask
+	half skyT = d <= 0.0 ? (VL_HDR && !shadeCloudDev(sl, SHADE_CLOUD_DEV_NO_VL) ? half(shadeCloudsScreen(dir, sl, sr.cloudScreen).a) : 1.0h) : 0.0h;
 
-	if (VL_HDR && !underwater && p.air.x > 0.5) {
-		// Air mode (godrays v3, 2026-10-09; Photon's approach, see the header). Gael on FT2.2-2.3's shafts: "pixeleados, bugueados,
-		// manchas; deberían ser líneas de luz continuas como las de la vida real". Those came from a mist around the camera (cut a
-		// few blocks above the eye, fading with the distance from it: smoke columns), carved and contrast-boosted into beams
-		// (hard-edged sheets), while the final pass's haze (E06) glowed in the sun everywhere, shadow or not (the veil under the
-		// trees). Here the one air the final pass fogs with (E06's haze and mist, ShadeLook: the same heights and densities) is
-		// marched to the scene with the sun's shadow at every step, plus the forest's humid air: dense where the air around a
-		// point lies mostly in the shade (the shade grid, vl_shade_grid), thin over open sunlit land (lit air there would only be
-		// a veil). No carve, no local contrast: lit air is bright, shadowed air is not, so a shaft is lit air between shadowed air,
-		// from the gap in the canopy down to the ground.
-		// Output: what the shadows take out of the haze's sunlit glow (negative: the final pass adds that glow unshadowed at full
-		// resolution, crisp at every edge) + the forest air's light (sun and a share of the sky). Open land in full sun: nothing
-		// (the final pass's haze as it was).
+	if (VL_HDR && (vlAirOnly || (!underwater && p.air.x > 0.5))) {
 		float yc = f.cameraBlock.y + f.cameraFract.y;
 		float3 sigR = sl.fogR.rgb;
-		float hR = sl.fogR.w, y0R = sl.fogMisc.x;
-		float sigM = sl.fogM.x, hM = sl.fogM.y, y0M = sl.fogM.z, alM = sl.fogM.w;
+		float invHR = 1.442695 / max(sl.fogR.w, 1e-4), y0R = sl.fogMisc.x;
+		float sigM = sl.fogM.x, hM = sl.fogM.y, invHM = 1.442695 / max(hM, 1e-4), y0M = sl.fogM.z, alM = sl.fogM.w;
 		float local = p.light.w;
 		bool skyPx = d <= 0.0;
 		constexpr sampler gridLin(filter::linear, address::repeat);
 		float3 gridSpan = p.grid.w * float3(VL_GRID_X, VL_GRID_Y, VL_GRID_Z);
+		float3 invGridSpan = 1.0 / gridSpan;
 		float3 gridWrap = p.grid2.xyz / float3(VL_GRID_X, VL_GRID_Y, VL_GRID_Z);
 		float litK = 1.0 / max(p.air3.y - p.air3.x, 1e-3);
 		float D = min(dist, p.air2.x);
 		int na = clamp(int(p.air.y + p.air.z * D), 2, int(max(p.air.w, 2.0)));
 		float invN = 1.0 / float(na);
-		// (2026-11, air8.x: mcopt.shade.vl.airLinear) the steps' linear share: t = D u (u + (1 - u) lin). 0 = quadratic (FT2.3: most
-		// steps within the first few blocks, where the forest air fades in from the camera), 1 = uniform steps (Photon); 0.5: the
-		// first step ~2.6 % of D, the near shafts (5-25 blocks) get more of them
 		float lin = saturate(p.air8.x);
-		// (one transmittance for all three channels, from the haze's luminance: its colour matters in what it scatters, its
-		// extinction over the march is at most ~0.1, so a grey one costs nothing visible and a third of the exp per step)
 		float trans = 1.0, mistAll = 0.0, mistLit = 0.0, forestLit = 0.0, forestAll = 0.0;
-		float forestOD = 0.0; // (2026-11, air8.z) the forest air's optical depth along the ray (at its density, x airDim below)
-		float mistOD = 0.0;   // (2026-11, air8.y with air8.z) the mist's, for a sky pixel's dimming under the golden-hour sky mist
-		float hazeAll = 0.0, hazeLit = 0.0; // (FT2.7, audit idx 1: scalars, times sigR once after the loop)
-		float apAll = 0.0, apLit = 0.0; // (FT2.12) the ray's length and its sunlit part (the aerial blend's glow, uniform along it)
+		float forestOD = 0.0, mistOD = 0.0;
+		float hazeAll = 0.0, hazeLit = 0.0;
+		float apAll = 0.0, apLit = 0.0;
 		float lumR = dot(sigR, float3(0.2126, 0.7152, 0.0722));
 		float prevB = 0.0;
-		// (FT2.7, audit idx 0; air6.w > 0) a sky pixel with airSkyCut and airBase 0: past the shade grid (and the forest air's
-		// fade-out) every step only feeds sums the sky multiplies by 0 (shadowed *= air2.y below; outside the grid dF = air4.x = 0),
-		// so its march stops there. The same image; the far steps (far cascade, cloud shadows) were ~0.2 ms where half the view is sky
-		// (2026-11, air8.y > 0: not with the golden-hour mist over the sky, which needs the whole ray)
+		float forestCanopyK = mix(p.air5.z, 1.0, saturate(canopy));
+		bool skyForestOnly = skyPx && p.air2.y == 0.0 && p.air8.y <= 0.0;
 		float tStop = D;
-		if (skyPx && p.air6.w > 0.0 && p.air2.y == 0.0 && p.air4.x <= 0.0 && p.air8.y <= 0.0) {
-			float3 ex = select(-p.grid.xyz, p.grid.xyz + gridSpan, dir > 0.0) / max(abs(dir), 1e-6); // the camera is inside the grid
-			tStop = min(min(ex.x, min(ex.y, ex.z)) + 1.0, D);
-			if (p.air5.y > p.air5.x) tStop = min(tStop, p.air5.y);
-			if (local <= 0.0) tStop = 0.0;
+		if (skyPx && p.air6.w > 0.0 && p.air2.y == 0.0 && p.air4.x <= 0.0) {
+			float3 ex = select(-p.grid.xyz, p.grid.xyz + gridSpan, dir > 0.0) / max(abs(dir), 1e-6);
+			float tGrid = local > 0.0 ? min(min(ex.x, min(ex.y, ex.z)) + 1.0, D) : 0.0;
+			if (p.air5.y > p.air5.x) tGrid = min(tGrid, p.air5.y);
+			if (p.air8.y <= 0.0) {
+				tStop = tGrid;
+			} else if (dir.y > 1e-4) {
+				// (2.0.1 opt) golden-hour sky mist fades to <0.0002 above y0M + 8.5 * hM: stop upward sky rays there
+				float tMist = max((y0M + 8.5 * hM - yc) / dir.y, 0.0);
+				tStop = min(max(tGrid, tMist), D);
+			}
 		}
+		// (2.0.1 opt) incremental golden-angle rotation (0 trig inside loop)
+		const float2 gStep = float2(-0.73736888, 0.67549029); // cos/sin(2.3999632)
+		float2 rot = softCs;
+		float rFrac = fract(0.5 * 0.618034 + softRot);
 		for (int i = 0; i < na; i++) {
-			// quadratic spacing (dense near the camera, where the trees' shadows are), each texel offset on its own (bit 32); lin
-			// moves it toward even steps
 			float u1 = float(i + 1) * invN, u = (float(i) + xi) * invN;
 			float b1 = D * u1 * mix(u1, 1.0, lin), t = D * u * mix(u, 1.0, lin), dt = b1 - prevB;
 			if (t > tStop) break;
 			prevB = b1;
 			float y = yc + dir.y * t;
-			float fR = exp(-max(y - y0R, 0.0) / hR);
-			float dM = sigM * exp(-max(y - y0M, 0.0) / hM);
-			// the forest air: the lit share around this point (the grid, trilinear) -> full density at or below air3.x, air4.x of it
-			// at or above air3.y (open sunlit land); past the grid (faded over its last 8 blocks) air4.x; faded in from the camera
-			// (air3.z: the near field stays crisp)
+			float fR = float(exp2(half(-max(y - y0R, 0.0) * invHR)));
+			float dM = sigM * float(exp2(half(-max(y - y0M, 0.0) * invHM)));
 			float dF = 0.0;
 			if (local > 0.0) {
-				float3 g = (dir * t - p.grid.xyz) / gridSpan;
+				float3 g = (dir * t - p.grid.xyz) * invGridSpan;
 				float3 edge = min(g, 1.0 - g) * gridSpan;
-				float inGrid = saturate(min(edge.x, min(edge.y, edge.z)) * 0.125); // (outside: air4.x alone)
+				float inGrid = saturate(min(edge.x, min(edge.y, edge.z)) * 0.125);
 				float shade = p.air4.x;
 				if (inGrid > 0.0) shade = mix(p.air4.x, max(saturate((p.air3.y - float(shadeGrid.sample(gridLin, g + gridWrap).r)) * litK), p.air4.x), inGrid);
-				dF = local * shade * (p.air3.z > 0.0 ? saturate(t / p.air3.z) : 1.0);
-				// (FT2.6, air5) faded out far from the camera: the humid air of the forest around the player, not puffs over distant
-				// ridges
+				dF = local * shade * (p.air3.z > 0.0 ? saturate(t / p.air3.z) : 1.0) * forestCanopyK;
 				if (p.air5.y > p.air5.x) dF *= 1.0 - smoothstep(p.air5.x, p.air5.y, t);
-				// (FT2.6, air5.z < 1) with the camera in the open (the canopy factor, vl_canopy) only that share of it: the shafts are
-				// strongest in the forest around you (Complementary's "scene-aware" idea), not as lone plumes on a ridge far away
-				dF *= mix(p.air5.z, 1.0, saturate(canopy));
 			}
 			float ext = lumR * fR + dM + dF * p.mist.w;
-			float3 q0 = c0o + c0d * t, q1 = c1o + c1d * t;
+			// (2.0.1 opt) midpoint rule: single FP16 exp2, zero division; stepT = midT * midT is exact exp(-ext * dt)
+			half midT = exp2(half(-0.7213475 * ext * dt));
+			half stepT = midT * midT;
+			// (2.0.1 opt) sky pixel with no haze cut or golden mist: skip shadow/cloud reads on steps where dF == 0
+			if (skyForestOnly && dF <= 0.0) {
+				trans *= float(stepT);
+				if (softR > 0.0) {
+					rot = float2(rot.x * gStep.x - rot.y * gStep.y, rot.x * gStep.y + rot.y * gStep.x);
+					rFrac = fract(rFrac + 0.618034);
+				}
+				continue;
+			}
+			float3 q0 = vlFarOnlyFc ? float3(0.0) : (c0o + c0d * t);
+			float3 q1 = c1o + c1d * t;
 			if (softR > 0.0) {
-				float a = softRot + 2.3999632 * float(i), r = sqrt(fract((float(i) + 0.5) * 0.618034 + softRot));
-				float2 cs = float2(cos(a), sin(a)) * r;
-				q0.xy += o0a * cs.x + o0b * cs.y;
+				float2 cs = rot * sqrt(rFrac);
+				if (!vlFarOnlyFc) q0.xy += o0a * cs.x + o0b * cs.y;
 				q1.xy += o1a * cs.x + o1b * cs.y;
+				rot = float2(rot.x * gStep.x - rot.y * gStep.y, rot.x * gStep.y + rot.y * gStep.x);
+				rFrac = fract(rFrac + 0.618034);
 			}
 			float v = shadows ? vlShadow(map, cmp, q0, q1, farOnly) : 1.0;
 			if (vlClouds && v > 0.0) {
@@ -553,9 +572,7 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 				}
 				v *= cloudHeld;
 			}
-			// energy-conserving segment integral (1 - e^-sigma dt) / sigma, times the transmittance so far
-			float stepT = exp(-ext * dt);
-			float seg = trans * (1.0 - stepT) / max(ext, 1e-9);
+			float seg = trans * float(midT) * dt;
 			float segR = fR * seg;
 			hazeAll += segR;
 			hazeLit += v * segR;
@@ -567,44 +584,23 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 			forestAll += dF * seg;
 			forestOD += dF * dt;
 			mistOD += dM * dt;
-			trans *= stepT;
+			trans *= float(stepT);
 		}
 		float3 hA = hazeAll * sigR, hL = hazeLit * sigR;
-		// E06's phase functions, multiple-scattering boosts and evening glow (shade_m2.metal shadeHazeInscatter): its sunlit part
-		// times (lit - all) = what the shadows take out of it
 		float phR = 0.0596831 * (1.0 + mu * mu);
 		float phM = 0.8 * shadeHG(mu, SHADE_HAZE_MIE_G) + 0.2 * shadeHG(mu, -0.2);
 		float glow = 1.0 + sl.fogMisc.w;
-		// (FT2.10) the sunlight the final pass's haze has around the camera (shadeAirSun: none in a cave), so only what it added is
-		// taken out (else the shadows darkened a cave's walls down to the floor of what they may take, mcopt.shade.vl.airFloor)
 		float3 E = f.sunColor.rgb * (3.14159265 * shadeAirSun(sl));
 		float3 shadowed = E * ((hL - hA) * (phR * 2.0) + (mistLit - mistAll) * (phM * glow * alM / (1.0 - 0.5 * alM)));
-		// (FT2.12) and the aerial blend's glow around the sun (shade_m2.metal shadeAerialSunGlow; the terrain mixed it in unshadowed)
-		// by the share of the ray in shade: its density (fogSky.z, ~1/1250 per block) is even along the ray. A sun set behind a
-		// mountain no longer glows through it (Gael 2026-10-11)
-		// (only where some of the ray is in shade: the lookups cost ~0.03 ms over the whole view)
 		if (!skyPx && apLit < apAll * 0.999) shadowed -= shadeAerialSunGlow(dir * dist, skyLut, lutS, f, sl) * ((apAll - apLit) / apAll);
-		// on the sky the haze's glow is the sky model's own: the shadows take out a share of it (air2.y; dark rays from the trees'
-		// and hills' shadows across the glow around the sun)
 		if (skyPx) shadowed *= p.air2.y;
-		// (2026-11, C7: air8.y = mcopt.shade.vl.skyMist x the golden hour, 0 = none) the golden-hour mist over the sky, as Photon marches
-		// sky pixels (its approach: the air to the volume's end with the sun's shadow at every step): the final pass draws no haze over
-		// the sky, so the mist's whole sunlit part goes here (positive), E06's phase, glow and albedo, with its sky-lit part. Toward a low
-		// sun the mist over the horizon glows and the hills, trees and cloud gaps between cut dark and bright wedges into it, fanning
-		// from the sun (the far cascade's shadows to 128 blocks, the clouds' beyond)
-		// (2026-11 clouds, air9.x = mcopt.shade.vl.skyMistCloud) less of it over the volumetric clouds, by their transmittance here: the
-		// mist is a few blocks deep over the ground, so toward the horizon a ray crosses hundreds of blocks of it before the clouds,
-		// and at full strength it veiled their dark blue shadowed sides and red lit ones into one milky pastel (Gael 2026-11-03,
-		// candidate 4). The clear sky between them keeps the mist and its shafts
 		float skyMistK = p.air8.y;
 		if (skyPx && skyMistK > 0.0 && p.air9.x < 1.0 && VL_HDR && !shadeCloudDev(sl, SHADE_CLOUD_DEV_NO_VL))
-			skyMistK *= mix(max(p.air9.x, 0.0), 1.0, float(shadeCloudsScreen(dir, sl, sr.cloudScreen).a));
+			skyMistK *= mix(max(p.air9.x, 0.0), 1.0, float(skyT));
 		if (skyPx && skyMistK > 0.0) {
 			float kM = alM / (1.0 - 0.5 * alM);
 			shadowed += skyMistK * (E * (mistLit * (phM * glow * kM)) + f.ambientSky.rgb * (0.9 * shadeAirSky(sl) * kM * mistAll));
 		}
-		// the forest air: Photon's two-lobe Mie phase over four multiple-scattering octaves (see the header)
-		// (air4.y > 0: one forward lobe of that g plus an isotropic share air4.z instead, x 1.875 = the octaves' total)
 		float phF = 0.0, octave = 1.0, aniso = 1.0;
 		if (p.air4.y > 0.0) {
 			phF = 1.875 * ((1.0 - p.air4.z) * vlHG(mu, p.air4.y) + p.air4.z * 0.0795775);
@@ -615,18 +611,11 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 				aniso *= 0.7;
 			}
 		}
-		// (its sky-lit part: the final pass haze's sky radiance, ambientSky x 0.9, the share the canopy leaves, air3.w; FT2.9: as far as
-		// the sky lights the air around the camera, shadeAirSky: a cave is all shade, so the forest air filled it with sky-blue fog)
 		float3 forest = p.light.rgb * (3.14159265 * phF * glow) * forestLit + f.ambientSky.rgb * (0.9 * p.air3.w * shadeAirSky(sl)) * forestAll;
 		scatter = shadowed * p.air2.z + forest * (p.air2.w * p.shape.x);
-		// (2026-11, C5: air8.z = mcopt.shade.vl.airDim, 0 = off) the forest air dims what is behind it as Photon's air does (scene x T +
-		// light): shadowed forest air darkens the background a little, lit shafts stand out of it instead of only adding light (the
-		// "milky" look of strong forest air). Its optical depth, x airDim (~ its extinction relative to the density), goes out as a
-		// third target; vl_temporal_fold filters it and puts T = e^-od in lightT.a, which the final pass multiplies the scene by
 		od = forestOD * abs(p.air8.z);
-		// (C7 with C5) the golden-hour sky mist dims the sky behind it too (Photon's sky x T + scattering), at the share it glows with
 		if (skyPx && skyMistK > 0.0 && p.air8.z != 0.0) od += skyMistK * mistOD;
-	} else if (!underwater) {
+	} else if (!vlAirOnly && !underwater) {
 		float D = min(dist, p.shape.y);
 		float mist = p.medium.y;
 		// canopy mist: the humid air under trees and overhangs, around the camera's height (not the sea's)
@@ -725,7 +714,7 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 		float k = mix(p.tune.z, p.carve.x, sunward);
 		sumLocal = max(sumLocal - k * sumLocalAll, 0.0) / (1.0 - k);
 		scatter = p.light.rgb * (3.14159265 * vlPhase(mu, p) * (openPart * p.gate.x + sumLocal * p.gate.y) * p.shape.x);
-	} else {
+	} else if (!vlAirOnly) {
 		// Under water: the medium is the water; sunlight reaches each point through the water above it (extinction along the
 		// refracted-ish path to the surface) and arrives patterned by the surface's caustics, which stay constant along the
 		// light direction: curtains of light (shafts) that sway with the waves.
@@ -763,12 +752,8 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 		scatter = p.light.rgb * sum * (p.water.w * 3.14159265 * phase * p.shape.x) * float(L.y > 0.0);
 	}
 
-	// this pixel's own cloud transmittance where it shows sky (1 = clear; the sky mask for the next frame, below)
-	half skyT = d <= 0.0 ? (VL_HDR && !shadeCloudDev(sl, SHADE_CLOUD_DEV_NO_VL) ? half(shadeCloudsScreen(dir, sl, sr.cloudScreen).a) : 1.0h) : 0.0h;
-	// Crepuscular streaks: march toward the light over last frame's sky mask (VL resolution, one byte per texel: a sixteenth
-	// of the bytes of the full-res depth, cache-friendly); sky seen along the way lets light through. Skipped on a reset.
-	// (FT2.7, audit idx 3: not on geometry when its streaks' gain look2.x is 0, the HDR default: the taps' result was times 0)
-	if (p.crep.x > 0.0 && p.crep.z > 0.0 && !underwater && p.temporal.y < 0.5 && (d <= 0.0 || !VL_HDR || p.look2.x != 0.0)) {
+	// (2.0.1 opt) skyT already fetched above; skip crepuscular taps when mu <= 0.02 (fall = mu^crep.w ~ 0)
+	if (p.crep.x > 0.0 && p.crep.z > 0.0 && mu > 0.02 && !underwater && p.temporal.y < 0.5 && (d <= 0.0 || !VL_HDR || p.look2.x != 0.0)) {
 		float2 toV = (p.sunPx.xy - fpos) / scale, fv = in.position.xy;
 		// (FT2.7, audit idx 21; air7.w > 0) the mask is last frame's: march its pixels, from where this pixel's direction and the
 		// sun were last frame (a turn maps sky directions by a homography: the segment to the sun stays a segment), at last
@@ -807,8 +792,8 @@ fragment VlMarchOut vl_march(VlOut in [[stage_in]], constant ShadeFrame &f [[buf
 			// painted the previous viewport's rectangle into the sunlight on a camera turn.
 			float m = 1.0;
 			if (maskValid && all(q >= 0.0) && all(q < liveV)) {
-				m = smoothTaps ? float(prevSky.sample(maskLin, clamp(q, 0.5, liveV - 0.5) * maskTexel).r)
-				               : float(prevSky.read(uint2(q)).r);
+				// (2.0.1 anti-flicker) always use hardware bilinear filtering on the R8 sky mask to prevent discrete texel popping in crepuscular rays
+				m = float(prevSky.sample(maskLin, clamp(q, 0.5, liveV - 0.5) * maskTexel).r);
 				// Fade measured occlusion at the live mask boundary; don't extend an edge
 				// tree/cloud into newly exposed sky or read unused dynamic-resolution texels.
 				float2 edge = min(q, liveV - q);
@@ -988,66 +973,179 @@ struct VlFoldOut {
 	half od [[color(2)]]; // (2026-11, air8.z) the filtered optical depth of what dims the scene (R16F): next frame's od history
 };
 
-// (2026-11, C5: air8.z) the optical depth the scene behind is dimmed by: this frame's (the march's third target, a 3x3 weighted by
-// depth: the density is smooth, its noise is the steps' per-texel offsets) blended with last frame's at this point, as the light's
-// history is (weight temporal.x, clamped to the neighbourhood's range, widened while the view is still). histOk false: no od history
-// to use (mcvl.m kept none last frame: air8.z < 0), then this frame's alone. T flickering at the march's noise would show on the
-// crisp scene it multiplies, so it gets the same temporal filtering as the light it goes with.
-static inline float vlOdTemporal(VlOut in, constant ShadeFrame &f, constant VlParams &p, texture2d<half> raw, texture2d<half> history,
-                                 texture2d<half> odRaw, texture2d<half> odPrev, bool histOk) {
-	int2 px = int2(in.position.xy), hi = int2(p.size.xy) - 1;
-	float d = float(raw.read(uint2(px)).a);
-	float tol = 0.03 * d + 0.3;
-	float sum = 0.0, wsum = 0.0, mn = 1e9, mx = -1e9;
-	for (int j = -1; j <= 1; j++) {
-		for (int i = -1; i <= 1; i++) {
-			uint2 q = uint2(clamp(px + int2(i, j), int2(0), hi));
-			float s = float(odRaw.read(q).r);
-			float w = i == 0 && j == 0 ? 2.0 : exp(-abs(float(raw.read(q).a) - d) / tol);
-			sum += s * w;
-			wsum += w;
-			if (w > 0.35) {
-				mn = min(mn, s);
-				mx = max(mx, s);
+// (2.0.1 opt) Fused temporal filter for vl_temporal_fold in FP16 color ALU (float depth for exact bilateral matching)
+static inline half4 vlTemporalFoldCore(VlOut in, constant ShadeFrame &f, constant VlParams &p, texture2d<half> raw, texture2d<half> history,
+                                       texture2d<half> odRaw, texture2d<half> odPrev, bool doOd, bool odHistOk, thread float &odOut, thread float3 &dirOut) {
+	constexpr sampler lin(filter::linear, address::clamp_to_edge);
+	int2 px = int2(in.position.xy);
+	int2 hi = int2(p.size.xy) - 1;
+	half4 c = raw.read(uint2(px));
+	float d = float(c.a);
+	float invTol = 1.0 / (0.03 * d + 0.3);
+	half3 sumN = 0.0h;
+	half wsumN = 0.0h;
+	half3 mn = c.rgb, mx = c.rgb;
+	int nBox = 1;
+	half odSum = 0.0h, odWsum = 2.0h, odMn = 60000.0h, odMx = -60000.0h;
+	if (doOd) {
+		half oc = odRaw.read(uint2(px)).r;
+		odSum = oc * 2.0h;
+		odMn = oc;
+		odMx = oc;
+	}
+	const int2 taps[4] = {int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1)};
+	half spatial = half(p.air8.w);
+	for (int k = 0; k < 4; k++) {
+		uint2 q = uint2(clamp(px + taps[k], int2(0), hi));
+		half4 s = raw.read(q);
+		half w = exp2(half(-1.442695 * abs(float(s.a) - d) * invTol));
+		sumN += s.rgb * w;
+		wsumN += w;
+		if (w > 0.35h) {
+			mn = min(mn, s.rgb);
+			mx = max(mx, s.rgb);
+			nBox++;
+		}
+		if (doOd) {
+			half os = odRaw.read(q).r;
+			odSum += os * w;
+			odWsum += w;
+			if (w > 0.35h) {
+				odMn = min(odMn, os);
+				odMx = max(odMx, os);
 			}
 		}
 	}
-	float cur = sum / wsum;
-	if (!histOk || p.temporal.y > 0.5) return cur;
-	// this point in last frame's view (as vlTemporalRaw)
+	bool box3 = (int(p.sunPx.w) & 1) != 0;
+	if (box3 || doOd) {
+		const int2 diag[4] = {int2(1, 1), int2(-1, 1), int2(1, -1), int2(-1, -1)};
+		for (int k = 0; k < 4; k++) {
+			uint2 q = uint2(clamp(px + diag[k], int2(0), hi));
+			half4 s = raw.read(q);
+			float dd = abs(float(s.a) - d) * invTol;
+			if (box3 && dd < 1.05) {
+				mn = min(mn, s.rgb);
+				mx = max(mx, s.rgb);
+				nBox++;
+			}
+			if (doOd) {
+				half w = exp2(half(-1.442695 * dd));
+				half os = odRaw.read(q).r;
+				odSum += os * w;
+				odWsum += w;
+				if (w > 0.35h) {
+					odMn = min(odMn, os);
+					odMx = max(odMx, os);
+				}
+			}
+		}
+	}
+	half3 cur = (c.rgb * 2.0h + sumN * spatial) / (2.0h + wsumN * spatial);
+	// (2.0.1 anti-flicker) zero-extra-read full bilateral spatial fallback for disoccluded VL texels (leaf holes / screen edges)
+	half3 curDisocc = (c.rgb + sumN) / (1.0h + wsumN);
+	half odCur = doOd ? odSum / odWsum : 0.0h;
+	odOut = float(odCur);
 	float2 scale = p.size.zw / p.size.xy;
 	float2 fpos = floor(in.position.xy * scale) + 0.5;
-	float3 dir = vlDirection(fpos / p.size.zw * 2.0 - 1.0, f);
+	float2 ndc = fpos / p.size.zw * 2.0 - 1.0;
+	float3 dir = vlDirection(ndc, f);
+	dirOut = dir;
+	if (p.temporal.y > 0.5) return half4(cur, half(d));
 	bool sky = d >= 9000.0;
 	float4 pc = sky ? f.prevViewProj * float4(dir, 0.0) : f.prevViewProj * float4(shadeEye(f.invViewProj) + dir * d, 1.0);
-	if (pc.w <= 1e-4) return cur;
+	if (pc.w <= 1e-4) return half4(curDisocc, half(d));
 	float2 puv = (pc.xy / pc.w) * 0.5 + 0.5;
-	if (any(puv < 0.0) || any(puv > 1.0)) return cur;
-	constexpr sampler lin(filter::linear, address::clamp_to_edge);
+	if (any(puv < 0.0) || any(puv > 1.0)) return half4(curDisocc, half(d));
 	float2 hs = p.carve.z > 0.0 ? p.carve.zw : float2(1.0);
-	float2 hdim = float2(odPrev.get_width(), odPrev.get_height());
-	float2 huv = clamp(puv * hs, 0.5 / hdim, hs - 0.5 / hdim);
-	// the same surface there (the light history's distance, bilinear: at a depth edge this frame's value alone)
+	float2 hdim = float2(history.get_width(), history.get_height());
+	float2 hTexel = 0.5 / hdim;
+	float2 huv = clamp(puv * hs, hTexel, hs - hTexel);
 	float dPrev = sky ? 1e4 : length(dir * d + p.camDelta.xyz);
-	if (abs(float(history.sample(lin, huv).a) - dPrev) >= 0.08 * dPrev + 0.6) return cur;
-	float h = float(odPrev.sample(lin, huv).r);
-	float mid = 0.5 * (mn + mx), ext = 0.5 * (mx - mn) * 1.35 + 0.002 * (abs(mid) + 0.001);
+	float tol = 0.08 * dPrev + 0.6;
+	half4 h;
+	half odH = 0.0h;
+	bool valid;
+	bool odValid = false;
+	if ((int(p.sunPx.w) & 2) != 0) {
+		float2 hp = huv * hdim - 0.5;
+		float2 hfl = floor(hp), hfr = hp - hfl;
+		float4 hd4 = float4(history.gather(lin, (hfl + 1.0) / hdim, int2(0), component::w));
+		if (all(abs(hd4 - dPrev) < tol)) {
+			h = history.sample(lin, huv);
+			valid = true;
+			odValid = true;
+			if (doOd && odHistOk) odH = odPrev.sample(lin, huv).r;
+		} else {
+			int2 hb = int2(hfl), hhi = int2(hs * hdim + 0.5) - 1;
+			half4 acc = 0.0h;
+			half wacc = 0.0h;
+			half odAcc = 0.0h;
+			for (int j = 0; j <= 1; j++) {
+				for (int i = 0; i <= 1; i++) {
+					uint2 q = uint2(clamp(hb + int2(i, j), int2(0), hhi));
+					half4 s = history.read(q);
+					half bw = half((i == 0 ? 1.0 - hfr.x : hfr.x) * (j == 0 ? 1.0 - hfr.y : hfr.y) + 1e-4);
+					if (abs(float(s.a) - dPrev) < tol) {
+						acc += s * bw;
+						wacc += bw;
+						if (doOd && odHistOk) odAcc += odPrev.read(q).r * bw;
+					}
+				}
+			}
+			// (2.0.1c anti-flicker) when Halton jitter flips a 1-VL-texel silhouette so all 4 corners of the 2x2 held the
+			// opposite depth last frame (<1% of VL pixels), probe the 4 immediate outer edge-adjacent texels before dropping history
+			if (wacc <= 0.0h) {
+				int ox = hfr.x >= 0.5 ? 2 : -1;
+				int oy = hfr.y >= 0.5 ? 2 : -1;
+				int ny = hfr.y >= 0.5 ? 1 : 0;
+				int nx = hfr.x >= 0.5 ? 1 : 0;
+				const int2 ext[4] = {int2(ox, ny), int2(nx, oy), int2(ox, 1 - ny), int2(1 - nx, oy)};
+				for (int k = 0; k < 4; k++) {
+					uint2 q = uint2(clamp(hb + ext[k], int2(0), hhi));
+					half4 s = history.read(q);
+					if (abs(float(s.a) - dPrev) < tol) {
+						half bw = k < 2 ? 1.0h : 0.6h;
+						acc += s * bw;
+						wacc += bw;
+						if (doOd && odHistOk) odAcc += odPrev.read(q).r * bw;
+					}
+				}
+			}
+			valid = wacc > 0.0h;
+			h = acc / max(wacc, 1e-4h);
+			odValid = valid;
+			if (doOd && odHistOk && valid) odH = odAcc / max(wacc, 1e-4h);
+		}
+	} else {
+		h = history.sample(lin, huv);
+		valid = abs(float(h.a) - dPrev) < tol;
+		odValid = valid;
+		if (doOd && odHistOk && valid) odH = odPrev.sample(lin, huv).r;
+	}
+	if (!valid) return half4(curDisocc, half(d));
+	// (2.0.1 anti-flicker) keep modest temporal noise allowance during smooth walking/panning and on isolated canopy-hole
+	// VL texels (nBox <= 3, where few same-depth neighbors exist so mx-mn collapses) without ghosting on fast turns
+	half still = 0.0h;
 	if (p.sunPx.z > 0.0) {
 		float2 moved = puv * p.size.zw / scale - in.position.xy;
-		ext += (1.0 - smoothstep(0.75, 2.0, length(moved))) * p.sunPx.z * (abs(mid) + 0.5 * (mx - mn));
+		float moveLen = length(moved);
+		float stillK = 1.0 - smoothstep(0.75, 2.5, moveLen);
+		float motionFloor = mix(0.22, 0.06, smoothstep(2.0, 10.0, moveLen));
+		if (nBox <= 3) motionFloor = max(motionFloor, 0.30);
+		still = half(max(stillK, motionFloor) * p.sunPx.z);
 	}
-	return max(mix(cur, clamp(h, mid - ext, mid + ext), p.temporal.x), 0.0);
+	half3 mid = 0.5h * (mn + mx), ext = 0.5h * (mx - mn) * 1.45h + 0.002h * (abs(mid) + 0.001h);
+	if (still > 0.0h) ext += still * (abs(mid) + 0.5h * (mx - mn));
+	half3 hc = clamp(h.rgb, mid - ext, mid + ext);
+	half tw = half(p.temporal.x);
+	if (doOd && odHistOk && odValid) {
+		half omid = 0.5h * (odMn + odMx), oext = 0.5h * (odMx - odMn) * 1.45h + 0.002h * (abs(omid) + 0.001h);
+		if (still > 0.0h) oext += still * (abs(omid) + 0.5h * (odMx - odMn));
+		odOut = float(max(mix(odCur, clamp(odH, omid - oext, omid + oext), tw), 0.0h));
+	}
+	return half4(mix(cur, hc, tw), half(d));
 }
 
-// The shafts' local contrast (2026-10-09, Gael: the stronger god rays veiled the view "como un lente empanado"). Where a ray
-// crosses tens of blocks of lit mist (a low sun under the trees, the lit clearing behind a trunk) the in-scattered light is a
-// uniform glow: no per-pixel measure tells it from a beam (both are lit air along the ray), only its surroundings do. So
-// each VL texel is compared with the local mean of r = (in-scattered luminance) / (the canopy mist's optical depth along the
-// ray + half a block): how lit the air along the ray is, the same for a ray that ends on a leaf a block away and one that
-// crosses the forest (their mean has no halo at depth edges). With rbar that mean, the light becomes
-//   max(gain * l - (gain - keep) * rbar * R, 0):  keep x a uniform glow (r = rbar), more than before for a beam (r > rbar),
-// nothing for air darker than ~(gain - keep) / gain of its surroundings: visible shafts without the veil. rbar = last frame's
-// (vl_veil_down + 2 blur passes at a quarter of the VL resolution, after this pass; low frequency, so one frame late is fine).
 static inline float vlVeilR(float3 light, float3 dir, float dist, constant VlParams &p) {
 	return max(dot(light, float3(0.2126, 0.7152, 0.0722)), 0.0) / (vlMistDepth(dir, min(dist, p.shape.y), p) + 0.5);
 }
@@ -1056,17 +1154,18 @@ fragment VlFoldOut vl_temporal_fold(VlOut in [[stage_in]], constant ShadeFrame &
                                     constant VlState &st [[buffer(1)]], texture2d<half> raw [[texture(0)]], texture2d<half> history [[texture(1)]],
                                     texture2d<half> veil [[texture(2)]], texture2d<half> odRaw [[texture(3)]], texture2d<half> odPrev [[texture(4)]]) {
 	VlFoldOut o;
-	o.history = vlTemporal(in, f, p, raw, history);
+	bool air = p.water2.y < 0.5;
+	bool doOd = p.air8.z != 0.0 && air;
+	float od = 0.0;
+	float3 dir;
+	half4 hist = vlTemporalFoldCore(in, f, p, raw, history, odRaw, odPrev, doOd, p.air8.z > 0.0, od, dir);
+	o.history = shadeBad(hist) ? half4(0.0h, 0.0h, 0.0h, 10000.0h) : hist;
 	float3 light = float3(o.history.rgb);
 	float T = 1.0;
 	float canopy = p.gate.z >= 0.0 ? p.gate.z : max(st.canopy.x, p.tune.x);
 	float mistK = p.light.w * canopy * p.mist.w * p.mist.z;
-	bool air = p.water2.y < 0.5;
 	bool hp = p.hp.w > 0.5 && p.temporal.y < 0.5 && air && canopy > 0.01;
 	if ((mistK > 1e-5 && air) || hp) {
-		float2 fpos = floor(in.position.xy * (p.size.zw / p.size.xy)) + 0.5;
-		float2 ndc = fpos / p.size.zw * 2.0 - 1.0;
-		float3 dir = vlDirection(ndc, f);
 		float dist = float(o.history.a);
 		if (hp) {
 			float l = dot(light, float3(0.2126, 0.7152, 0.0722));
@@ -1088,12 +1187,7 @@ fragment VlFoldOut vl_temporal_fold(VlOut in [[stage_in]], constant ShadeFrame &
 			light += p.mistAmb.rgb * (1.0 - T);
 		}
 	}
-	// (2026-11, C5: air8.z != 0, the air mode only) the forest air dims what is behind it (vl_march's od, filtered over time)
-	float od = 0.0;
-	if (p.air8.z != 0.0 && air) {
-		od = vlOdTemporal(in, f, p, raw, history, odRaw, odPrev, p.air8.z > 0.0);
-		T *= exp2(-1.442695 * od);
-	}
+	if (doOd) T *= exp2(-1.442695 * od);
 	o.od = half(od);
 	o.lightT = half4(half3(min(light, 30000.0)), half(T));
 	return o;

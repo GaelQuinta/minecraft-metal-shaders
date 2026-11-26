@@ -321,6 +321,7 @@ static inline float3 shadeGoldenHour(float dirY, float sunY, float rain) {
 // peach on the sides, and opposite the sun a thin rose-lilac band (the Belt of Venus) over a cooler horizon.
 static inline float3 shadeSunsetGrade(float3 dir, float3 sun, float sunY, float rain) {
 	float w = (1.0 - smoothstep(0.02, 0.32, sunY)) * smoothstep(-0.16, -0.02, sunY) * (1.0 - rain);
+	if (w <= 0.0) return float3(1.0);
 	float h = 1.0 - saturate(abs(dir.y));
 	float dl = dot(dir.xz, dir.xz), sl = dot(sun.xz, sun.xz);
 	float toward = dl > 1e-8 && sl > 1e-8 ? dot(dir.xz, sun.xz) * rsqrt(dl * sl) * 0.5 + 0.5 : 0.5;
@@ -652,6 +653,32 @@ static inline float shadeShadowCascadeDisc(depth2d_array<float> map, sampler cmp
 		if (db > 0.02) r = clamp(db * contact, 0.1, r);
 	}
 	float s = 0.0;
+	// (2.0.1 opt) precomputed Vogel disc offsets & radii rotated once per pixel (1 sincos, 0 sqrt instead of 4 sincos + 4 sqrt)
+	float cs;
+	float sn = sincos(turn * 2.39996323, cs);
+	float3 rax = (ax * cs + az * sn) * r, raz = (az * cs - ax * sn) * r;
+	float zStep = contact > 0.0 ? zPerBlock * (r / contact) : 0.0;
+#if SHADE_WSOFT_TAPS == 4
+	const float3 disc[4] = {
+		float3( 0.35355339,  0.00000000, 0.35355339),
+		float3(-0.45154434,  0.41365165, 0.61237244),
+		float3( 0.06911610, -0.78754236, 0.79056942),
+		float3( 0.56917150,  0.74232325, 0.93541435),
+	};
+	for (int i = 0; i < 4; i++) {
+		float3 c = c0.xyz + rax * disc[i].x + raz * disc[i].y;
+		s += map.sample_compare(cmp, shadeShadowUV(c), layer, c.z + zStep * disc[i].z);
+	}
+#elif SHADE_WSOFT_TAPS == 2
+	const float3 disc[2] = {
+		float3( 0.50000000,  0.00000000, 0.50000000),
+		float3(-0.63858017,  0.58499177, 0.86602540),
+	};
+	for (int i = 0; i < 2; i++) {
+		float3 c = c0.xyz + rax * disc[i].x + raz * disc[i].y;
+		s += map.sample_compare(cmp, shadeShadowUV(c), layer, c.z + zStep * disc[i].z);
+	}
+#else
 	// (1.2.9 water phase 2, SHADE_WSOFT_TAPS: fewer taps, the per-pixel, per-frame turn spreads them for the TAA; 4 = as before)
 	for (int i = 0; i < SHADE_WSOFT_TAPS; i++) {
 		float a = (float(i) + turn) * 2.39996323, d = r * sqrt((float(i) + 0.5) * (1.0 / SHADE_WSOFT_TAPS));
@@ -659,6 +686,7 @@ static inline float shadeShadowCascadeDisc(depth2d_array<float> map, sampler cmp
 		float ref = contact > 0.0 ? c.z + zPerBlock * (d / contact) : c.z;
 		s += map.sample_compare(cmp, shadeShadowUV(c), layer, ref);
 	}
+#endif
 	return s * (1.0 / SHADE_WSOFT_TAPS);
 }
 
@@ -678,7 +706,8 @@ static half shadeShadowSoft(depth2d_array<float> map, sampler cmp, constant Shad
 	// the near cascade's detail is what the softening removes anyway). Points it doesn't cover keep shadeShadow.
 	float m1;
 	float far = shadeShadowCascadeDisc(map, cmp, 1u, f.shadowViewProj[1], p, dir * f.cascadeSplits.w, r, turn, m1, contact, L);
-	if (m1 >= 1.0) return shadeShadow(map, cmp, f, p, n, false); // (as a call, not inlined: +0.2 ms over a lake, price-14 2026-11-10)
+	// (2.0.1 opt) outside the far cascade (which encloses the near cascade): always lit; removes dead shadeShadow fallback from water
+	if (m1 >= 1.0) return half(1.0);
 	return half(mix(far, 1.0, smoothstep(0.85, 1.0, m1)));
 }
 

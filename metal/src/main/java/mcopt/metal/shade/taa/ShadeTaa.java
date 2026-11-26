@@ -96,6 +96,7 @@ public final class ShadeTaa {
 	private float jitterX, jitterY;
 	private boolean jittered, swapped, reset = true;
 	private final Matrix4f viewProj = new Matrix4f(), invViewProj = new Matrix4f(), prevViewProj = new Matrix4f(), reprojection = new Matrix4f();
+	private final Matrix4f scratchMat = new Matrix4f(), scratchProj = new Matrix4f();
 	/** (FT2.8, audit idx 64) reprojection x invViewProj, multiplied in double: TaaParams.reproj. */
 	private final org.joml.Matrix4d combinedD = new org.joml.Matrix4d(), invD = new org.joml.Matrix4d();
 	private final Matrix4f combined = new Matrix4f();
@@ -214,7 +215,13 @@ public final class ShadeTaa {
 					System.clearProperty("mcopt.shade.drs.restart");
 					DRS.restart(TaaConfig.SCALE);
 				}
-				this.scale = DRS.update();
+				Minecraft mc = Minecraft.getInstance();
+				var screen = mc.gui.screen();
+				boolean pauseDrs = !mc.isWindowActive()
+					|| (mcopt.metal.shade.Live.b("mcopt.shade.drsPauseMenu", true)
+						&& (mc.isPaused() || (screen != null && !(screen instanceof net.minecraft.client.gui.screens.ChatScreen))));
+				DRS.setPaused(pauseDrs);
+				this.scale = pauseDrs ? DRS.scale() : DRS.update();
 			}
 		} else this.scale = FIXED_FOR_DH ? Math.min(TaaConfig.SCALE, this.allocScale) : TaaConfig.SCALE;
 		this.updateSize();
@@ -222,7 +229,7 @@ public final class ShadeTaa {
 		this.frame = this.frame % phases + 1;
 		this.jitterX = halton(this.frame, 2) - 0.5f;
 		this.jitterY = halton(this.frame, 3) - 0.5f;
-		new Matrix4f().translation(2 * this.jitterX / this.width, 2 * this.jitterY / this.height, 0).mul(projection, projection);
+		this.scratchMat.translation(2 * this.jitterX / this.width, 2 * this.jitterY / this.height, 0).mul(projection, projection);
 		this.jittered = true;
 	}
 
@@ -365,8 +372,8 @@ public final class ShadeTaa {
 	/** GameRenderer.renderLevel: the projection every world draw uses this frame (jittered, view bobbing applied), its view rotation and camera position. */
 	public void camera(Matrix4fc projection, Matrix4fc viewRotation, Vec3 position) {
 		if (!this.swapped) return;
-		Matrix4f p = new Matrix4f(projection);
-		if (this.jittered) new Matrix4f().translation(-2 * this.jitterX / this.width, -2 * this.jitterY / this.height, 0).mul(p, p);
+		Matrix4f p = this.scratchProj.set(projection);
+		if (this.jittered) this.scratchMat.translation(-2 * this.jitterX / this.width, -2 * this.jitterY / this.height, 0).mul(p, p);
 		p.mul(viewRotation, this.viewProj);
 		this.position = position;
 		if (ShadeMotion.ON) { // M3: moving entities for the resolve's per-object reprojection
@@ -428,7 +435,8 @@ public final class ShadeTaa {
 			put4(p + 144, this.width, this.height, TaaConfig.flickerHold(), TaaConfig.flickerHoldSensitivity());
 			put4(p + 160, this.outWidth, this.outHeight, 1f / this.outWidth, 1f / this.outHeight);
 			put4(p + 176, this.jittered ? this.jitterX : 0, this.jittered ? this.jitterY : 0, (float) this.width / this.outWidth, (float) this.height / this.outHeight);
-			put4(p + 192, TaaConfig.alphaMin(), TaaConfig.clipGamma(still), 32, cut ? 1 : 0);
+			// (2.0.1c) blend.w: 1 = cut, -1 = still camera + 0 movers (1-read identity), -2 = still camera + movers (identity outside mover boxes)
+			put4(p + 192, TaaConfig.alphaMin(), TaaConfig.clipGamma(still), 32, cut ? 1f : (still ? (this.motion.count == 0 ? -1f : -2f) : 0f));
 			put4(p + 208, this.historyRescale, TaaConfig.boostFrom(), reactive != 0 ? 0.85f : 0f, TaaConfig.DEBUG); // no mask: the shader skips its read
 			put4(p + 224, sharpen, TaaConfig.motionAlpha(), TaaConfig.antiFlicker(), TaaConfig.floorCentre());
 			this.combinedD.set(this.reprojection).mul(this.invD.set(this.invViewProj));

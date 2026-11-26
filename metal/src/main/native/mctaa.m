@@ -72,7 +72,7 @@ Taa *mc_taa_new(Ctx *ctx, const char *source, int flags, char *err, int errCap) 
 			return NULL;
 		}
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
-		pd.colorAttachments[1].pixelFormat = MTLPixelFormatR16Float;
+		pd.colorAttachments[1].pixelFormat = MTLPixelFormatRGBA16Float;
 		pd.label = @"mcopt shade: TAAU resolve";
 		id<MTLRenderPipelineState> resolve = [ctx->device newRenderPipelineStateWithDescriptor:pd error:&e];
 		if (!resolve) {
@@ -136,7 +136,7 @@ static id<MTLRenderPipelineState> debugPipeline(Ctx *ctx, Taa *t, MTLPixelFormat
 		pd.vertexFunction = t->vs;
 		pd.fragmentFunction = t->debugFs;
 		pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
-		pd.colorAttachments[1].pixelFormat = MTLPixelFormatR16Float;
+		pd.colorAttachments[1].pixelFormat = MTLPixelFormatRGBA16Float;
 		pd.colorAttachments[2].pixelFormat = format;
 		pd.label = @"mcopt shade: TAAU debug";
 		NSError *e = nil;
@@ -159,7 +159,7 @@ int mc_taa_resize(Taa *t, Ctx *ctx, int width, int height) {
 			[t->hist[i] release];
 			[t->depth[i] release];
 			t->hist[i] = taaTarget(ctx->device, MTLPixelFormatRGBA16Float, width, height, t->lossy, i ? @"mcopt shade: TAA history 1" : @"mcopt shade: TAA history 0");
-			t->depth[i] = taaTarget(ctx->device, MTLPixelFormatR16Float, width, height, false, i ? @"mcopt shade: TAA depth 1" : @"mcopt shade: TAA depth 0");
+			t->depth[i] = taaTarget(ctx->device, MTLPixelFormatRGBA16Float, width, height, false, i ? @"mcopt shade: TAA depth 1" : @"mcopt shade: TAA depth 0");
 		}
 	}
 	t->width = width;

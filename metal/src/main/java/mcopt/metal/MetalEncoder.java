@@ -35,6 +35,12 @@ final class MetalEncoder implements CommandEncoderBackend {
 	 */
 	private static final int MAX_IN_FLIGHT = Integer.getInteger("mcopt.metal.inFlight", 2);
 	/**
+	 * (2.0.1f) -Dmcopt.metal.vsyncInFlight=N (set to 1 by Shade.init unless specified): cap in-flight submits under direct
+	 * FIFO VSync (without changing VSync-off MAX_IN_FLIGHT=2) so 3 frames don't pile up on the GPU and trigger 2 ms + 14 ms
+	 * drawable bursts. Negative disables the override.
+	 */
+	private static final int VSYNC_IN_FLIGHT = Integer.getInteger("mcopt.metal.vsyncInFlight", -1);
+	/**
 	 * -Dmcopt.metal.trace=N prints every encoder operation of submit N, the tool for finding pass boundaries worth removing,
 	 * and the average per-encoder GPU time of submits N to N + PROFILE_FRAMES - 1. Traced runs are a few % slower; don't bench them.
 	 */
@@ -268,7 +274,8 @@ final class MetalEncoder implements CommandEncoderBackend {
 			Native.passTest(this.enc, PASS_TEST_N, PASS_TEST_MODE);
 			this.passTestPending = false;
 		}
-		while (this.inFlight.size() > MAX_IN_FLIGHT) this.retire(this.inFlight.poll(), WaitStats.INFLIGHT);
+		int maxInFlight = FrameWait.isVsyncDirect() && VSYNC_IN_FLIGHT >= 0 ? Math.min(MAX_IN_FLIGHT, VSYNC_IN_FLIGHT) : MAX_IN_FLIGHT;
+		while (this.inFlight.size() > maxInFlight) this.retire(this.inFlight.poll(), WaitStats.INFLIGHT);
 		if (STATS) this.stats();
 		if (WaitStats.ON) WaitStats.frame(this.submitIndex - 1);
 	}
@@ -281,7 +288,7 @@ final class MetalEncoder implements CommandEncoderBackend {
 		if (now - this.statStart < 1_000_000_000L) return;
 		double frameMs = (now - this.statStart) / 1e6 / this.statFrames;
 		System.out.printf("mcopt-metal stats: %d fps, %.3f ms/frame, %.3f ms of it waiting on the GPU, %d presents%s%n", this.statFrames,
-			frameMs, this.waitNanos / 1e6 / this.statFrames, this.statPresents, (PRESENT_QUEUE ? " (queued" + (PRESENT_ACQUIRE ? ", acquired on the present side" : "") + "; skipped so far " + Native.presentSkipped() + ", dropped " + Native.presentDropped() + ")" : "")
+			frameMs, this.waitNanos / 1e6 / this.statFrames, this.statPresents, (FrameWait.isVsyncDirect() ? " (direct vsync)" : PRESENT_QUEUE ? " (queued" + (PRESENT_ACQUIRE ? ", acquired on the present side" : "") + "; skipped so far " + Native.presentSkipped() + ", dropped " + Native.presentDropped() + ")" : "")
 			+ (MetalSurface.PACE_ADAPT ? String.format(" (pace margin +%.2f ms learned)", Native.paceExtraMs()) : ""));
 		if (MetalTerrain.OCC) {
 			long[] t = this.terrain.lastCompletedCounts();
@@ -368,9 +375,11 @@ final class MetalEncoder implements CommandEncoderBackend {
 		RenderPassDescriptor.@Nullable Attachment<OptionalDouble> depth = redirect != null && redirect.depth() != 0 ? null : descriptor.depthAttachment();
 		// Anything sampled inside this pass must have its deferred clear in memory before the pass starts (with lazyClears: when it's bound)
 		boolean lazy = LAZY_CLEARS && redirect == null && keptDelegate == null;
-		for (MetalTexture t : List.copyOf(this.pendingClears)) {
-			if (t.isClosed()) this.pendingClears.remove(t);
-			else if (!lazy && !this.isAttachment(t, colors, depth)) this.flushClear(t);
+		if (!this.pendingClears.isEmpty()) {
+			for (MetalTexture t : List.copyOf(this.pendingClears)) {
+				if (t.isClosed()) this.pendingClears.remove(t);
+				else if (!lazy && !this.isAttachment(t, colors, depth)) this.flushClear(t);
+			}
 		}
 		if (FrameLog.ON && FrameLog.inTick()) {
 			var c0 = descriptor.colorAttachments().isEmpty() ? null : descriptor.colorAttachments().get(0);
@@ -824,6 +833,13 @@ final class MetalEncoder implements CommandEncoderBackend {
 	public void writeTimestamp(GpuQueryPool pool, int index) {
 	}
 
+	private void discardMainDepth() {
+		if (!mcopt.metal.own.OwnProbe.bool("metal.frameDepthDiscard", FRAME_DEPTH_DISCARD)) return;
+		net.minecraft.client.renderer.GameRenderer game = net.minecraft.client.Minecraft.getInstance().gameRenderer;
+		GpuTexture depth = game != null ? game.mainRenderTarget().getDepthTexture() : null;
+		if (depth instanceof MetalTexture t) Native.discard(this.enc, t.handle);  // (no-op unless it is the open encoder's depth)
+	}
+
 	/** -Dmcopt.metal.presentQueue=acquire: this frame's image goes to a staging slot; the present side acquires the drawable and presents it. */
 	void presentAcquire(long layer, GpuTextureView view) {
 		MetalEvents.Operation event = MetalEvents.begin("present", this.submitIndex, 0);
@@ -831,6 +847,8 @@ final class MetalEncoder implements CommandEncoderBackend {
 			this.trace("present", view);
 			this.presentedThisSubmit = true;
 			this.flushClear(view.texture());
+			// (2.0.1 opt) discard main depth BEFORE present ends the open render encoder (previously ran in submit() after endRender!)
+			this.discardMainDepth();
 			if (Native.presentQueuedAcquire(this.enc, layer, ((MetalTexture.View) view).handle, GPU_TIMES && this.submitIndex < Integer.MAX_VALUE ? this.submitIndex : -1) == 0) return;
 			if (GPU_TIMES) GpuTimes.presentQueued(this.submitIndex);
 			this.statPresents++;
@@ -839,13 +857,14 @@ final class MetalEncoder implements CommandEncoderBackend {
 		}
 	}
 
-	void presentTexture(long drawable, GpuTextureView view) {
+	void presentTexture(long drawable, GpuTextureView view, boolean direct) {
 		MetalEvents.Operation event = MetalEvents.begin("present", this.submitIndex, 0);
 		try {
 			this.trace("present", view);
 			this.presentedThisSubmit = true;
 			this.flushClear(view.texture());
-			if (PRESENT_QUEUE) {
+			this.discardMainDepth();
+			if (!direct && PRESENT_QUEUE) {
 				// the frame's command buffer only fills a staging slot; the present goes out on a second queue after the commit
 				if (Native.presentQueued(this.enc, drawable, ((MetalTexture.View) view).handle) == 0) return; // slot still being read: skip
 				if (GPU_TIMES) GpuTimes.present(this.submitIndex, drawable);

@@ -25,6 +25,8 @@ import java.util.List;
 import java.util.Optional;
 import mcopt.metal.MetalBridge;
 import mcopt.metal.MetalHooks;
+import org.joml.Matrix4f;
+import org.joml.Vector4f;
 import org.joml.Vector4fc;
 import org.jspecify.annotations.Nullable;
 import org.lwjgl.system.MemoryUtil;
@@ -86,6 +88,10 @@ public final class ShadePost {
 	}
 
 	private static final List<Ordered> BEFORE_TONEMAP = new ArrayList<>();
+	private static volatile Ordered[] beforeSnapshot = new Ordered[0];
+	private static final long[] TMP1 = new long[1], TMP2 = new long[2], TMP7 = new long[7];
+	private static final Matrix4f MOTION_PREV_VP = new Matrix4f();
+	private static final Vector4f MOTION_W = new Vector4f(), MOTION_OLD = new Vector4f();
 
 	/**
 	 * A filter over the resolved frame, before bloom and the tone map: returns a texture holding the same image with its own
@@ -107,6 +113,7 @@ public final class ShadePost {
 	public static synchronized void addBeforeTonemap(int order, Hook hook) {
 		BEFORE_TONEMAP.add(new Ordered(order, hook));
 		BEFORE_TONEMAP.sort((a, b) -> Integer.compare(a.order, b.order));
+		beforeSnapshot = BEFORE_TONEMAP.toArray(new Ordered[0]);
 	}
 
 	// ---- state -----------------------------------------------------------------------------------------------------------
@@ -235,9 +242,10 @@ public final class ShadePost {
 		try {
 			long t0 = ShadeCompile.now();
 			library = ShadeRender.library(ShadeMsl.post());
-			psoDown0 = ShadeRender.pipeline(library, "shade_fs_vs", "shade_bloom_down0", ShadeRender.RGBA16F, 0);
-			psoDown = ShadeRender.pipeline(library, "shade_fs_vs", "shade_bloom_down", ShadeRender.RGBA16F, 0);
-			psoUp = ShadeRender.pipeline(library, "shade_fs_vs", "shade_bloom_up", ShadeRender.RGBA16F, 0);
+			// (2.0.1 opt) Bloom intermediates hold non-negative HDR RGB only: RG11B10F halves bandwidth vs RGBA16F with zero visual loss
+			psoDown0 = ShadeRender.pipeline(library, "shade_fs_vs", "shade_bloom_down0", ShadeRender.RG11B10F, 0);
+			psoDown = ShadeRender.pipeline(library, "shade_fs_vs", "shade_bloom_down", ShadeRender.RG11B10F, 0);
+			psoUp = ShadeRender.pipeline(library, "shade_fs_vs", "shade_bloom_up", ShadeRender.RG11B10F, 0);
 			psoFinal = ShadeRender.pipeline(library, "shade_fs_vs", "shade_final", ShadeRender.RGBA8, 0);
 			psoUpscale = ShadeRender.pipeline(library, "shade_fs_vs", "shade_upscale", ShadeRender.RGBA8, 0);
 			psoFinalLean = ShadeRender.pipeline(library, "shade_fs_vs", "shade_final_lean", ShadeRender.RGBA8, 0);
@@ -325,7 +333,8 @@ public final class ShadePost {
 		}
 		ShadeBindings.setPrevSceneValid(prevValid);
 		ShadeRender.resource(1, prevScene);
-		ShadeRender.resource(2, hdr[frame & 1]);
+		// (2.0.1 opt) Do not publish the active HDR render target into ShadeResources during the world phase (avoids read-residency on write target)
+		ShadeRender.resource(2, 0);
 		// ShadeResources.prevDepth (5): the TAA history's linear view depth, for passes that march last frame's image
 		long prevDepth = taa != null && prevValid ? taa.historyDepth() : 0;
 		ShadeRender.resource(5, prevDepth);
@@ -360,14 +369,15 @@ public final class ShadePost {
 		for (int i = 0; i < n; i++) {
 			lw = Math.max(1, (lw + 1) / 2);
 			lh = Math.max(1, (lh + 1) / 2);
-			bloomLevels[i] = ShadeRender.texture(ShadeRender.RGBA16F, lw, lh, true, "mcopt shade: bloom L" + i);
-			bloomAccum[i] = i == 0 ? 0 : ShadeRender.texture(ShadeRender.RGBA16F, lw, lh, true, "mcopt shade: bloom U" + i);
+			// (2.0.1 opt) RG11B10F (4 B/px lossless RGB HDR) + skip coarsest bloomAccum[n - 1] when n >= 3 (folded into bloomAccum[n - 2])
+			bloomLevels[i] = ShadeRender.texture(ShadeRender.RG11B10F, lw, lh, false, "mcopt shade: bloom L" + i);
+			bloomAccum[i] = (i == 0 || (n >= 3 && i == n - 1)) ? 0 : ShadeRender.texture(ShadeRender.RG11B10F, lw, lh, false, "mcopt shade: bloom U" + i);
 		}
 		ShadeRender.resource(3, n > 1 ? bloomAccum[1] : 0);
 	}
 
 	/** Applied after TAA (history remains sharp), before bloom and tonemapping; before hand/HUD draws. */
-	private static long motion(long scene, long depth) {
+	private static long motion(long scene, long depth, ShadeFrame f, ShadeLook look) {
 		float strength = Live.f("mcopt.shade.motionBlur", 0f, 0f, 2f);
 		// 1.2.7 (audit A2): a still camera blurs nothing (the shader returns its input there) but the pass still cost a full-screen
 		// read and write, ~0.6-0.9 ms at 1440p: skipped, keeping its target for the next move
@@ -377,25 +387,57 @@ public final class ShadePost {
 			if (motionTarget != 0) { retired.add(new long[] {motionTarget, frame + 8}); motionTarget = 0; }
 			return scene;
 		}
+		// (2.0.1 opt) CPU 8-corner frustum velocity check: skips full-screen motion blur pass when camera is effectively still/cut even without TAA
+		float dt = look.dt();
+		if (dt <= 0f || dt > 0.1f || look.snapped()) return scene;
+		int w = ShadeRender.width(scene), h = ShadeRender.height(scene);
+		MOTION_PREV_VP.translation(-f.prevJitterX, -f.prevJitterY, 0f).mul(f.prevViewProj);
+		float velScale = strength / (120f * Math.max(dt, 0.001f));
+		float nearZ = Math.min(0.5f, Math.max(f.proj.m32() * 2f - f.proj.m22(), 0.05f));
+		boolean hasMotion = false;
+		int cutCount = 0;
+		for (int zi = 0; zi < 2 && !hasMotion; zi++) {
+			float nz = zi == 0 ? 0f : nearZ;
+			for (int yi = -1; yi <= 1 && !hasMotion; yi += 2) {
+				for (int xi = -1; xi <= 1 && !hasMotion; xi += 2) {
+					MOTION_W.set(xi, yi, nz, 1f).mul(f.invViewProj);
+					MOTION_OLD.set(MOTION_W).mul(MOTION_PREV_VP);
+					if (MOTION_OLD.w <= 1e-6f) {
+						hasMotion = true;
+						break;
+					}
+					float dx = (xi * 0.5f + 0.5f - f.jitterX * 0.5f) - (MOTION_OLD.x / MOTION_OLD.w * 0.5f + 0.5f);
+					float dy = (yi * 0.5f + 0.5f - f.jitterY * 0.5f) - (MOTION_OLD.y / MOTION_OLD.w * 0.5f + 0.5f);
+					float d2 = dx * dx + dy * dy;
+					if (d2 > 0.0625f) {
+						cutCount++;
+					} else if ((float) Math.sqrt(d2) * velScale * w >= 0.5f) {
+						hasMotion = true;
+					}
+				}
+			}
+		}
+		if (!hasMotion && (cutCount == 0 || cutCount == 8)) return scene;
 		try {
 			if (psoMotion == 0) {
 				long lib = ShadeRender.library(ShadeMsl.prelude() + ShadeMsl.resource("motion_blur.metal"));
-				try { psoMotion = ShadeRender.pipeline(lib, "shade_motion_vs", "shade_motion_fs", ShadeConfig.HDR_FORMAT, 0); }
+				try { psoMotion = ShadeRender.pipeline(lib, "shade_motion_vs", "shade_motion_fs", ShadeRender.RG11B10F, 0); }
 				finally { MetalBridge.release(lib); }
 			}
-			int w = ShadeRender.width(scene), h = ShadeRender.height(scene);
-			if (motionTarget == 0 || w != motionW || h != motionH || motionFormat != ShadeConfig.HDR_FORMAT) {
+			if (motionTarget == 0 || w != motionW || h != motionH || motionFormat != ShadeRender.RG11B10F) {
 				if (motionTarget != 0) retired.add(new long[] {motionTarget, frame + 8});
 				motionTarget = 0; // allocation failure must not retire the old texture twice
-				motionTarget = ShadeRender.texture(ShadeConfig.HDR_FORMAT, w, h, false, "mcopt motion blur");
-				motionW = w; motionH = h; motionFormat = ShadeConfig.HDR_FORMAT;
+				motionTarget = ShadeRender.texture(ShadeRender.RG11B10F, w, h, false, "mcopt motion blur");
+				motionW = w; motionH = h; motionFormat = ShadeRender.RG11B10F;
 			}
 			boolean resolved = scene != hdr[frame & 1];
 			MOTION_PARAMS.clear();
 			MOTION_PARAMS.putFloat(strength).putFloat(resolved ? 1f : (float)liveWidth/w)
 				.putFloat(resolved ? 1f : (float)liveHeight/h).putFloat(resolved ? 1f : 0f)
 				.putFloat(liveWidth).putFloat(liveHeight).putFloat(0f).putFloat(0f).flip();
-			pass(psoMotion, motionTarget, ShadeRender.DONT_CARE, new long[] {scene, depth}, MOTION_PARAMS, "mcopt shade: motion blur");
+			TMP2[0] = scene;
+			TMP2[1] = depth;
+			pass(psoMotion, motionTarget, ShadeRender.DONT_CARE, TMP2, MOTION_PARAMS, "mcopt shade: motion blur");
 			return motionTarget;
 		} catch (RuntimeException e) {
 			motionFailed = true;
@@ -577,6 +619,7 @@ public final class ShadePost {
 		if (mainColor == null) return;
 		prevWritten = true;
 		long scene = hdr[frame & 1], prev = hdr[0] != hdr[1] ? hdr[(frame + 1) & 1] : 0;
+		ShadeRender.resource(2, scene);
 		GpuTexture depthTexture = worldDepth != null ? worldDepth : main.getDepthTexture();
 		long depth = 0;
 		if (depthTexture != null) {
@@ -585,9 +628,10 @@ public final class ShadePost {
 		}
 		ShadeFrame f = ShadeFrameUpdater.FRAME;
 		ShadeLook look = ShadeFrameUpdater.LOOK;
-		if (!BEFORE_TONEMAP.isEmpty()) {
+		Ordered[] hooks = beforeSnapshot;
+		if (hooks.length > 0) {
 			Context c = new Context(enc, encoder, scene, prev, depth, liveWidth, liveHeight, ShadeConfig.HDR_FORMAT, f, look, width, height);
-			for (Ordered o : List.copyOf(BEFORE_TONEMAP)) {
+			for (Ordered o : hooks) {
 				try {
 					o.hook.run(c);
 				} catch (RuntimeException e) {
@@ -624,7 +668,7 @@ public final class ShadePost {
 			}
 		}
 		if (out == null) return;
-		long blurred = motion(scene, depth);
+		long blurred = motion(scene, depth, f, look);
 		if (blurred != scene) {
 			scene = bloomSource = blurred;
 			if (taa != null) srcU = srcV = 1f;
@@ -659,9 +703,11 @@ public final class ShadePost {
 		if (n > 0) {
 			downParams.clear();
 			downParams.putFloat(srcU).putFloat(srcV).putFloat(mcopt.metal.shade.dims.ShadeXdr.hotThreshold()).putFloat(0f).flip(); // z: M3.3 XDR skip
-			pass(psoDown0, bloomLevels[0], ShadeRender.DONT_CARE, new long[] {bloomSource}, downParams, "mcopt shade: bloom down 0");
+			TMP1[0] = bloomSource;
+			passPlain(psoDown0, bloomLevels[0], ShadeRender.DONT_CARE, TMP1, downParams, true, "mcopt shade: bloom down 0");
 			for (int i = 1; i < n; i++) {
-				pass(psoDown, bloomLevels[i], ShadeRender.DONT_CARE, new long[] {bloomLevels[i - 1]}, null, "mcopt shade: bloom down");
+				TMP1[0] = bloomLevels[i - 1];
+				passPlain(psoDown, bloomLevels[i], ShadeRender.DONT_CARE, TMP1, null, false, "mcopt shade: bloom down");
 			}
 			// (FT2.8, audit idx 45) the exposure histogram of bloom level 2 is dispatched after the final pass, next to the exposure
 			// kernel: here, mid-chain, its ShadeGpu writes made the bloom up passes and the final pass (which bind ShadeGpu) wait for it
@@ -669,14 +715,30 @@ public final class ShadePost {
 			float spectrum = ShadeSettings.look() == 1 ? 0.9f : ShadeSettings.look() == 2 ? 0.3f : 0.6f;
 			float sum = 0f;
 			// U_i = w_i L_i + tent(U_i+1) down to U_1; level 0 (half size) is added in the final pass (w0 L0 + bilinear U1):
-			// one half-size pass less, the biggest one
-			for (int i = n - 1; i >= 1; i--) {
-				float w = (float) Math.pow(i + 1 + bloomShift, spectrum);
-				sum += w;
-				params.clear();
-				params.putFloat(w).putFloat(i == n - 1 ? 0f : 1f).putFloat(0f).putFloat(0f).flip();
-				long coarser = i == n - 1 ? bloomLevels[i] : bloomAccum[i + 1];
-				pass(psoUp, bloomAccum[i], ShadeRender.DONT_CARE, new long[] {bloomLevels[i], coarser}, params, "mcopt shade: bloom up");
+			// one half-size pass less, the biggest one. (2.0.1 opt) For n >= 3 also fold coarsest level (i = n - 1) straight
+			// into i = n - 2 as coarser = bloomLevels[n - 1] with weight wLast (drops 1 bloom_up pass + 1 texture).
+			if (n >= 3) {
+				float wLast = (float) Math.pow(n + bloomShift, spectrum);
+				sum += wLast;
+				for (int i = n - 2; i >= 1; i--) {
+					float w = (float) Math.pow(i + 1 + bloomShift, spectrum);
+					sum += w;
+					params.clear();
+					params.putFloat(w).putFloat(i == n - 2 ? wLast : 1f).putFloat(0f).putFloat(0f).flip();
+					TMP2[0] = bloomLevels[i];
+					TMP2[1] = i == n - 2 ? bloomLevels[n - 1] : bloomAccum[i + 1];
+					passPlain(psoUp, bloomAccum[i], ShadeRender.DONT_CARE, TMP2, params, false, "mcopt shade: bloom up");
+				}
+			} else {
+				for (int i = n - 1; i >= 1; i--) {
+					float w = (float) Math.pow(i + 1 + bloomShift, spectrum);
+					sum += w;
+					params.clear();
+					params.putFloat(w).putFloat(i == n - 1 ? 0f : 1f).putFloat(0f).putFloat(0f).flip();
+					TMP2[0] = bloomLevels[i];
+					TMP2[1] = i == n - 1 ? bloomLevels[i] : bloomAccum[i + 1];
+					passPlain(psoUp, bloomAccum[i], ShadeRender.DONT_CARE, TMP2, params, false, "mcopt shade: bloom up");
+				}
 			}
 			w0 = (float) Math.pow(1 + bloomShift, spectrum);
 			sum += w0;
@@ -699,34 +761,38 @@ public final class ShadePost {
 		// r: xy the live render size of depth (the final pass maps its output uv into that sub-rect), z sharpen (TAAU)
 		// w: a bit field (as an exact small float): 1 = Distant Horizons drew into this frame (its LODs are where the depth is
 		// empty: the Nether's fog leaves them); 2 (TAAU) = depth and the volumetric light read at the jittered raster's
-		// position of the pixel's scene point (M2.2, mcopt.shade.vl.unjitter)
+		// position of the pixel's scene point (M2.2, mcopt.shade.vl.unjitter); 4 (2.0.1c) = temporally resolved 2-layer TAA depth
+		// bound at texture(6) for jitter-free haze, VL, and airClamp silhouettes
+		boolean dimsPass = f.dimension != ShadeFrame.DIM_OVERWORLD || f.fogType == ShadeFrame.FOG_LAVA || f.fogType == ShadeFrame.FOG_POWDER_SNOW;
+		float edgeFix = vl && vlAirFloor > 0f ? mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.vl.edgeFix", 0f) : 0f;
+		boolean skyHazeActive = Live.b("mcopt.shade.skyHaze", true) && Math.round(Live.f("mcopt.shade.skyHazeMode", 2f, 0f, 2f)) == 1;
+		long taaDepthTex = taa != null && depth != 0 ? taa.historyDepth() : 0;
+		boolean useTaaDepth = taaDepthTex != 0 && !dimsPass && !skyHazeActive && (int) edgeFix == 0
+			&& mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.vl.taaDepth", 1f) > 0.5f;
 		params.putFloat(liveWidth).putFloat(liveHeight).putFloat(sharpen)
-			.putFloat((bridgeUsed ? 1f : 0f) + (taa != null && depth != 0 && VL_UNJITTER ? 2f : 0f));
+			.putFloat((bridgeUsed ? 1f : 0f) + (taa != null && depth != 0 && VL_UNJITTER ? 2f : 0f) + (useTaaDepth ? 4f : 0f));
 		// x: highlights = (1, peak, knee, range); full scene = (2, peak, curve b, curve beta)
 		boolean xdr = psoFinalXdr != 0 && mcopt.metal.shade.dims.ShadeXdr.highlights()
 			&& (!mcopt.metal.shade.dims.ShadeXdr.fullScene() || f.debug == 0f);
 		// (1.2.5) full scene without its passes (they failed to build): the SDR frame, not the highlights pass with full-scene params
 		if (xdr && mcopt.metal.shade.dims.ShadeXdr.fullScene() && !fullHdrReady()) xdr = false;
 		boolean fullHdr = xdr && mcopt.metal.shade.dims.ShadeXdr.fullSceneFrame();
-		// M3: the dims variant in the Nether / End and with the camera in lava or powder snow (anywhere)
-		boolean dimsPass = f.dimension != ShadeFrame.DIM_OVERWORLD || f.fogType == ShadeFrame.FOG_LAVA || f.fogType == ShadeFrame.FOG_POWDER_SNOW;
 		if (xdr) mcopt.metal.shade.dims.ShadeXdr.params(params);
 		else params.putFloat(0f).putFloat(1f).putFloat(1f).putFloat(1f);
 		// a (godrays v3): x the VL air mode's floor (0 = off: the light added is negative only over the sky, floored at 0.55)
 		// (a.y, FT2.7 audit idx 47: the air mode's VL read at the haze edge's own keys (1) and its fallbacks' shadowed part uncapped
-		// (2); mcopt.shade.vl.edgeFix, live; 0 by default: in Gael's autumn forest at sunrise (ft28-rim) no rim showed to fix and the
-		// edges moved both ways, a flicker risk in motion; kept for a pose where the rim shows)
-		// (a.z, FT2.12: mcopt.shade.vl.airClamp, live, 1; 0 = FT2.11) on surfaces the shadows take out at most the sunlit haze glow the
-		// final pass added to the pixel (all of it in full shadow) instead of at most 70 % of the pixel (airFloor): toward a sun behind
-		// a mountain 30 % of that glow stayed, an orange halo through the mountain (Gael 2026-10-11)
-		float edgeFix = vl && vlAirFloor > 0f ? mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.vl.edgeFix", 0f) : 0f;
+		// (2); mcopt.shade.vl.edgeFix, live; 0 by default)
+		// (a.z, FT2.12 + 2.0.1h: mcopt.shade.vl.airClamp live default 1, mcopt.shade.vl.airNegCap live default 1, 1..16)
+		// Sign of a.z: > 0 = airClamp on, <= 0 = airClamp off. Magnitude |a.z| = negative upsample extrapolation cap (1 = no
+		// negative amplification, eliminates pitch-black leaf outlines and dark blotches inside god rays; 16 = FT2.7..2.0.1g).
+		boolean airClamp = vl && vlAirFloor > 0f && mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.vl.airClamp", 1f) > 0f;
+		float airNegCap = vl && vlAirFloor > 0f ? Math.max(1f, Math.min(16f, mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.vl.airNegCap", 1f))) : 1f;
 		params.putFloat(vl ? vlAirFloor : 0f).putFloat(edgeFix)
-			.putFloat(vl && vlAirFloor > 0f && mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.vl.airClamp", 1f) > 0f ? 1f : 0f)
+			.putFloat(airClamp ? airNegCap : (airNegCap > 1f ? -airNegCap : 0f))
 			.putFloat(fullHdr ? mcopt.metal.shade.dims.ShadeXdr.sceneBrightness() : 0f);
 		params.flip();
-		// (v12-opt) the lean final pass while it computes the same: no debug view (p.w), the upsample's mode 1 (q.y) and no edge fix
-		// (a.y, read as int(a.y) where a.x > 0): what shade_post.metal's LEAN variants hold constant
-		boolean lean = !dimsPass && f.debug == 0f && upMode == 1f && (int) edgeFix == 0 && Live.b("mcopt.shade.finalLean", true);
+		// (v12-opt + 2.0.1c + 2.0.1h) the lean final pass compiles with useTaaDepth=true and airNegCap=1 as constants
+		boolean lean = useTaaDepth && !dimsPass && !skyHazeActive && f.debug == 0f && upMode == 1f && (int) edgeFix == 0 && airNegCap <= 1f && Live.b("mcopt.shade.finalLean", true);
 		if (lean != loggedLean) {
 			loggedLean = lean;
 			System.out.println("[mcopt] shade: final pass " + (lean ? "lean (mcopt.shade.finalLean)" : "full"));
@@ -749,7 +815,13 @@ public final class ShadePost {
 			}
 			finalTarget = outScaled;
 		}
-		long[] finalInputs = {scene, n > 1 ? bloomAccum[1] : scene, depth, n > 1 ? bloomLevels[0] : scene, vl ? vlLight : scene, vl ? vlDist : scene};
+		TMP7[0] = scene;
+		TMP7[1] = n > 1 ? bloomAccum[1] : scene;
+		TMP7[2] = depth;
+		TMP7[3] = n > 1 ? bloomLevels[0] : scene;
+		TMP7[4] = vl ? vlLight : scene;
+		TMP7[5] = vl ? vlDist : scene;
+		TMP7[6] = taaDepthTex != 0 ? taaDepthTex : scene;
 		if (xdr) {
 			int ow = targetW, oh = targetH;
 			int format = fullHdr ? ShadeRender.RGBA16F : ShadeRender.RG11B10F;
@@ -763,27 +835,27 @@ public final class ShadePost {
 			if (encoder != null && MetalBridge.tracing(encoder)) System.out.println("mcopt-metal trace: shade pass 'mcopt shade: final (XDR)'");
 			long finalPso = fullHdr ? (dimsPass && psoFinalHdrDims != 0 ? psoFinalHdrDims : lean ? psoFinalHdrLean : psoFinalHdr)
 				: (dimsPass && psoFinalXdrDims != 0 ? psoFinalXdrDims : lean ? psoFinalXdrLean : psoFinalXdr);
-			mcopt.metal.shade.dims.ShadeXdr.finalPass(enc, finalPso, finalTarget, xdrExcess, finalInputs, params,
+			mcopt.metal.shade.dims.ShadeXdr.finalPass(enc, finalPso, finalTarget, xdrExcess, TMP7, params,
 				fullHdr ? "mcopt shade: final (full HDR)" : "mcopt shade: final (XDR)");
 		} else {
-			pass(dimsPass && psoFinalDims != 0 ? psoFinalDims : lean && psoFinalLean != 0 ? psoFinalLean : psoFinal, finalTarget, ShadeRender.DONT_CARE, finalInputs,
+			pass(dimsPass && psoFinalDims != 0 ? psoFinalDims : lean && psoFinalLean != 0 ? psoFinalLean : psoFinal, finalTarget, ShadeRender.DONT_CARE, TMP7,
 				params, "mcopt shade: final");
 		}
 		if (upscale) {
 			// (the XDR excess stays at the output size: the present's compose samples it by uv, mcxdr.m)
 			UPSCALE_PARAMS.clear();
 			UPSCALE_PARAMS.putFloat(Math.max(mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.outputSharpen", 0.3f), 0f)).putFloat(0f).putFloat(0f).putFloat(0f).flip();
-			pass(psoUpscale, mainHandle, ShadeRender.DONT_CARE, new long[] {outScaled}, UPSCALE_PARAMS, "mcopt shade: upscale");
+			TMP1[0] = outScaled;
+			passPlain(psoUpscale, mainHandle, ShadeRender.DONT_CARE, TMP1, UPSCALE_PARAMS, false, "mcopt shade: upscale");
 		}
 		if (fullHdr) mcopt.metal.shade.dims.ShadeXdr.fullFrame(enc, xdrExcess, mainHandle);
 		// after the final pass: the kernel advances ShadeGpu.exposure.x to next frame's value, and everything this frame
 		// (world, TAA history, haze and VL in the final pass, Purkinje) must use this frame's
-		if (histogramSource != 0) {
-			long l2 = histogramSource;
-			histogramSource = 0;
-			ShadeRender.dispatch(enc, psoHistogram, ShadeRender.width(l2), ShadeRender.height(l2), 16, 16, new long[] {l2}, null, "mcopt shade: histogram");
-		}
-		ShadeRender.dispatch(enc, psoExposure, 1, 1, 1, 1, null, null, "mcopt shade: exposure");
+		// (2.0.1 opt) fuse 2x2 strided histogram + exposure reduce into one serial compute encoder
+		long histSrc = histogramSource;
+		histogramSource = 0;
+		if (encoder != null && MetalBridge.tracing(encoder)) System.out.println("mcopt-metal trace: shade pass 'mcopt shade: histogram + exposure'");
+		ShadeRender.exposureRun(enc, histSrc != 0 ? psoHistogram : 0, psoExposure, histSrc);
 		vlLight = vlDist = 0;
 	}
 
@@ -791,6 +863,11 @@ public final class ShadePost {
 	private static void pass(long pso, long target, int load, long @Nullable [] textures, @Nullable ByteBuffer p, String label) {
 		if (encoder != null && MetalBridge.tracing(encoder)) System.out.println("mcopt-metal trace: shade pass '" + label + "'");
 		ShadeRender.pass(enc, pso, target, load, textures, p, label);
+	}
+
+	private static void passPlain(long pso, long target, int load, long @Nullable [] textures, @Nullable ByteBuffer p, boolean bindGpu, String label) {
+		if (encoder != null && MetalBridge.tracing(encoder)) System.out.println("mcopt-metal trace: shade pass '" + label + "'");
+		ShadeRender.passPlain(enc, pso, target, load, textures, p, bindGpu, label);
 	}
 
 	/** Whether Distant Horizons' passes went through the bridge this frame. */
