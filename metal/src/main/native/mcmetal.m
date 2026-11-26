@@ -68,13 +68,16 @@ Ctx *mc_create(char *name, int nameCap, char *err, int errCap) {
 		ctx->depthKeep = [device newDepthStencilStateWithDescriptor:dd];
 		dd.depthWriteEnabled = YES;
 		ctx->depthWrite = [device newDepthStencilStateWithDescriptor:dd];
-		ctx->fanIndices = [device newBufferWithLength:(FAN_MAX_VERTICES - 2) * 3 * sizeof(uint32_t) options:MTLResourceStorageModeShared];
-		uint32_t *fan = ctx->fanIndices.contents;
+		uint64_t fanBytes = (FAN_MAX_VERTICES - 2) * 3 * sizeof(uint32_t);
+		id<MTLBuffer> fanStage = [device newBufferWithLength:fanBytes options:MTLResourceStorageModeShared];
+		uint32_t *fan = fanStage.contents;
 		for (uint32_t k = 0; k < FAN_MAX_VERTICES - 2; k++) {
 			fan[k * 3] = 0;
 			fan[k * 3 + 1] = k + 1;
 			fan[k * 3 + 2] = k + 2;
 		}
+		ctx->fanIndices = mc_buffer_private(ctx, fanStage, fanBytes);
+		[fanStage release];
 		strlcpy(name, device.name.UTF8String, nameCap);
 		return ctx;
 	}
@@ -1139,12 +1142,32 @@ void mc_blit_texture_to_texture(Enc *enc, id<MTLTexture> src, id<MTLTexture> dst
 		toTexture:dst destinationSlice:0 destinationLevel:mip destinationOrigin:MTLOriginMake(dx, dy, 0)];
 }
 
-static int sameTargets(Enc *enc, int count, id<MTLTexture> const *colors, const float *clears, id<MTLTexture> depth) {
-	if (!enc->render || count != enc->colorCount || depth != enc->depth) return 0;
+static int sameTargets(Enc *enc, int count, id<MTLTexture> const *colors, const float *clears, id<MTLTexture> depth, int width, int height) {
+	if (!enc->render || count != enc->colorCount || depth != enc->depth || width != enc->width || height != enc->height) return 0;
 	for (int i = 0; i < count; i++) {
 		if (colors[i] != enc->colors[i] || clears[i * 5] != 0) return 0;
 	}
 	return 1;
+}
+
+// (2.0.1 opt) Clip the TBDR tile grid to the live sub-rect (e.g. TAAU 80% inside a full-size HDR+depth texture) so unused
+// outer tiles are never cleared, loaded, or stored. No-op when width/height already match the smallest attachment.
+static void clipRenderTarget(MTLRenderPassDescriptor *rp, int count, id<MTLTexture> const *colors, id<MTLTexture> depth, int width, int height) {
+	if (width <= 0 || height <= 0) return;
+	NSUInteger minW = NSUIntegerMax, minH = NSUIntegerMax;
+	for (int i = 0; i < count; i++) {
+		if (!colors[i]) continue;
+		if (colors[i].width < minW) minW = colors[i].width;
+		if (colors[i].height < minH) minH = colors[i].height;
+	}
+	if (depth) {
+		if (depth.width < minW) minW = depth.width;
+		if (depth.height < minH) minH = depth.height;
+	}
+	if (minW < NSUIntegerMax && ((NSUInteger) width < minW || (NSUInteger) height < minH)) {
+		rp.renderTargetWidth = MIN((NSUInteger) width, minW);
+		rp.renderTargetHeight = MIN((NSUInteger) height, minH);
+	}
 }
 
 // opt-in (-Dmcopt.cpu.pass, set by mc_cpu_flags at device creation; off: everything below runs as before).
@@ -1322,6 +1345,7 @@ int mc_tl_restart(Enc *enc, int mode) {
 			rp.depthAttachment.clearDepth = v;
 			rp.depthAttachment.storeAction = MTLStoreActionUnknown;
 		}
+		clipRenderTarget(rp, enc->colorCount, enc->colors, enc->depth, enc->width, enc->height);
 		openRender(enc, rp);
 		if (mc_reopen_hook) mc_reopen_hook(enc);  // (mcopt-shade, see mc_render_reopen)
 	}
@@ -1372,7 +1396,7 @@ static MTLRenderPassDescriptor *keptPass(Enc *enc, int count, id<MTLTexture> con
 int mc_render_begin(Enc *enc, int count, id<MTLTexture> const *colors, const float *clears,
 	id<MTLTexture> depth, int clearDepth, float depthValue, int width, int height) {
 	endBlit(enc);
-	if (sameTargets(enc, count, colors, clears, depth)) {
+	if (sameTargets(enc, count, colors, clears, depth, width, height)) {
 		if (!clearDepth) return 1;
 		foldDepthClear(enc, depthValue, width, height);
 		return 2;
@@ -1404,6 +1428,8 @@ int mc_render_begin(Enc *enc, int count, id<MTLTexture> const *colors, const flo
 			rp.renderTargetWidth = width;
 			rp.renderTargetHeight = height;
 			rp.defaultRasterSampleCount = 1;
+		} else {
+			clipRenderTarget(rp, count, colors, depth, width, height);
 		}
 		enc->width = width;
 		enc->height = height;
@@ -1531,6 +1557,7 @@ void mc_render_reopen(Enc *enc) {
 			rp.depthAttachment.loadAction = MTLLoadActionLoad;
 			rp.depthAttachment.storeAction = MTLStoreActionUnknown;
 		}
+		clipRenderTarget(rp, enc->colorCount, enc->colors, enc->depth, enc->width, enc->height);
 		openRender(enc, rp);
 		if (lastLabel) enc->render.label = [NSString stringWithFormat:@"%@ | reopened %d %s", lastLabel, ++labelReopens, mc_reopen_why];
 		mc_reopen_why = "";
@@ -1585,7 +1612,17 @@ void mc_r_texture(Enc *enc, int index, id<MTLTexture> texture, id<MTLSamplerStat
 }
 
 void mc_r_scissor(Enc *enc, int x, int y, int w, int h) {
-	[enc->render setScissorRect:(MTLScissorRect) {x, y, w, h}];
+	int maxW = enc->width > 0 ? enc->width : 0;
+	int maxH = enc->height > 0 ? enc->height : 0;
+	if (x < 0) { w += x; x = 0; }
+	if (y < 0) { h += y; y = 0; }
+	if (x > maxW) { x = maxW; w = 0; }
+	if (y > maxH) { y = maxH; h = 0; }
+	if (w < 0) w = 0;
+	if (h < 0) h = 0;
+	if (w > maxW - x) w = maxW - x;
+	if (h > maxH - y) h = maxH - y;
+	[enc->render setScissorRect:(MTLScissorRect) {(NSUInteger) x, (NSUInteger) y, (NSUInteger) w, (NSUInteger) h}];
 }
 
 // A buffer the vertex stage reaches through a GPU address stored in another buffer (bindless) must be made resident.
@@ -1841,6 +1878,9 @@ static void paceWatch(id<CAMetalDrawable> drawable) {
 	}];
 }
 
+static double paceMinRatio;
+void mc_pace_min_ratio(double r) { paceMinRatio = r > 0 ? r : 0; }
+
 int mc_pace(double margin) {
 	static int started;
 	if (!started) {
@@ -1849,10 +1889,25 @@ int mc_pace(double margin) {
 	}
 	followDisplay();
 	double now = CACurrentMediaTime(), anchor = nextRefresh, period = refreshPeriod, lead = gpuLatency + margin + paceExtra;
-	if (lastPace > 0) frameInterval += (now - lastPace - frameInterval) * 0.1;
+	if (lastPace > 0) {
+		double dt = now - lastPace;
+		if (paceMinRatio > 0) {
+			if (dt >= 0.25) frameInterval = 0;
+			else if (dt > 0) frameInterval = frameInterval > 0 ? frameInterval + (dt - frameInterval) * 0.1 : dt;
+		} else {
+			frameInterval += (dt - frameInterval) * 0.1;
+		}
+	}
 	lastPace = now;
 	if (period <= 0 || now - anchor > 0.25) return 1; // no refreshes lately (starting, display asleep): present everything
 	double target = anchor + ceil((now + lead - anchor) / period) * period;
+	// (2.0.1g) Near or below display refresh (e.g. <= ~1.8x Hz, including maxFps=120 on 120 Hz or shaded ~100-150 fps),
+	// never drop presents on noisy gpuLatency jitter; let the present mailbox show every frame smoothly.
+	if (paceMinRatio > 0 && (frameInterval <= 0 || frameInterval >= period * paceMinRatio)) {
+		pacedFor = target;
+		paceTarget = target;
+		return 1;
+	}
 	if (target < pacedFor + period / 2 || now + 2 * frameInterval + lead < target) return 0;
 	pacedFor = target;
 	paceTarget = target;
@@ -1916,7 +1971,7 @@ void mc_present(Enc *enc, id<CAMetalDrawable> drawable, id<MTLTexture> src) {
 // command buffer that reads it completes (its completed handler clears the flag). If the next slot is still busy, the frame
 // skips its present (returns 0) instead of waiting, so the render thread never blocks here and no slot is overwritten while
 // it is read. Single caller (the render thread); the handlers only touch atomics.
-#define PQ_SLOTS 3
+#define PQ_SLOTS 4
 static id<MTLCommandQueue> pqQueue;
 static id<MTLEvent> pqEvent;
 static uint64_t pqValue;
@@ -1928,6 +1983,8 @@ static int pqSlot;
 static uint64_t pqWait;
 static _Atomic long pqSkipped;
 static Ctx *pqCtx;
+static int pqFreshAcquire;
+void mc_present_fresh_acquire(int on) { pqFreshAcquire = on; }
 
 // Fills the next staging slot with src in the frame's command buffer and signals pqEvent; the slot index, or -1 if that slot
 // is still being read by an earlier present (the caller skips this frame's present).
@@ -1937,8 +1994,21 @@ static int pqFill(Enc *enc, id<MTLTexture> src) {
 	Ctx *ctx = pqCtx = enc->ctx;
 	int k = pqNext;
 	if (atomic_load(&pqBusy[k])) {
-		atomic_fetch_add(&pqSkipped, 1);
-		return -1;
+		if (pqFreshAcquire) {
+			int found = -1;
+			for (int i = 1; i < PQ_SLOTS; i++) {
+				int cand = (pqNext + i) % PQ_SLOTS;
+				if (!atomic_load(&pqBusy[cand])) { found = cand; break; }
+			}
+			if (found < 0) {
+				atomic_fetch_add(&pqSkipped, 1);
+				return -1;
+			}
+			k = found;
+		} else {
+			atomic_fetch_add(&pqSkipped, 1);
+			return -1;
+		}
 	}
 	@autoreleasepool {
 		if (!pqQueue) {
@@ -2035,17 +2105,36 @@ int mc_present_queued_acquire(Enc *enc, CAMetalLayer *layer, id<MTLTexture> src,
 static void pqWork(void) {
 	for (;;) {
 		atomic_store(&pqScheduled, 0);
-		uint64_t h = atomic_exchange(&pqHandoff, 0);
-		if (!h) return;
-		int slot = (int) (h & 3);
-		@autoreleasepool {
-			id<CAMetalDrawable> drawable = [pqLayer nextDrawable];
-			if (!drawable) {  // window hidden: drop this present
-				atomic_store(&pqBusy[slot], 0);
-				continue;
+		if (pqFreshAcquire) {
+			// (2.0.1g) Acquire the drawable BEFORE popping pqHandoff so we don't hold a staging slot while waiting for
+			// vblank and always present the freshest completed frame sitting in the mailbox when the drawable arrives.
+			if (!atomic_load(&pqHandoff)) return;
+			CAMetalLayer *layer = pqLayer;
+			@autoreleasepool {
+				id<CAMetalDrawable> drawable = [layer nextDrawable];
+				uint64_t h = atomic_exchange(&pqHandoff, 0);
+				if (!h) return;
+				int slot = (int) (h & 3);
+				if (!drawable) {  // window hidden: drop this present
+					atomic_store(&pqBusy[slot], 0);
+					continue;
+				}
+				if (pqCadence[slot] >= 0) mc_cadence_present(drawable, (int) pqCadence[slot]);
+				pqEncodePresent(drawable, slot, h >> 2, pqQueuedAt[slot]);
 			}
-			if (pqCadence[slot] >= 0) mc_cadence_present(drawable, (int) pqCadence[slot]);
-			pqEncodePresent(drawable, slot, h >> 2, pqQueuedAt[slot]);
+		} else {
+			uint64_t h = atomic_exchange(&pqHandoff, 0);
+			if (!h) return;
+			int slot = (int) (h & 3);
+			@autoreleasepool {
+				id<CAMetalDrawable> drawable = [pqLayer nextDrawable];
+				if (!drawable) {  // window hidden: drop this present
+					atomic_store(&pqBusy[slot], 0);
+					continue;
+				}
+				if (pqCadence[slot] >= 0) mc_cadence_present(drawable, (int) pqCadence[slot]);
+				pqEncodePresent(drawable, slot, h >> 2, pqQueuedAt[slot]);
+			}
 		}
 	}
 }

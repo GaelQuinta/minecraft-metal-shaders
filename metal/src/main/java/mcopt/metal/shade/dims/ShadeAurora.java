@@ -39,7 +39,8 @@ public final class ShadeAurora {
 	 * The texture's size as a fraction of the output (window framebuffer) size: mcopt.shade.aurora.scale (0.5) x the preset's
 	 * render scale (TAAU; 1 without it), i.e. half the world's render size in each direction (balanced 0.8: 0.4, 1210x786).
 	 */
-	static final float SCALE = Math.max(0.1f, Math.min(1f, Float.parseFloat(System.getProperty("mcopt.shade.aurora.scale", "0.5"))
+	// (2.0.1 opt) 0.35 (was 0.5): smooth atmospheric aurora ribbons look identical when bilinearly upscaled at ~2x fewer night pixels
+	static final float SCALE = Math.max(0.1f, Math.min(1f, Float.parseFloat(System.getProperty("mcopt.shade.aurora.scale", "0.35"))
 		* (mcopt.metal.shade.taa.TaaConfig.ENABLED ? mcopt.metal.shade.taa.TaaConfig.SCALE : 1f)));
 
 	/**
@@ -99,7 +100,8 @@ public final class ShadeAurora {
 			if (pipeline == 0) {
 				long t0 = mcopt.metal.shade.ShadeCompile.now();
 				library = ShadeRender.library(source());
-				pipeline = ShadeRender.pipeline(library, "shade_fs_vs", "shade_aurora_pass", ShadeRender.RGBA16F, ShadeRender.BLEND_NONE);
+				// (2.0.1 opt) RG11B10F (4 B/px vs RGBA16F 8 B/px): aurora is non-negative RGB emission
+				pipeline = ShadeRender.pipeline(library, "shade_fs_vs", "shade_aurora_pass", ShadeRender.RG11B10F, ShadeRender.BLEND_NONE);
 				mcopt.metal.shade.ShadeCompile.setup("aurora", t0);
 			}
 			var window = Minecraft.getInstance().getWindow();
@@ -109,7 +111,7 @@ public final class ShadeAurora {
 			int w = Math.max(16, Math.round(outSize[0] * scale)), h = Math.max(16, Math.round(outSize[1] * scale));
 			if (texture == 0 || w != width || h != height) {
 				if (texture != 0) retired.add(new long[] {texture, frame + 8});
-				texture = ShadeRender.texture(ShadeRender.RGBA16F, w, h, false, "mcopt shade: aurora");
+				texture = ShadeRender.texture(ShadeRender.RG11B10F, w, h, false, "mcopt shade: aurora");
 				width = w;
 				height = h;
 			}

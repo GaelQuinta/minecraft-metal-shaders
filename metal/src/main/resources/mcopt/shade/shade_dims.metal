@@ -219,17 +219,19 @@ static float3 shadeAurora(float3 dir, constant ShadeFrame &f, constant ShadeLook
 	// the domain warp and the vertical rays vary slowly through the shell: once per pixel, at its middle
 	float2 mid = dir.xz * (0.5 * (k0 + k1)) + drift;
 	float warp = shadeDimsNoise(mw, mid * 0.6 + float2(t * 0.0031, 0.0)) * 0.9;
-	float rays = 0.35 + 0.65 * shadeDimsNoise(mw, mid * 9.0 + float2(0.0, t * 0.012));
 	float2 step = dir.xz * ((k1 - k0) * 0.9 / 6.0);
 	float2 p = dir.xz * (k0 * 0.9) + drift * 0.9 + warp + step * jitter;
-	float3 sum = float3(0.0);
+	half3 sum = half3(0.0h);
 	for (int i = 0; i < 6; i++) {
-		float c = shadeDimsNoise(mw, p) - 0.5;
-		sum += SHADE_AURORA_LAYERS[i] * exp(-c * c * 380.0);
+		half c = half(shadeDimsNoise(mw, p) - 0.5);
+		sum += half3(SHADE_AURORA_LAYERS[i]) * exp2(-c * c * 548.224h);
 		p += step;
 	}
+	// (2.0.1 opt) skip vertical-ray noise fetch on dark sky pixels between curtains (~70% of sky)
+	if (max(sum.x, max(sum.y, sum.z)) <= 1e-4h) return float3(0.0);
+	float rays = 0.35 + 0.65 * shadeDimsNoise(mw, mid * 9.0 + float2(0.0, t * 0.012));
 	float horizon = smoothstep(0.02, 0.18, dir.y);
-	return sum * (rays * s * horizon * 0.12);
+	return float3(sum) * (rays * s * horizon * 0.12);
 }
 
 // M3.3 (mcopt.shade.aurora.half, default true; ShadeLook bit SHADE_DIMS_AURORA_TEX, set only in frames whose aurora pass

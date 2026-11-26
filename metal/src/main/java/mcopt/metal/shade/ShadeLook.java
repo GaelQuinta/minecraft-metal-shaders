@@ -129,6 +129,14 @@ public final class ShadeLook {
 	public float outdoor = 1f;
 	/** (1.2.7) The air around the camera gets neither sun nor sky this frame (caveAir in a cave): the air-mode god rays add nothing. */
 	public static volatile boolean caveAirOff;
+	/** (2.0.1 opt) Border-fog start radius (blocks) for OwnFrag's SO_LEAN classification (0 when border fog is off). */
+	private static volatile float leanBorderStart;
+
+	public static float leanBorderStart() {
+		return leanBorderStart;
+	}
+	private final Matrix4f scratchMat = new Matrix4f();
+	private final float[] scratchGold = new float[7];
 	/**
 	 * (2026-11 godrays, C4) This frame's golden-hour mist share (mcopt.shade.vl.goldenMist while the VL air mode ran last frame,
 	 * else 0): the mist toward Photon's density and its evening glow (update, pack).
@@ -142,9 +150,18 @@ public final class ShadeLook {
 	private final float[][] gradeIn = new float[3][3], gradeOut = new float[3][3], gradeInInv = new float[3][3], gradeOutInv = new float[3][3];
 	private final Matrix4f celestial = new Matrix4f();
 	private boolean snapExposure = true;
+	private boolean snapped;
 	private float dt;
 	private int features;
 	private int frames;
+
+	float dt() {
+		return this.dt;
+	}
+
+	boolean snapped() {
+		return this.snapped;
+	}
 
 	/** Exposure jumps to its target next frame (teleport, dimension change, resize, setup). */
 	public void snapExposure() {
@@ -224,7 +241,7 @@ public final class ShadeLook {
 		for (int i = 0; i + 1 < SKY_GOLD.length; i++) {
 			if (this.elevation >= SKY_GOLD[i][0] && this.elevation < SKY_GOLD[i + 1][0]) {
 				float t = (this.elevation - SKY_GOLD[i][0]) / (SKY_GOLD[i + 1][0] - SKY_GOLD[i][0]);
-				sg = new float[7];
+				sg = this.scratchGold;
 				for (int c = 1; c < 7; c++) sg[c] = SKY_GOLD[i][c] + (SKY_GOLD[i + 1][c] - SKY_GOLD[i][c]) * t;
 				break;
 			}
@@ -333,7 +350,10 @@ public final class ShadeLook {
 		if (ShadeConfig.BLOOM) bits |= FEATURE_BLOOM;
 		if (ShadeConfig.AUTO_EXPOSURE) bits |= FEATURE_AUTO_EXPOSURE;
 		// (1.1) live: soft shadows, our sky's sun / moon / stars, the haze, lighting v2 (the shaders test these bits every frame)
-		if (Live.b("mcopt.shade.pcss", ShadeConfig.PCSS)) bits |= FEATURE_PCSS;
+		// (2.0.1 opt) at night, 1%-strength moonlight needs no 10-tap PCSS blocker search: 4-tap tent cuts night shadow taps by 60%
+		boolean pcss = Live.b("mcopt.shade.pcss", ShadeConfig.PCSS)
+			&& (!mcopt.metal.shade.shadow.ShadowPass.lightIsMoon() || Live.b("mcopt.shade.nightPcss", false));
+		if (pcss) bits |= FEATURE_PCSS;
 		if (Live.b("mcopt.shade.stars", ShadeConfig.STARS)) bits |= FEATURE_STARS;
 		if (Live.b("mcopt.shade.haze", ShadeConfig.HAZE)) bits |= FEATURE_HAZE;
 		if (Live.b("mcopt.shade.light2", ShadeConfig.LIGHT2)) bits |= FEATURE_LIGHT_V2;
@@ -344,10 +364,10 @@ public final class ShadeLook {
 	public void pack(ByteBuffer out, ShadeFrame f) {
 		ByteBuffer b = out.duplicate().order(ByteOrder.LITTLE_ENDIAN);
 		// without the TAA jitter (a translation in clip space: ShadeTaa.jitter), for passes that want a stable raster
-		new Matrix4f().translation(-f.jitterX, -f.jitterY, 0f).mul(f.viewProj).get(VIEW_PROJ, b);
-		new Matrix4f().translation(-f.prevJitterX, -f.prevJitterY, 0f).mul(f.prevViewProj).get(PREV_VIEW_PROJ, b);
+		this.scratchMat.translation(-f.jitterX, -f.jitterY, 0f).mul(f.viewProj).get(VIEW_PROJ, b);
+		this.scratchMat.translation(-f.prevJitterX, -f.prevJitterY, 0f).mul(f.prevViewProj).get(PREV_VIEW_PROJ, b);
 		this.celestial.get(CELESTIAL, b);
-		new Matrix4f().get(CLOUD_SHADOW_VP, b);
+		this.scratchMat.identity().get(CLOUD_SHADOW_VP, b);
 		// M3.4 x; FT2 y: Distant Horizons composites straight into the HDR target this frame (dh_far_fade.fs, ShadeDh.directFrame)
 		put4(b, WATER_SHADOW, mcopt.metal.shade.water.ShadeWater.shadowSoft(), mcopt.metal.shade.dh.ShadeDh.LOADED
 			? mcopt.metal.shade.dh.ShadeDh.directFlag(ShadeConfig.HDR && ShadePost.active() && !ShadeBindings.fallback()) : 0f,
@@ -391,7 +411,9 @@ public final class ShadeLook {
 		}
 		// (1.1) user.borderFog: where the render distance's fog starts (share of its radius; 0.78 as released); user.eveningGlow
 		float border = Live.f(U + "borderFog", 0.78f, 0.3f, 0.97f);
-		put4(b, FOG_MISC, SEA + HAZE_BASE, this.rainFog > 0f ? border - 0.18f * this.rainFog * (border / 0.78f) : border, this.borderRadius,
+		float borderFrac = this.rainFog > 0f ? border - 0.18f * this.rainFog * (border / 0.78f) : border;
+		leanBorderStart = this.borderRadius > 0f ? Math.max(0f, borderFrac * this.borderRadius - 1f) : 0f;
+		put4(b, FOG_MISC, SEA + HAZE_BASE, borderFrac, this.borderRadius,
 			(float) glow * Live.f(U + "eveningGlow", 1f, 0f, 3f));
 		// (1.1) was the volumetric light's reserved slot (read by no shader; ShadeVl has its own parameters): the water colour the
 		// player chose (ShadeSettings), linear rgb and its weight (0 = the biome's own colour)
@@ -445,6 +467,7 @@ public final class ShadeLook {
 		boolean autoExposure = ShadeConfig.AUTO_EXPOSURE && !"fixed".equals(Live.s("mcopt.shade.exposure", "auto"));
 		float lambda = autoExposure ? Math.min(PRESET_LAMBDA[ShadeSettings.look()] * Live.f(U + "autoExposure", 1f, 0f, 2f), 1f) * this.l2Lambda : 0f;
 		put4(b, EXPOSURE_REF, this.exposureRef, lambda, METER_KEY, this.snapExposure ? 1f : 0f);
+		this.snapped = this.snapExposure;
 		this.snapExposure = false;
 		// (1.1) the player's settings for the shaders (shade_look.metal user0..3)
 		// user0: x the soft shadows' sun radius (rad: the real sun's x user.shadowSoftness; shade_m2 PCSS), y the vignette's strength

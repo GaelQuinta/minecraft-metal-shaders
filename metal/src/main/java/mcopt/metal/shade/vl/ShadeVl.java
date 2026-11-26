@@ -90,6 +90,9 @@ public final class ShadeVl {
 	private static float airEndUsed;
 	/** The shade grid's cell size last frame (a change refreshes all of it). */
 	private static float lastCell = -1f;
+	private static final Vector4f SCRATCH_CLIP = new Vector4f();
+	private static final BlockPos.MutableBlockPos SCRATCH_POS = new BlockPos.MutableBlockPos();
+	private static final BlockPos.MutableBlockPos SCRATCH_ABOVE = new BlockPos.MutableBlockPos();
 
 	private ShadeVl() {
 	}
@@ -307,12 +310,13 @@ public final class ShadeVl {
 
 	/** The water surface above the camera (absolute y), scanning up through water blocks; NaN if none within 32 blocks. */
 	private static float waterSurface(ClientLevel level, ShadeFrame f) {
-		BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos(Math.floor(f.cameraX), Math.floor(f.cameraY), Math.floor(f.cameraZ));
+		BlockPos.MutableBlockPos p = SCRATCH_POS.set(Math.floor(f.cameraX), Math.floor(f.cameraY), Math.floor(f.cameraZ));
 		for (int i = 0; i < 32; i++) {
 			FluidState fs = level.getFluidState(p);
 			boolean water = fs.getType() == Fluids.WATER || fs.getType() == Fluids.FLOWING_WATER;
 			if (!water) return i == 0 ? Float.NaN : p.getY();
-			FluidState above = level.getFluidState(p.above());
+			SCRATCH_ABOVE.set(p.getX(), p.getY() + 1, p.getZ());
+			FluidState above = level.getFluidState(SCRATCH_ABOVE);
 			boolean waterAbove = above.getType() == Fluids.WATER || above.getType() == Fluids.FLOWING_WATER;
 			if (!waterAbove) return p.getY() + fs.getHeight(level, p);
 			p.move(0, 1, 0);
@@ -328,7 +332,7 @@ public final class ShadeVl {
 		boolean sunLight = f.sky.sunLight;
 		boolean morning = f.dayTime > 0.5f; // dayTime: 0 noon, 0.25 sunset, 0.5 midnight, 0.75 sunrise
 		float rain = f.rain;
-		float hum = humidity(level, BlockPos.containing(f.cameraX, f.cameraY, f.cameraZ), dt);
+		float hum = humidity(level, SCRATCH_POS.set(Math.floor(f.cameraX), Math.floor(f.cameraY), Math.floor(f.cameraZ)), dt);
 		// golden hour: the sun below ~30 degrees (sunY 0.5), full below ~6 (with the default 30-degree sun path tilt the sun
 		// never climbs above sunY 0.87)
 		float golden = sunLight ? 1f - smoothstep(0.05f, 0.55f, sunY) : 0f;
@@ -421,7 +425,7 @@ public final class ShadeVl {
 
 		// the light on screen (crepuscular streaks)
 		float[] l = f.sky.lightDir;
-		Vector4f clip = f.viewProj.transform(new Vector4f(l[0], l[1], l[2], 0f));
+		Vector4f clip = f.viewProj.transform(SCRATCH_CLIP.set(l[0], l[1], l[2], 0f));
 		float onScreen = 0f, sx = 0f, sy = 0f;
 		if (clip.w > 1e-4f && VlConfig.SS_TAPS > 0 && !f.underwater) {
 			float nx = clip.x / clip.w, ny = clip.y / clip.w;
@@ -525,8 +529,9 @@ public final class ShadeVl {
 		// (vl.metal vlVeilR; fold only): x the share of the local mean glow kept, y the gain of what stands out of it, z the veil
 		// blur's tap spacing, w on (mcopt.shade.vl.hp / hpKeep / hpGain / hpRadius, live)
 		// (veil4 i4: the uniform glow x0.2, a beam at twice its surroundings x1.4, at 3x x1.53; notes/godrays-veil-2026-10-09)
+		// (2.0.1 fix) && !f.underwater: underwater sets air=false, which previously ran 3 wasted vl_veil_* passes when under trees
 		put(b, VlConfig.look("mcopt.shade.vl.hpKeep", 0.2f, 1f), VlConfig.look("mcopt.shade.vl.hpGain", 1.8f, 1f),
-			VlConfig.live("mcopt.shade.vl.hpRadius", 2f), hdr && VlConfig.FOLD && !air && underTrees() ? VlConfig.look("mcopt.shade.vl.hp", 1f, 0f) : 0f);
+			VlConfig.live("mcopt.shade.vl.hpRadius", 2f), hdr && VlConfig.FOLD && !air && !f.underwater && underTrees() ? VlConfig.look("mcopt.shade.vl.hp", 1f, 0f) : 0f);
 		// radial (FT2.3): the light direction's vanishing point (homogeneous NDC, scaled to unit size) and the radial blur's taps
 		// on each side (mcopt.shade.vl.radialTaps, live; 0 = off; vl.metal vl_radial)
 		float vm = Math.max(Math.max(Math.abs(clip.x), Math.abs(clip.y)), Math.max(Math.abs(clip.w), 1e-6f));
@@ -543,8 +548,10 @@ public final class ShadeVl {
 		// air (godrays v3): on, Photon's step count (8 + 0.1 per block marched; at most the preset's main + near steps: balanced
 		// 20. gs-w18: 16 / 20 / 24 look alike in stills, but Gael asked not to trade the look for speed: 20 as before the
 		// optimisation, ~0.1 ms; mcopt.shade.vl.airMin / airGrowth / airSteps, live)
-		put(b, air ? 1f : 0f, VlConfig.live("mcopt.shade.vl.airMin", 8f), VlConfig.live("mcopt.shade.vl.airGrowth", 0.1f),
-			VlConfig.live("mcopt.shade.vl.airSteps", VlConfig.STEPS + VlConfig.NEAR_STEPS));
+		// (2.0.1 opt) at night, dim moonlight marches up to 14 dithered steps (140 effective samples with temporal accumulation)
+		float airSteps = VlConfig.live("mcopt.shade.vl.airSteps", VlConfig.STEPS + VlConfig.NEAR_STEPS);
+		if (!sunLight) airSteps = Math.min(airSteps, 14f);
+		put(b, air ? 1f : 0f, VlConfig.live("mcopt.shade.vl.airMin", 8f), VlConfig.live("mcopt.shade.vl.airGrowth", 0.1f), airSteps);
 		// air2: the march's end (the render distance's fog end, else the preset's distance), the share of the haze's glow the
 		// shadows take out over the sky (mcopt.shade.vl.airSkyCut), gains (airShadow: the shadowed part, airForestGain)
 		// (airSkyCut 0: the final pass draws no haze over the sky, so the shadows have none to take out there; the sky's dark rays
@@ -577,8 +584,11 @@ public final class ShadeVl {
 		// frame & 3 left some world slices never refreshed, stripes of stale forest air every 8 blocks)
 		boolean gridAll = reset || cell != lastCell || VlConfig.live("mcopt.shade.vl.airGridAll", 0f) > 0.5f;
 		lastCell = cell;
-		put(b, VlConfig.live("mcopt.shade.vl.airBase", 0f), VlConfig.live("mcopt.shade.vl.airG", 0.45f), VlConfig.live("mcopt.shade.vl.airIso", 0.2f),
-			gridAll ? -1f : (float) Math.floorMod((long) frame - cz, 4L));
+		// (2.0.1 opt) 8 smooth z-slice rounds by day (1/8 grid per frame), every 2nd frame at night (16 frames full cycle)
+		float gridRound = gridAll ? -1f
+			: (!sunLight && (frame & 1) == 1) ? 8f
+			: (float) Math.floorMod((sunLight ? (long) frame : (long) (frame >> 1)) - cz, 8L);
+		put(b, VlConfig.live("mcopt.shade.vl.airBase", 0f), VlConfig.live("mcopt.shade.vl.airG", 0.45f), VlConfig.live("mcopt.shade.vl.airIso", 0.2f), gridRound);
 		// air5 (FT2.6): the forest air's fade-out with the distance from the camera (blocks: mcopt.shade.vl.airFar0 / airFar1, live;
 		// 0 = none, FT2.5)
 		// (z: its share with the camera in the open, the canopy factor 0: mcopt.shade.vl.airOpen, live; 1 = FT2.5)

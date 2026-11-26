@@ -34,6 +34,9 @@ final class OwnFrapi implements OwnApi.Mesher {
 	private @Nullable VertexConsumer translucentSink;
 	private final float[] p = new float[12], uv = new float[8];
 	private final int[] abgr = new int[4], light = new int[4];
+	private static final net.minecraft.core.Direction[] DIRS = net.minecraft.core.Direction.values();
+	private final BlockPos.MutableBlockPos leafPos = new BlockPos.MutableBlockPos();
+	private int leafCullMask;
 
 	private OwnFrapi() {
 	}
@@ -44,15 +47,43 @@ final class OwnFrapi implements OwnApi.Mesher {
 		f.quads = quads;
 		f.translucent = translucent;
 		f.translucentSink = null;
+		f.leafCullMask = 0;
 		return f;
 	}
 
 	@Override
 	public void block(float x, float y, float z, BlockAndTintGetter level, BlockPos pos, BlockState state, BlockStateModel model, long seed) {
+		int mask = 0;
+		if (OwnBlockRenderer.CULL_LEAVES && state.getBlock() instanceof net.minecraft.world.level.block.LeavesBlock) {
+			int px = pos.getX(), py = pos.getY(), pz = pos.getZ();
+			BlockPos.MutableBlockPos cur = this.leafPos;
+			for (net.minecraft.core.Direction dir : DIRS) {
+				int nx = px + dir.getStepX(), ny = py + dir.getStepY(), nz = pz + dir.getStepZ();
+				BlockState nb = level.getBlockState(cur.set(nx, ny, nz));
+				if (!(nb.getBlock() instanceof net.minecraft.world.level.block.LeavesBlock)) continue;
+				net.minecraft.core.Direction opp = dir.getOpposite();
+				boolean enclosed = true;
+				for (net.minecraft.core.Direction d : DIRS) {
+					if (d == opp) continue;
+					BlockState ns = level.getBlockState(cur.set(nx + d.getStepX(), ny + d.getStepY(), nz + d.getStepZ()));
+					if (!ns.isSolidRender() && !(ns.getBlock() instanceof net.minecraft.world.level.block.LeavesBlock)) {
+						enclosed = false;
+						break;
+					}
+				}
+				if (enclosed) mask |= 1 << dir.ordinal();
+			}
+		}
+		this.leafCullMask = mask;
 		this.blocks.tesselateBlock(this.emitter, x, y, z, level, pos, state, model, seed);
+		this.leafCullMask = 0;
 	}
 
 	private void emitted(MutableQuadView quad) {
+		if (this.leafCullMask != 0) {
+			net.minecraft.core.Direction cf = quad.cullFace();
+			if (cf != null && (this.leafCullMask & (1 << cf.ordinal())) != 0) return;
+		}
 		ChunkSectionLayer layer = quad.chunkLayer();
 		if (layer == ChunkSectionLayer.SOLID || layer == ChunkSectionLayer.CUTOUT) {
 			// what quad.buffer + BufferBuilder (BLOCK format: position, ABGR colour, uv, packed light) would store, read straight

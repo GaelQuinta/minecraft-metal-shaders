@@ -22,9 +22,22 @@ abstract class FramerateLimiterMixin {
 	@Inject(method = "limitDisplayFPS", at = @At("HEAD"), cancellable = true)
 	private static void mcopt$preciseWait(int framerateLimit, CallbackInfo ci) {
 		if (!FrameWait.ENABLED) return;
-		long remaining = lastFrameTime + 1_000_000_000L / framerateLimit - System.nanoTime();
-		if (remaining > 0) FrameWait.sleep(remaining);
-		lastFrameTime = System.nanoTime();
+		if (FrameWait.skipForVsync(framerateLimit)) {
+			lastFrameTime = System.nanoTime();
+			ci.cancel();
+			return;
+		}
+		long period = 1_000_000_000L / framerateLimit;
+		long target = lastFrameTime + period;
+		long now = System.nanoTime();
+		long remaining = target - now;
+		if (remaining > 0) {
+			FrameWait.sleep(remaining);
+			now = System.nanoTime();
+		}
+		// (2.0.1e) Phase-lock when we woke on time so ~30 us kernel timer overshoot doesn't accumulate into 119.6 fps drift.
+		lastFrameTime = FrameWait.VSYNC_LIMITER && now - target >= 0 && now - target < period ? target : now;
+		FrameWait.onLimiterEnd(now);
 		ci.cancel();
 	}
 }

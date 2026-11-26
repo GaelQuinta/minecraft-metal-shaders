@@ -26,6 +26,7 @@ typedef struct {
 } EntDraw;
 
 typedef struct {
+	Ctx *ctx;
 	id<MTLDevice> device;
 	id<MTLLibrary> library;
 	id<MTLRenderPipelineState> solid, cutout;
@@ -127,6 +128,7 @@ void mc_shadow_free(Shadow *s);
 Shadow *mc_shadow_new(Ctx *ctx, const char *source, int resolution, int layers, int depthBits, char *err, int errCap) {
 	@autoreleasepool {
 		Shadow *s = calloc(1, sizeof(Shadow));
+		s->ctx = ctx;
 		s->device = ctx->device;
 		s->resolution = resolution;
 		s->layers = layers;
@@ -184,12 +186,16 @@ Shadow *mc_shadow_new(Ctx *ctx, const char *source, int resolution, int layers, 
 		for (int q = 0, i = 0; q < CHUNK_QUADS; q++) {
 			for (int c = 0; c < 6; c++) indices[i++] = (uint16_t) (q * 4 + corners[c]);
 		}
-		s->quadIndices = [ctx->device newBufferWithBytes:indices length:sizeof indices options:MTLResourceStorageModeShared];
+		id<MTLBuffer> qiStage = [ctx->device newBufferWithBytes:indices length:sizeof indices options:MTLResourceStorageModeShared];
+		s->quadIndices = mc_buffer_private(ctx, qiStage, sizeof indices);
+		[qiStage release];
 		// (FT2.8, audit idx 84) the same quads last to first (each quad's corners, so its winding, kept): a chunk drawn top-down
 		for (int q = 0, i = 0; q < CHUNK_QUADS; q++) {
 			for (int c = 0; c < 6; c++) indices[i++] = (uint16_t) ((CHUNK_QUADS - 1 - q) * 4 + corners[c]);
 		}
-		s->quadIndicesRev = [ctx->device newBufferWithBytes:indices length:sizeof indices options:MTLResourceStorageModeShared];
+		id<MTLBuffer> qirStage = [ctx->device newBufferWithBytes:indices length:sizeof indices options:MTLResourceStorageModeShared];
+		s->quadIndicesRev = mc_buffer_private(ctx, qirStage, sizeof indices);
+		[qirStage release];
 		if (!s->map || !s->quadIndices || !s->compare || !s->depthWrite) {
 			strlcpy(err, "shadow resources failed", errCap);
 			mc_shadow_free(s);
@@ -245,7 +251,9 @@ int mc_shadow_own_init(Shadow *s, id<MTLLibrary> lib, int compact, int fat, char
 			uint16_t k[6] = {b, (uint16_t) (b + 1), (uint16_t) (b + 2), (uint16_t) (b + 2), (uint16_t) (b + 3), b};
 			memcpy(idx + q * 6, k, sizeof k);
 		}
-		s->ownIndices = [s->device newBufferWithBytes:idx length:sizeof idx options:MTLResourceStorageModeShared];
+		id<MTLBuffer> oiStage = [s->device newBufferWithBytes:idx length:sizeof idx options:MTLResourceStorageModeShared];
+		s->ownIndices = mc_buffer_private(s->ctx, oiStage, sizeof idx);
+		[oiStage release];
 		s->ownSolid = solid;
 		s->ownCutout = cutout;
 	}

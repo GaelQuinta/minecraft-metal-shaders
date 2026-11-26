@@ -226,9 +226,9 @@ public final class ShadeCompile {
 		// ShadeBindings.init (mc_shade_lut_init: same descriptor as ShadeRender.pipeline with no blending)
 		w.add(Map.entry("sky LUT", () -> warm(ctx, ShadeMsl.lut(), new Pso("shade_lut_vs", "shade_lut_fs", ShadeRender.RGBA16F, ShadeRender.BLEND_NONE))));
 		if (ShadeConfig.HDR) {
-			// ShadePost.init (without the XDR final passes: whether the screen takes them is known only later)
-			List<Pso> post = new ArrayList<>(List.of(Pso.fullScreen("shade_bloom_down0", ShadeRender.RGBA16F), Pso.fullScreen("shade_bloom_down", ShadeRender.RGBA16F),
-				Pso.fullScreen("shade_bloom_up", ShadeRender.RGBA16F), Pso.fullScreen("shade_final", ShadeRender.RGBA8), Pso.fullScreen("shade_final_lean", ShadeRender.RGBA8),
+			// ShadePost.init (without the XDR final passes; 2.0.1 opt: bloom in RG11B10F)
+			List<Pso> post = new ArrayList<>(List.of(Pso.fullScreen("shade_bloom_down0", ShadeRender.RG11B10F), Pso.fullScreen("shade_bloom_down", ShadeRender.RG11B10F),
+				Pso.fullScreen("shade_bloom_up", ShadeRender.RG11B10F), Pso.fullScreen("shade_final", ShadeRender.RGBA8), Pso.fullScreen("shade_final_lean", ShadeRender.RGBA8),
 				Pso.fullScreen("shade_upscale", ShadeRender.RGBA8)));
 			if (mcopt.metal.shade.dims.DimsConfig.DIMS || mcopt.metal.shade.dims.DimsConfig.MEDIA) post.add(Pso.fullScreen("shade_final_dims", ShadeRender.RGBA8));
 			post.addAll(List.of(Pso.fullScreen("shade_bridge_encode", ShadeRender.RGBA8), Pso.fullScreen("shade_bridge_decode", ShadeConfig.HDR_FORMAT),
@@ -255,6 +255,7 @@ public final class ShadeCompile {
 			if (mcopt.metal.shade.water.ShadeWater.BAKE) {
 				water.add(Pso.fullScreen("shade_water_bake_fs", ShadeRender.RGBA16F));
 				if (mcopt.metal.shade.water.ShadeWater.DETAIL) water.add(Pso.fullScreen("shade_water_bake_detail_fs", ShadeRender.RGBA16F));
+				if (mcopt.metal.shade.water.ShadeWater.SWELL_CODE) water.add(Pso.fullScreen("shade_water_bake_swell_fs", ShadeRender.RGBA16F));
 			}
 			w.add(Map.entry("water", () -> warm(ctx, mcopt.metal.shade.water.ShadeWater.librarySource(), water.toArray(Pso[]::new))));
 		}
@@ -263,8 +264,8 @@ public final class ShadeCompile {
 			w.add(Map.entry("weather noise", () -> warm(ctx, mcopt.metal.shade.weather.ShadeWeather.noiseSource(), Pso.fullScreen("shade_wx_noise_fs", ShadeRender.RG16F))));
 		}
 		if (ShadeConfig.HDR && mcopt.metal.shade.dims.DimsConfig.AURORA != 0 && !"false".equals(System.getProperty("mcopt.shade.aurora.half"))) {
-			// ShadeAurora.render (the first night with an aurora)
-			w.add(Map.entry("aurora", () -> warm(ctx, mcopt.metal.shade.dims.ShadeAurora.source(), Pso.fullScreen("shade_aurora_pass", ShadeRender.RGBA16F))));
+			// ShadeAurora.render (the first night with an aurora; 2.0.1 opt: RG11B10F)
+			w.add(Map.entry("aurora", () -> warm(ctx, mcopt.metal.shade.dims.ShadeAurora.source(), Pso.fullScreen("shade_aurora_pass", ShadeRender.RG11B10F))));
 		}
 		return w;
 	}

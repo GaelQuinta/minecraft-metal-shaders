@@ -20,7 +20,7 @@ int mc_shade_bind_compute(id<MTLComputeCommandEncoder> c);
 
 typedef struct {
 	id<MTLLibrary> lib;
-	id<MTLRenderPipelineState> march, temporal, composite, temporalFold; // temporalFold: M2 fold (flag 16), MRT history + lightT
+	id<MTLRenderPipelineState> march, marchAirFar, temporal, composite, temporalFold; // marchAirFar: specialized air+farOnly PSO
 	id<MTLRenderPipelineState> veilDown, veilBlurH, veilBlurV;          // fold: the shafts' local contrast (VlParams.hp, vl.metal vlVeilR)
 	id<MTLRenderPipelineState> radial;                                  // fold (FT2.3): the blur along the light's lines (vl_radial)
 	MTLPixelFormat compositeFormat;
@@ -52,19 +52,24 @@ typedef struct {
 
 #define VL_TIME_RING 4
 
-static id<MTLRenderPipelineState> pso(id<MTLDevice> dev, id<MTLLibrary> lib, NSString *fragment, MTLPixelFormat format, int hdr,
-	char *err, int errCap) {
+static id<MTLRenderPipelineState> psoFc(id<MTLDevice> dev, id<MTLLibrary> lib, NSString *fragment, MTLPixelFormat format, int hdr,
+	int airFar, char *err, int errCap) {
 	NSError *e = nil;
 	MTLFunctionConstantValues *fc = [[MTLFunctionConstantValues new] autorelease];
 	bool h = hdr != 0;
 	[fc setConstantValue:&h type:MTLDataTypeBool atIndex:0];
+	if (airFar) {
+		bool t = true;
+		[fc setConstantValue:&t type:MTLDataTypeBool atIndex:1];
+		[fc setConstantValue:&t type:MTLDataTypeBool atIndex:2];
+	}
 	id<MTLFunction> fs = [lib newFunctionWithName:fragment constantValues:fc error:&e];
 	if (!fs) {
 		snprintf(err, errCap, "%s: %s", fragment.UTF8String, e.localizedDescription.UTF8String);
 		return nil;
 	}
 	MTLRenderPipelineDescriptor *pd = [[MTLRenderPipelineDescriptor new] autorelease];
-	pd.label = fragment;
+	pd.label = airFar ? @"vl_march_air_far" : fragment;
 	pd.vertexFunction = [[lib newFunctionWithName:@"vl_vs"] autorelease];
 	pd.fragmentFunction = [fs autorelease];
 	pd.colorAttachments[0].pixelFormat = format;
@@ -86,6 +91,11 @@ static id<MTLRenderPipelineState> pso(id<MTLDevice> dev, id<MTLLibrary> lib, NSS
 	return p;
 }
 
+static id<MTLRenderPipelineState> pso(id<MTLDevice> dev, id<MTLLibrary> lib, NSString *fragment, MTLPixelFormat format, int hdr,
+	char *err, int errCap) {
+	return psoFc(dev, lib, fragment, format, hdr, 0, err, errCap);
+}
+
 // Compiles the passes (source = ShadeMsl.prelude + vl.metal). flags: 1 lossy VL targets, 2 HDR (M2: the canopy kernel also
 // writes ShadeGpu.scene.y, buffer 18). NULL with the message in err on failure.
 VlState *mc_vl_new(Ctx *ctx, const char *source, int flags, char *err, int errCap) {
@@ -104,6 +114,10 @@ VlState *mc_vl_new(Ctx *ctx, const char *source, int flags, char *err, int errCa
 		s->lib = lib;
 		s->lossy = lossy;
 		s->march = pso(ctx->device, lib, @"vl_march", MTLPixelFormatRGBA16Float, hdr, err, errCap);
+		if (hdr && s->march) {
+			char eAf[256];
+			s->marchAirFar = psoFc(ctx->device, lib, @"vl_march", MTLPixelFormatRGBA16Float, 1, 1, eAf, sizeof(eAf));
+		}
 		s->temporal = s->march ? pso(ctx->device, lib, @"vl_temporal", MTLPixelFormatRGBA16Float, hdr, err, errCap) : nil;
 		if (hdr && s->temporal) {
 			s->temporalFold = pso(ctx->device, lib, @"vl_temporal_fold", MTLPixelFormatRGBA16Float, hdr, err, errCap);
@@ -165,6 +179,7 @@ void mc_vl_free(VlState *s) {
 	if (!s) return;
 	[s->lib release];
 	[s->march release];
+	[s->marchAirFar release];
 	[s->temporal release];
 	[s->composite release];
 	[s->temporalFold release];
@@ -247,7 +262,7 @@ static id<MTLTexture> target(id<MTLDevice> dev, MTLPixelFormat format, int w, in
 	MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format width:w height:h mipmapped:NO];
 	td.storageMode = MTLStorageModePrivate;
 	td.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
-	if (lossy) {
+	if (lossy && [dev supportsFamily:MTLGPUFamilyApple8] && format != MTLPixelFormatRG11B10Float && format != MTLPixelFormatRGB9E5Float) {
 		if (@available(macOS 15.0, *)) td.compressionType = MTLTextureCompressionTypeLossy;
 	}
 	id<MTLTexture> t = [dev newTextureWithDescriptor:td];
@@ -344,6 +359,8 @@ int mc_vl_render(Enc *enc, VlState *s, id<MTLTexture> color, id<MTLTexture> dept
 			[s->odHist[1] release];
 			s->odHist[0] = s->odHist[1] = nil;
 			s->odRan = 0;
+			// (2.0.1 opt) keep raw & hist[0..1] lossless (alpha carries exact distance with temporal feedback);
+			// use Apple8+ lossy compression on single-frame lightT, and lazy-allocate rarely-used lightR / veil[0..1] on first use
 			s->raw = target(dev, MTLPixelFormatRGBA16Float, vlWidth, vlHeight, s->lossy, @"mcopt shade: VL march");
 			s->hist[0] = target(dev, MTLPixelFormatRGBA16Float, vlWidth, vlHeight, s->lossy, @"mcopt shade: VL history A");
 			s->hist[1] = target(dev, MTLPixelFormatRGBA16Float, vlWidth, vlHeight, s->lossy, @"mcopt shade: VL history B");
@@ -353,12 +370,7 @@ int mc_vl_render(Enc *enc, VlState *s, id<MTLTexture> color, id<MTLTexture> dept
 			if (s->temporalFold) {
 				s->odHist[0] = target(dev, MTLPixelFormatR16Float, vlWidth, vlHeight, 0, @"mcopt shade: VL scene dimming od history A");
 				s->odHist[1] = target(dev, MTLPixelFormatR16Float, vlWidth, vlHeight, 0, @"mcopt shade: VL scene dimming od history B");
-			}
-			if (s->temporalFold) s->lightT = target(dev, MTLPixelFormatRGBA16Float, vlWidth, vlHeight, s->lossy, @"mcopt shade: VL light + T");
-			if (s->radial) s->lightR = target(dev, MTLPixelFormatRGBA16Float, vlWidth, vlHeight, s->lossy, @"mcopt shade: VL light + T (radial)");
-			if (s->veilBlurV) {
-				s->veil[0] = target(dev, MTLPixelFormatR16Float, (vlWidth + 3) / 4, (vlHeight + 3) / 4, 0, @"mcopt shade: VL veil A");
-				s->veil[1] = target(dev, MTLPixelFormatR16Float, (vlWidth + 3) / 4, (vlHeight + 3) / 4, 0, @"mcopt shade: VL veil B");
+				s->lightT = target(dev, MTLPixelFormatRGBA16Float, vlWidth, vlHeight, s->lossy, @"mcopt shade: VL light + T");
 			}
 			s->veilRan = 0;
 			s->width = vlWidth;
@@ -373,14 +385,16 @@ int mc_vl_render(Enc *enc, VlState *s, id<MTLTexture> color, id<MTLTexture> dept
 		id<MTLCommandBuffer> cb = mc_frame_cmd(enc);
 		// (godrays v3) VlParams.air.x (float 88): the air mode; its shade grid first (a camera-centred 64 x 32 x 64 block of cells)
 		int air = s->shadeGridK && s->shadeGrid && paramBytes >= 89 * 4 && local[88] > 0.5f;
+		// (2.0.1 opt) air4.w >= 8.0 skips the shade-grid dispatch on this frame (e.g. odd night frames)
+		int runGrid = air && !(paramBytes >= 112 * 4 && local[111] >= 8.0f);
 		// (2026-11) VlParams.air8.z (float 126): the forest air dims the scene (air mode, fold): the march stores its od, the fold
 		// filters it into T (no plain temporal pass then, below)
 		int dim = (flags & 16) != 0 && s->temporalFold && s->odHist[0] && paramBytes >= 127 * 4 && local[88] > 0.5f && local[126] != 0.0f;
 		// (FT2.8, audit idx 6) the canopy factor (1 threadgroup, writes the state buffer) and the shade grid (writes the grid
 		// texture) are independent: one concurrent encoder, so the tiny canopy group overlaps the grid's instead of a pass of its own
-		if ((flags & 1) || air) {
+		if ((flags & 1) || runGrid) {
 			id<MTLComputeCommandEncoder> c = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
-			c.label = air ? @"mcopt shade: VL canopy + shade grid" : @"mcopt shade: VL canopy";
+			c.label = runGrid ? @"mcopt shade: VL canopy + shade grid" : @"mcopt shade: VL canopy";
 			mc_shade_bind_compute(c);
 			[c setBytes:params length:paramBytes atIndex:0];
 			if (flags & 1) {
@@ -388,12 +402,12 @@ int mc_vl_render(Enc *enc, VlState *s, id<MTLTexture> color, id<MTLTexture> dept
 				[c setBuffer:s->state offset:0 atIndex:1];
 				[c dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
 			}
-			if (air) {
+			if (runGrid) {
 				[c setComputePipelineState:s->shadeGridK];
 				[c setTexture:s->shadeGrid atIndex:0];
-				// a quarter of the z slices per frame (VlParams.air4.w, float 111: which; < 0 = all of them, after a reset)
+				// (2.0.1 opt) 1/8 z-slices per frame with (8, 8, 1) threadgroups
 				int all = paramBytes >= 112 * 4 && local[111] < 0.0f;
-				[c dispatchThreadgroups:MTLSizeMake(64 / 4, 32 / 4, all ? 64 / 4 : 64 / 16) threadsPerThreadgroup:MTLSizeMake(4, 4, 4)];
+				[c dispatchThreadgroups:MTLSizeMake(64 / 8, 32 / 8, all ? 64 : 64 / 8) threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
 			}
 			[c endEncoding];
 		}
@@ -410,15 +424,24 @@ int mc_vl_render(Enc *enc, VlState *s, id<MTLTexture> color, id<MTLTexture> dept
 				base = 6 * r;
 			}
 		}
-		// the march writes this frame's sky mask and reads last frame's (the crepuscular streaks' occluders)
-		pass(cb, s->raw, s->sky[next], MTLLoadActionDontCare, s->march, @"mcopt shade: VL march", params, paramBytes, s->state, depth, s->sky[s->cur],
+		// (2.0.1 opt) use specialized air+farOnly PSO when air mode is active above water with far-cascade-only shafts
+		int useAirFar = s->marchAirFar && paramBytes >= 89 * 4 && local[88] > 0.5f && local[33] < 0.5f && (((int) local[27]) & 64) != 0;
+		pass(cb, s->raw, s->sky[next], MTLLoadActionDontCare, useAirFar ? s->marchAirFar : s->march, @"mcopt shade: VL march", params, paramBytes, s->state, depth, s->sky[s->cur],
 			times, base, liveW, liveH, s->shadeGrid, s->od, dim, nil, nil);
 		if (fold) {
 			// M2 fold: no full-resolution pass here; ShadePost's final pass upsamples lightT (mc_vl_outputs)
-			// (2026-10-09) VlParams.hp.w (float 79): the shafts' local contrast, from last frame's veil (skipped once when it's stale)
 			int hp = s->veilBlurV && paramBytes >= 80 * 4 && local[79] > 0.5f;
+			if (hp && !s->veil[0]) {
+				s->veil[0] = target(dev, MTLPixelFormatR16Float, (vlWidth + 3) / 4, (vlHeight + 3) / 4, 0, @"mcopt shade: VL veil A");
+				s->veil[1] = target(dev, MTLPixelFormatR16Float, (vlWidth + 3) / 4, (vlHeight + 3) / 4, 0, @"mcopt shade: VL veil B");
+				s->veilRan = 0;
+			}
 			if (hp && !s->veilRan) local[79] = 0.0f;
-			int radialOn = s->radial && s->lightR && paramBytes >= 84 * 4 && local[83] > 0.5f;
+			int radialOn = s->radial && paramBytes >= 84 * 4 && local[83] > 0.5f;
+			if (radialOn && !s->lightR) {
+				s->lightR = target(dev, MTLPixelFormatRGBA16Float, vlWidth, vlHeight, 1, @"mcopt shade: VL light + T (radial)");
+			}
+			radialOn = radialOn && s->lightR != nil;
 			// (FT2.8, audit idx 2) the air mode (VlParams.air.x, float 88) without the canopy mist's extinction (mist.z, float 54),
 			// the local contrast or the radial blur: the fold's light + T would be an exact copy of the history (T = 1). The plain
 			// temporal pass then (one target less to write), and the final pass reads the history for both (mc_vl_outputs: the

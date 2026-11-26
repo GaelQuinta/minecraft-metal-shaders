@@ -107,13 +107,16 @@ final class Native {
 		JAVA_FLOAT, JAVA_FLOAT, JAVA_FLOAT, JAVA_FLOAT, JAVA_FLOAT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_INT);
 	private static final MethodHandle LAYER_CONFIGURE = fn("mc_layer_configure", false, null, JAVA_LONG, JAVA_LONG, JAVA_INT, JAVA_INT, JAVA_INT);
 	private static final MethodHandle LAYER_NEXT = fn("mc_layer_next", false, JAVA_LONG, JAVA_LONG);
+	private static final MethodHandle LAYER_REFRESH_HZ = fn("mc_layer_refresh_hz", false, JAVA_INT, JAVA_LONG);
 	private static final MethodHandle PRESENT = fn("mc_present", false, null, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle PRESENT_QUEUED = fn("mc_present_queued", false, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle PRESENT_SKIPPED = fn("mc_present_skipped", false, JAVA_LONG);
 	private static final MethodHandle PRESENT_QUEUED_ACQUIRE = fn("mc_present_queued_acquire", false, JAVA_INT, JAVA_LONG, JAVA_LONG, JAVA_LONG, JAVA_LONG);
 	private static final MethodHandle PRESENT_DROPPED = fn("mc_present_dropped", false, JAVA_LONG);
+	private static final MethodHandle PRESENT_FRESH_ACQUIRE = fn("mc_present_fresh_acquire", false, null, JAVA_INT);
 	private static final MethodHandle PACE_ADAPT = fn("mc_pace_adapt", false, null, JAVA_INT);
 	private static final MethodHandle PACE_FOLLOW = fn("mc_pace_follow", false, null, JAVA_INT);
+	private static final MethodHandle PACE_MIN_RATIO = fn("mc_pace_min_ratio", false, null, JAVA_DOUBLE);
 	private static final MethodHandle PACE_DISPLAY = fn("mc_pace_display", false, JAVA_INT);
 	private static final MethodHandle MATH_MODE = fn("mc_math_mode", false, null, JAVA_INT);
 	private static final MethodHandle PACE_EXTRA_MS = fn("mc_pace_extra_ms", false, JAVA_DOUBLE);
@@ -233,12 +236,15 @@ final class Native {
 	static void clearRect(long enc, long color, long depth, float r, float g, float b, float a, float depthValue, int x, int y, int w, int h, int mip) { if (FrameCapture.FULL && FrameCapture.active()) FrameCapture.clearRect(color, depth, r, g, b, a, depthValue, x, y, w, h, mip); try { CLEAR_RECT.invokeExact(enc, color, depth, r, g, b, a, depthValue, x, y, w, h, mip); } catch (Throwable t) { throw rethrow(t); } }
 	static void layerConfigure(long ctx, long layer, int w, int h, int vsync) { try { LAYER_CONFIGURE.invokeExact(ctx, layer, w, h, vsync); } catch (Throwable t) { throw rethrow(t); } }
 	static long layerNext(long layer) { try { return (long) LAYER_NEXT.invokeExact(layer); } catch (Throwable t) { throw rethrow(t); } }
+	static int layerRefreshHz(long layer) { try { return (int) LAYER_REFRESH_HZ.invokeExact(layer); } catch (Throwable t) { throw rethrow(t); } }
 	static void present(long enc, long drawable, long texture) { if (FrameCapture.FULL && FrameCapture.active()) FrameCapture.present(texture); try { PRESENT.invokeExact(enc, drawable, texture); } catch (Throwable t) { throw rethrow(t); } }
 	static int presentQueued(long enc, long drawable, long texture) { if (FrameCapture.FULL && FrameCapture.active()) FrameCapture.present(texture); try { return (int) PRESENT_QUEUED.invokeExact(enc, drawable, texture); } catch (Throwable t) { throw rethrow(t); } }
 	static long presentSkipped() { try { return (long) PRESENT_SKIPPED.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static int presentQueuedAcquire(long enc, long layer, long texture, long cadence) { if (FrameCapture.FULL && FrameCapture.active()) FrameCapture.present(texture); try { return (int) PRESENT_QUEUED_ACQUIRE.invokeExact(enc, layer, texture, cadence); } catch (Throwable t) { throw rethrow(t); } }
 	static void paceAdapt(int on) { try { PACE_ADAPT.invokeExact(on); } catch (Throwable t) { throw rethrow(t); } }
 	static void paceFollow(int on) { try { PACE_FOLLOW.invokeExact(on); } catch (Throwable t) { throw rethrow(t); } }
+	static void paceMinRatio(double ratio) { try { PACE_MIN_RATIO.invokeExact(ratio); } catch (Throwable t) { throw rethrow(t); } }
+	static void presentFreshAcquire(int on) { try { PRESENT_FRESH_ACQUIRE.invokeExact(on); } catch (Throwable t) { throw rethrow(t); } }
 	static int paceDisplay() { try { return (int) PACE_DISPLAY.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }
 	static void mathMode(int mode) { try { MATH_MODE.invokeExact(mode); } catch (Throwable t) { throw rethrow(t); } }
 	static double paceExtraMs() { try { return (double) PACE_EXTRA_MS.invokeExact(); } catch (Throwable t) { throw rethrow(t); } }

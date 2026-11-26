@@ -254,6 +254,8 @@ public final class OwnTerrain {
 	private byte[] compiled = new byte[0];
 	/** Bumped whenever a slot's compiled state changes (OwnSeam recomputes its chunk mask only then). */
 	private int seamSerial;
+	/** (2.0.1 opt) Live sections that contain translucent quads (ShadowPass skips own_shadow_tcull when 0). */
+	private int translucentSections;
 	private int maxSlot = -1;
 	private long lists, args, tested, fat;
 	/** Visibility bit per record: last frame's (read by phase A) and this frame's (written by phase B); swapped each frame. */
@@ -1274,6 +1276,10 @@ public final class OwnTerrain {
 		return this.seamSerial;
 	}
 
+	public int translucentSections() {
+		return this.translucentSections;
+	}
+
 	/** OwnSeam: this frame's number (bumped by drawOpaque) and the slots whose state changed in it (until the next drawOpaque). */
 	public long frameNumber() {
 		return this.frame;
@@ -1418,6 +1424,10 @@ public final class OwnTerrain {
 	private void setSlot(int slot, @Nullable OwnMesh m, int x, int y, int z, int uploadMs) {
 		if (slot >= this.slotCap) this.growSlots(Integer.highestOneBit(slot) * 2);
 		OwnMesh old = this.slotMesh[slot];
+		if (old != m) {
+			if (old != null && old.layers[2] != null) this.translucentSections--;
+			if (m != null && m.layers[2] != null) this.translucentSections++;
+		}
 		boolean tieChange = OwnTieGroups.ON && old != m;
 		if (tieChange) {
 			// the cross-section directory and the UNKNOWN count follow what each slot holds: the old mesh leaves while it is still the

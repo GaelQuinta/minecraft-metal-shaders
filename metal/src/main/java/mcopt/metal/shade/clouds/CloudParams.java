@@ -86,6 +86,8 @@ public final class CloudParams {
 	private final float[] t = new float[3], tint = new float[3];
 	/** (1.2.9 look pass) This frame's share of the sun's light the layer keeps below the horizon (Look2 clouds; 1 = 1.2.8). */
 	private float sunFade = 1f;
+	/** (2.0.1 opt) Last frame's proj.m11 to gate MODE_ZOOM in cloud_resolve_st without breaking lean PSO matching. */
+	private float prevProjM11 = Float.NaN;
 
 	/** Packs CloudParams (SIZE bytes) at out's position 0. */
 	public void pack(ByteBuffer out, ShadeFrame f, CloudWeather w) {
@@ -103,7 +105,12 @@ public final class CloudParams {
 		// slot orders that spread consecutive frames apart: 2x2 (0,0) (1,1) (1,0) (0,1); 3x3 by a Bayer-like order; 4x4 Bayer
 		int[] order = n == 4 ? ORDER4 : n == 3 ? ORDER3 : n == 2 ? ORDER2 : ORDER1;
 		int cell = order[slot];
-		put4(b, 144, cell % n, cell / n, this.reset ? 1f : 0f, CloudConfig.maxAge(n));
+		float curM11 = Math.abs(f.proj.m11());
+		boolean zooming = !Float.isNaN(this.prevProjM11) && curM11 > this.prevProjM11 * 1.001f;
+		this.prevProjM11 = curM11;
+		float maxAge = CloudConfig.maxAge(n);
+		// negative frame.w signals stable FOV so cloud_resolve_st skips per-pixel MODE_ZOOM matrix multiply while keeping lean PSO matched
+		put4(b, 144, cell % n, cell / n, this.reset ? 1f : 0f, zooming ? maxAge : -maxAge);
 		float camY = (float) f.cameraY;
 		put4(b, 160, this.base, this.top, camY, 1f / (2f * CURVATURE_RADIUS));
 		float storm = w.storm;
@@ -182,8 +189,8 @@ public final class CloudParams {
 		float[] sg = mcopt.metal.shade.Look2.SKY_GAIN;
 		float bh = mcopt.metal.shade.Look2.blueHour;
 		float bhk = 1f + (mcopt.metal.shade.Look2.v("cloudBlueAmb", 2.4f, 0.5f, 6f) - 1f) * bh * kcl;
-		sg = new float[] {1f + (sg[0] - 1f) * bh, 1f + (sg[1] - 1f) * bh, 1f + (sg[2] - 1f) * bh}; // (the day's gain is for the sky only)
-		put4(b, 256, as[0] * fill * bright * amb * sg[0] * bhk, as[1] * fill * bright * amb * sg[1] * bhk, as[2] * fill * bright * amb * sg[2] * bhk, albedo);
+		float sg0 = 1f + (sg[0] - 1f) * bh, sg1 = 1f + (sg[1] - 1f) * bh, sg2 = 1f + (sg[2] - 1f) * bh;
+		put4(b, 256, as[0] * fill * bright * amb * sg0 * bhk, as[1] * fill * bright * amb * sg1 * bhk, as[2] * fill * bright * amb * sg2 * bhk, albedo);
 		put4(b, 272, ag[0] * bright, ag[1] * bright, ag[2] * bright, 0.9f * amb);
 		// aerial perspective toward the sky behind: lighter while the sun is low (the clouds keep their sunset colour)
 		float lowSun = this.sunLit ? 1f - smoothstep(0.03f, 0.3f, sunY) : 0f;
@@ -295,8 +302,11 @@ public final class CloudParams {
 		float u0 = (this.shadowLx * (this.shadowRefY - this.cameraY) - this.shadowRelX) / e + 0.5f;
 		float v0 = (this.shadowLz * (this.shadowRefY - this.cameraY) - this.shadowRelZ) / e + 0.5f;
 		int o = ShadeLook.CLOUD_SHADOW_VP;
-		float[] cols = {1f / e, 0f, 0f, 0f, -this.shadowLx / e, -this.shadowLz / e, 0f, 0f, 0f, 1f / e, 0f, 0f, u0, v0, 0f, 1f};
-		for (int i = 0; i < 16; i++) b.putFloat(o + 4 * i, cols[i]);
+		float invE = 1f / e;
+		put4(b, o, invE, 0f, 0f, 0f);
+		put4(b, o + 16, -this.shadowLx * invE, -this.shadowLz * invE, 0f, 0f);
+		put4(b, o + 32, 0f, invE, 0f, 0f);
+		put4(b, o + 48, u0, v0, 0f, 1f);
 		boolean shadowUse = (this.dev & CloudConfig.DEV_NO_SHADOW_USE) == 0;
 		put4(b, ShadeLook.CLOUDS0, this.base - this.cameraY, this.top - this.cameraY, shadowUse ? this.shadowStrength : 0f, 1f);
 		// w (M3.4): 1 = the screen consumers read the history with a cubic B-spline (CloudConfig.smooth)

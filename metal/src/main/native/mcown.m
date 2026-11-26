@@ -250,14 +250,18 @@ Own *mco_new(Ctx *ctx, const char *source, int compact, int fat, int cpuClip, ch
 			uint16_t k[6] = {b, (uint16_t) (b + 1), (uint16_t) (b + 2), (uint16_t) (b + 2), (uint16_t) (b + 3), b};
 			memcpy(idx + q * 6, k, sizeof k);
 		}
-		w->quadIdx = [ctx->device newBufferWithBytes:idx length:sizeof idx options:MTLResourceStorageModeShared];
+		id<MTLBuffer> qiStage = [ctx->device newBufferWithBytes:idx length:sizeof idx options:MTLResourceStorageModeShared];
+		w->quadIdx = mc_buffer_private(ctx, qiStage, sizeof idx);
+		[qiStage release];
 		uint16_t idxG[256 * 6];
 		for (int q = 0; q < 256; q++) {
 			uint16_t b = (uint16_t) (q * 4);
 			uint16_t k[6] = {b, (uint16_t) (b + 1), (uint16_t) (b + 2), (uint16_t) (b + 2), (uint16_t) (b + 3), b};
 			memcpy(idxG + q * 6, k, sizeof k);
 		}
-		w->quadIdxG = [ctx->device newBufferWithBytes:idxG length:sizeof idxG options:MTLResourceStorageModeShared];
+		id<MTLBuffer> qigStage = [ctx->device newBufferWithBytes:idxG length:sizeof idxG options:MTLResourceStorageModeShared];
+		w->quadIdxG = mc_buffer_private(ctx, qigStage, sizeof idxG);
+		[qigStage release];
 		return w;
 	}
 }
@@ -1644,12 +1648,17 @@ static void ownPyramid(Own *w, Enc *enc, id<MTLComputeCommandEncoder> c, id<MTLT
 	if (skip > 0 && w->hizMips < skip + 5) skip = 0;  // (too small a pyramid to start up there: the usual build)
 	if (mco_hiz_tiled && skip > 0) {
 		// (levels below skip are left unwritten: the uocc tests read level skip or coarser, FragTest.minLevel)
+		// (2.0.1 opt) under TAAU dynamic resolution, dispatch only tiles covering the live sub-rect (+1 tile border for upper-mip reductions)
 		uint32_t k = (uint32_t) skip;
+		int tilePx = (int) scale * (16 << skip);
+		NSUInteger fullX = (NSUInteger) ((hw >> skip) / 16), fullY = (NSUInteger) ((hh >> skip) / 16);
+		NSUInteger tgx = MIN(fullX, (NSUInteger) (((int) sizes[0] + tilePx - 1) / tilePx + 1));
+		NSUInteger tgy = MIN(fullY, (NSUInteger) (((int) sizes[1] + tilePx - 1) / tilePx + 1));
 		[c setComputePipelineState:w->hizTileGS];
 		[c setTexture:depth atIndex:0];
 		for (int i = 0; i < 5; i++) [c setTexture:w->hizViews[skip + i] atIndex:(NSUInteger) (1 + i)];
 		[c setBytes:&k length:4 atIndex:0];
-		[c dispatchThreadgroups:MTLSizeMake((NSUInteger) (hw >> skip) / 16, (NSUInteger) (hh >> skip) / 16, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+		[c dispatchThreadgroups:MTLSizeMake(MAX(1, tgx), MAX(1, tgy), 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
 		[c setComputePipelineState:w->hizPad];
 		int i = skip + 5;
 		for (; i < w->hizMips; i++) {
@@ -1673,10 +1682,14 @@ static void ownPyramid(Own *w, Enc *enc, id<MTLComputeCommandEncoder> c, id<MTLT
 		return;
 	}
 	if (mco_hiz_tiled && w->hizMips >= 5) {
+		int tilePx = (int) scale * 16;
+		NSUInteger fullX = (NSUInteger) (hw / 16), fullY = (NSUInteger) (hh / 16);
+		NSUInteger tgx = MIN(fullX, (NSUInteger) (((int) sizes[0] + tilePx - 1) / tilePx + 1));
+		NSUInteger tgy = MIN(fullY, (NSUInteger) (((int) sizes[1] + tilePx - 1) / tilePx + 1));
 		[c setComputePipelineState:mco_hiz_gather && w->hizTileG ? w->hizTileG : w->hizTile];
 		[c setTexture:depth atIndex:0];
 		for (int i = 0; i < 5; i++) [c setTexture:w->hizViews[i] atIndex:(NSUInteger) (1 + i)];
-		[c dispatchThreadgroups:MTLSizeMake((NSUInteger) hw / 16, (NSUInteger) hh / 16, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+		[c dispatchThreadgroups:MTLSizeMake(MAX(1, tgx), MAX(1, tgy), 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
 		[c setComputePipelineState:w->hizPad];
 		int i = 5;
 		for (; i < w->hizMips; i++) {

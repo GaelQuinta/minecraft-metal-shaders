@@ -67,8 +67,10 @@ static inline float shadeCloudShadowRay(ShadeCloudRay r, float t, constant Shade
 	float2 e = abs(uv - 0.5);
 	float edge = saturate((0.5 - max(e.x, e.y)) * 12.0);
 	float above = 1.0 - smoothstep(L.clouds0.x - 16.0, L.clouds0.x + 40.0, r.dy * t);
+	float w = L.clouds0.z * edge * above;
+	if (w <= 0.0) return 1.0;
 	float s = float(map.sample(shadeCloudSampler, uv, level(0.0)).r);
-	return mix(1.0, s, L.clouds0.z * edge * above);
+	return mix(1.0, s, w);
 }
 
 // The clouds toward unit dir in this frame's view: rgb scattered light (before exposure), a transmittance; (0, 1) when off

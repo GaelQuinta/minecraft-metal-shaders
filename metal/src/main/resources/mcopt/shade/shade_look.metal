@@ -126,7 +126,7 @@ struct ShadeResources {
 	texture2d<half> cloudShadow; // 12 M3 clouds: R16F cumulus transmittance toward the light (ShadeLook.cloudShadowVP), 256^2
 	texture2d<half> cloudDome;   // 13 M3 clouds: RGBA16F (scattered light before exposure, transmittance) by direction, upper hemisphere
 	texture2d<half> cloudScreen; // 14 M3 clouds: RGBA16F the same for this frame's view (no TAA jitter), reconstructed history
-	texture2d<half> reserved15;
+	texture2d<half> waterSwell;  // 15 (2.0.1 opt) RGBA16F 256^2 mipmapped baked sea swell (xy unit slope, z height, w |slope|^2 for Toksvig variance)
 };
 
 // (FT2.9, mcopt.shade.caveAir) the share of the sky's light that reaches the air around the camera: from the sky light at the eye
@@ -151,9 +151,11 @@ static inline float3 shadeRows(const constant float4 *m, float3 c) {
 	return float3(dot(m[0].xyz, c), dot(m[1].xyz, c), dot(m[2].xyz, c));
 }
 
+// (2.0.1 opt) share log2(x)*t.x across both powers: 3 log2 + 6 exp2 instead of 6 log2 + 6 exp2 (-17.8M log2/frame at Retina)
 static inline float3 shadeLottes(float3 x, float4 t) {
-	float3 xa = pow(max(x, 1e-7), float3(t.x));
-	float3 xad = pow(max(x, 1e-7), float3(t.x * t.y));
+	float3 lx = log2(max(x, 1e-7)) * t.x;
+	float3 xa = exp2(lx);
+	float3 xad = exp2(lx * t.y);
 	return xa / (xad * t.z + t.w);
 }
 

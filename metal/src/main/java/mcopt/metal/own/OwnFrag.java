@@ -728,6 +728,11 @@ final class OwnFrag {
 		float rdStart = 0;
 		long fa = MetalBridge.bufferAddress(fog.buffer());
 		if (fa != 0) rdStart = MemoryUtil.memGetFloat(fa + fog.offset() + 24);
+		// (2.0.1 opt) Under shading, clamp rdStart to ShadeLook's border-fog start so SO_LEAN units guarantee edge == 0 in shadeFogAir2
+		if (mcopt.metal.shade.terrain.ShadeTerrain.ON) {
+			float sb = mcopt.metal.shade.ShadeLook.leanBorderStart();
+			if (sb > 0f && sb < rdStart) rdStart = sb;
+		}
 		if (FOG_LOG && fa != 0) {
 			// (measurement: vanilla's fog block as the frame sets it, logged when it changes)
 			long b = fa + fog.offset();
@@ -1148,8 +1153,9 @@ final class OwnFrag {
 		return m;
 	}
 
-	/** (every 5 s while a1Exact or a2Exact is requested) the effective mode, from the native telemetry (mco_frag_exact_telemetry). */
+	/** (every 5 s while a1Exact or a2Exact is requested and -Dmcopt.own.frag.exactLog=true) the effective mode, from the native telemetry. */
 	private void exactLog() {
+		if (!Boolean.getBoolean("mcopt.own.frag.exactLog")) return;
 		long now = System.nanoTime();
 		if (!(this.a1Req || this.a2Req) || now - this.exactLogAt < 5_000_000_000L) return;
 		this.exactLogAt = now;

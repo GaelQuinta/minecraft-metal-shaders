@@ -24,11 +24,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * unparsable value gives the caller's default, which is where preset-dependent defaults come from.
  */
 public final class Live {
-	private record Entry(String raw, float f, int i) {
+	private record Entry(String raw, float f, int i, int b, String low) {
 	}
 
 	private static final ConcurrentHashMap<String, Entry> CACHE = new ConcurrentHashMap<>();
-	private static final Entry MISSING = new Entry(null, Float.NaN, Integer.MIN_VALUE);
+	private static final Entry MISSING = new Entry(null, Float.NaN, Integer.MIN_VALUE, -1, null);
 
 	private Live() {
 	}
@@ -38,13 +38,16 @@ public final class Live {
 		if (raw == null) return MISSING;
 		Entry e = CACHE.get(key);
 		if (e != null && e.raw == raw) return e; // the same String: unchanged since it was parsed
+		String trimmed = raw.trim();
+		String low = trimmed.toLowerCase(Locale.ROOT);
+		int b = "true".equals(low) ? 1 : "false".equals(low) ? 0 : -1;
 		float f;
 		try {
-			f = Float.parseFloat(raw.trim());
+			f = Float.parseFloat(trimmed);
 		} catch (NumberFormatException ex) {
 			f = Float.NaN;
 		}
-		e = new Entry(raw, f, Float.isNaN(f) ? Integer.MIN_VALUE : Math.round(f));
+		e = new Entry(raw, f, Float.isNaN(f) ? Integer.MIN_VALUE : Math.round(f), b, low);
 		CACHE.put(key, e);
 		return e;
 	}
@@ -68,15 +71,13 @@ public final class Live {
 
 	/** The property as a boolean: "true" / "false" (any case), def otherwise. */
 	public static boolean b(String key, boolean def) {
-		String v = System.getProperty(key);
-		if (v == null) return def;
-		String s = v.trim();
-		return s.equalsIgnoreCase("true") || (!s.equalsIgnoreCase("false") && def);
+		int b = entry(key).b;
+		return b < 0 ? def : b != 0;
 	}
 
 	/** The property as lower-case trimmed text, def when missing. */
 	public static String s(String key, String def) {
-		String v = System.getProperty(key);
-		return v == null ? def : v.trim().toLowerCase(Locale.ROOT);
+		String s = entry(key).low;
+		return s == null ? def : s;
 	}
 }
