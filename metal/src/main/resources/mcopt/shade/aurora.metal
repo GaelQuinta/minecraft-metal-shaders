@@ -16,5 +16,9 @@
 fragment half4 shade_aurora_pass(ShadeFsOut in [[stage_in]], constant ShadeFrame &f [[buffer(16)]], constant ShadeLook &L [[buffer(17)]],
                                  constant ShadeResources &sr [[buffer(19)]]) {
 	float3 dir = normalize(shadeViewRay(in.uv * 2.0 - 1.0, f.invViewProj));
-	return half4(half3(shadeAurora(dir, f, L, sr.milkyWay, in.position.xy)), 1.0h);
+	// (2.0.1 fix) the texel's footprint in the aurora shell's plane (dir.xz / dy, dy clamped like shadeAurora), taken here in
+	// uniform control flow so the derivatives are defined: shadeAurora band-limits the curtains and rays with it
+	float2 q = dir.xz / max(dir.y, 0.05);
+	float qfw = max(max(length(dfdx(q)), length(dfdy(q))), 1e-6);
+	return half4(half3(shadeAurora(dir, f, L, sr.milkyWay, in.position.xy, qfw)), 1.0h);
 }

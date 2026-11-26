@@ -204,9 +204,16 @@ constant float3 SHADE_AURORA_LAYERS[6] = {
 	float3(0.2093, 0.0466, 0.0735),
 	float3(0.1119, 0.0246, 0.0392)};
 
-// M3.2's aurora, unchanged: evaluated per pixel in the sky pass (mcopt.shade.aurora.half=false), or by the M3.3
+// M3.2's aurora: evaluated per pixel in the sky pass (mcopt.shade.aurora.half=false; qfw 0: unchanged), or by the M3.3
 // reduced-resolution pass (aurora.metal, ShadeAurora) for the texel's direction.
-static float3 shadeAurora(float3 dir, constant ShadeFrame &f, constant ShadeLook &L, texture2d<half> mw, float2 pixel) {
+// qfw (2.0.1 fix): the reduced pass's texel footprint in the shell's plane, max |d(dir.xz / dy)| per texel (aurora.metal,
+// fwidth before any branch); 0 = per-pixel path. One texel there spans 3-4 output pixels and is bilinearly stretched, so the
+// per-frame dither and anything finer than a texel can't be integrated by TAA: near the horizon (footprint ~ 1 / dy^2) the
+// curtain contour and the vertical rays aliased into vertical streaks and a crawling moire. With qfw > 0: a fixed mid-layer
+// offset, the curtain line widened by the noise change across the texel and across a layer step (mean-preserving: the
+// peak drops as the line widens, so a sub-texel line becomes a soft band of the same average glow), and the rays' contrast
+// faded one octave of the baked fbm per doubling of the footprint past its finest cell.
+static float3 shadeAurora(float3 dir, constant ShadeFrame &f, constant ShadeLook &L, texture2d<half> mw, float2 pixel, float qfw = 0.0) {
 	float s = L.night.z;
 	if (s <= 0.002 || dir.y < 0.02) return float3(0.0);
 	// 6 layers through the shell, the sample height dithered per pixel and frame (TAA integrates it)
@@ -214,22 +221,42 @@ static float3 shadeAurora(float3 dir, constant ShadeFrame &f, constant ShadeLook
 	float dy = max(dir.y, 0.05);
 	float k0 = h0 / dy * 0.55, k1 = h1 / dy * 0.55;
 	float t = L.clock2.x; // (FT2.8, audit idx 78) the sky's slow clock: the curtains no longer reshuffle every 68 min
-	float jitter = shadeNoise(pixel, f.flags2.x);
+	bool reduced = qfw > 0.0;
+	float jitter = reduced ? 0.5 : shadeNoise(pixel, f.flags2.x);
 	float2 drift = float2(t * 0.0021, t * 0.0009);
 	// the domain warp and the vertical rays vary slowly through the shell: once per pixel, at its middle
 	float2 mid = dir.xz * (0.5 * (k0 + k1)) + drift;
 	float warp = shadeDimsNoise(mw, mid * 0.6 + float2(t * 0.0031, 0.0)) * 0.9;
 	float2 step = dir.xz * ((k1 - k0) * 0.9 / 6.0);
 	float2 p = dir.xz * (k0 * 0.9) + drift * 0.9 + warp + step * jitter;
+	// line sharpness and peak: 548.224 = 1 / (2 ln2 sigma^2), sigma 0.0363 in noise value. Reduced pass: sigma'^2 = sigma^2 +
+	// (spread of the noise value over the texel and over one layer step)^2 / 8, the baked fbm's gradient taken as ~1 per unit
+	// (5 value-noise octaves, contrast 1.9); the peak x sigma / sigma' keeps the line's integral
+	half kLine = 548.224h, peak = 1.0h;
+	if (reduced) {
+		const float sigma2 = 1.0 / (2.0 * 0.693147 * 548.224);
+		float spread = qfw * 0.55 * 0.9 * (0.5 * (h0 + h1)) + length(step);
+		float r = sigma2 / (sigma2 + spread * spread * 0.125);
+		kLine = half(548.224 * r);
+		peak = half(sqrt(r));
+	}
 	half3 sum = half3(0.0h);
 	for (int i = 0; i < 6; i++) {
 		half c = half(shadeDimsNoise(mw, p) - 0.5);
-		sum += half3(SHADE_AURORA_LAYERS[i]) * exp2(-c * c * 548.224h);
+		sum += half3(SHADE_AURORA_LAYERS[i]) * exp2(-c * c * kLine);
 		p += step;
 	}
+	sum *= peak;
 	// (2.0.1 opt) skip vertical-ray noise fetch on dark sky pixels between curtains (~70% of sky)
 	if (max(sum.x, max(sum.y, sum.z)) <= 1e-4h) return float3(0.0);
-	float rays = 0.35 + 0.65 * shadeDimsNoise(mw, mid * 9.0 + float2(0.0, t * 0.012));
+	float rn = shadeDimsNoise(mw, mid * 9.0 + float2(0.0, t * 0.012));
+	if (reduced) {
+		// footprint of mid * 9 in baked-noise texels (64 per unit; the finest octave's cell is 4): full contrast up to 2,
+		// none at 64 (the coarsest cell), toward the fbm's mean 0.5
+		float texels = qfw * 0.55 * (0.5 * (h0 + h1)) * 9.0 * 64.0;
+		rn = mix(0.5, rn, saturate(1.0 - log2(max(texels * 0.5, 1.0)) * 0.2));
+	}
+	float rays = 0.35 + 0.65 * rn;
 	float horizon = smoothstep(0.02, 0.18, dir.y);
 	return float3(sum) * (rays * s * horizon * 0.12);
 }
