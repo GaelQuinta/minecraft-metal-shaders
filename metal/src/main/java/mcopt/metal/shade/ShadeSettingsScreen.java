@@ -86,10 +86,17 @@ public final class ShadeSettingsScreen extends OptionsSubScreen {
 			this.list.addHeader(header("Ajustes", "Settings"));
 			List<AbstractWidget> buttons = new ArrayList<>();
 			for (ShadeOptions.Page p : ShadeOptions.PAGES) {
+				// Fantasy has a dedicated entry below, rather than being buried among the general settings pages.
+				if (p.en().equals("Fantasy")) continue;
 				buttons.add(Button.builder(Component.literal(p.title() + "..."), b -> this.minecraft.gui.setScreen(new ShadeSettingsScreen(this, p)))
 					.tooltip(Tooltip.create(Component.literal(t(p.tipEs(), p.tipEn())))).build());
 			}
 			this.list.addSmall(buttons);
+			ShadeOptions.Page fantasy = ShadeOptions.PAGES.stream().filter(p -> p.en().equals("Fantasy")).findFirst().orElseThrow();
+			this.list.addHeader(header("Estilo", "Style"));
+			this.list.addBig(Button.builder(Component.literal(t("Ajustes de Fantasía...", "Fantasy settings...")),
+				b -> this.minecraft.gui.setScreen(new ShadeSettingsScreen(this, fantasy)))
+				.tooltip(Tooltip.create(Component.literal(t(fantasy.tipEs(), fantasy.tipEn())))).build());
 			// (1.2.1) the shaders' on/off switch, applied at the next start (off: plain mcopt 0.3)
 			this.list.addHeader(header("General", "General"));
 			this.list.addBig(ShadeToggle.button(this.minecraft.gameDirectory.toPath()));

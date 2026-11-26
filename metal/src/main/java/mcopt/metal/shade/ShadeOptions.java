@@ -57,8 +57,10 @@ public final class ShadeOptions {
 		new String[] {"performance", "balanced", "quality", "ultra"}, new String[] {"Rendimiento", "Balanceado", "Calidad", "Ultra"},
 		new String[] {"Performance", "Balanced", "Quality", "Ultra"}, () -> Shade.TIER).restart();
 	public static final ShadeOption STYLE = choice("mcopt.shade.look", "Estilo", "Style",
-		"Épico: colores intensos. Cuento: más suave y cálido. Natural: más realista.", "Epic: rich colours. Storybook: softer and warmer. Natural: more realistic.",
-		new String[] {"epic", "storybook", "natural"}, new String[] {"Épico", "Cuento", "Natural"}, new String[] {"Epic", "Storybook", "Natural"}, () -> 0);
+		"Épico: colores intensos. Cuento: más suave y cálido. Natural: más realista. Fantasía: luz dorada, sombras violetas y neblina en los valles.",
+		"Epic: rich colours. Storybook: softer and warmer. Natural: more realistic. Fantasy: golden light, violet shade and mist in the valleys.",
+		new String[] {"epic", "storybook", "natural", "fantasy"}, new String[] {"Épico", "Cuento", "Natural", "Fantasía"},
+		new String[] {"Epic", "Storybook", "Natural", "Fantasy"}, () -> 0);
 	/** (1.2.9 look pass) The atmosphere: the new one (Look2) or 1.2.8's. Live. */
 	public static final ShadeOption ATMOSPHERE = choice(Look2.KEY, "Atmósfera", "Atmosphere",
 		"Nueva: luz dorada de tarde, sombras más profundas, atardeceres más oscuros y nubes más altas. Clásica: el look de la 1.2.8.",
@@ -354,6 +356,64 @@ public final class ShadeOptions {
 				"Photon: a smooth mirror surface. Pixel: blocky ripples.", new String[] {"photon", "m21"}, new String[] {"Photon", "Píxeles"},
 				new String[] {"Photon", "Pixel"}, () -> 0).restart());
 
+		page("Fantasía", "Fantasy", "Pincel de pintura, luz dorada con sombras violetas y neblina en los valles.",
+			"Painterly brush, golden light with violet shade, and mist in the valleys.",
+			h("Pintura", "Painting"),
+			pctOf(Fantasy.PAINTERLY, "Pincel de pintura", "Painterly brush",
+				"Pinta el mundo con pinceladas anchas, como un cuadro. 0% = apagado (no cuesta nada); al subirlo se activa al instante.",
+				"Paints the world with broad strokes, like a painting. 0% = off (costs nothing); raising it turns it on live.",
+				0, 100, () -> 0, 1f),
+			num(Fantasy.KEY + ".brush", "Grosor del pincel", "Brush size",
+				"El radio de la pincelada en píxeles. Más grande: más abstracto. Se reduce con la distancia para que las lomas lejanas se lean.",
+				"The stroke's radius in pixels. Bigger: more abstract. It shrinks with distance so far hillsides stay readable.",
+				20, 50, () -> 30, 10, " px"),
+			pctOf(Fantasy.KEY + ".grain", "Grano de papel", "Paper grain", "La textura de papel que se mezcla con la pintura.",
+				"The paper texture mixed into the paint.", 0, 100, () -> 35, 1f),
+			num(Fantasy.KEY + ".paintFade", "Distancia del pincel", "Brush distance",
+				"La distancia (en bloques) a la que el pincel se reduce del todo; más lejos no se pinta.",
+				"The distance (in blocks) where the brush has shrunk to its smallest; farther terrain is not painted.",
+				16, 512, () -> 96, 1, ShadeOption.BLOCKS),
+			h("Luz de fantasía", "Fantasy light"),
+			pctOf(Fantasy.KEY + ".softness", "Suavidad de la luz", "Light softness",
+				"Qué tan suave es la línea entre el sol y la sombra. 100%: un degradado suave; 0%: el corte de siempre. Solo con el estilo Fantasía.",
+				"How soft the line between sunlight and shade is. 100%: a soft gradient; 0%: the usual cutoff. Only with the Fantasy style.",
+				0, 100, () -> 100, 1f),
+			pctOf(Fantasy.KEY + ".shadowTint", "Sombra violeta", "Violet shade",
+				"Cuánto tinte violeta-azulado tiene la parte que el sol no toca. 0%: gris, como siempre. Solo con el estilo Fantasía.",
+				"How much violet-blue tint the part the sun doesn't reach has. 0%: grey, as before. Only with the Fantasy style.",
+				0, 100, () -> 100, 1f),
+			pctOf(Fantasy.KEY + ".blockLight", "Alcance de las luces", "Light reach",
+				"Qué tan lejos llega la luz de antorchas y linternas y cuánto color dan las de color. 0%: como siempre. Solo con el estilo Fantasía.",
+				"How far torches and lanterns reach and how much colour the coloured lights give. 0%: as before. Only with the Fantasy style.",
+				0, 100, () -> 100, 1f),
+			pctOf(Fantasy.KEY + ".mist", "Neblina en los valles", "Valley mist",
+				"Cuánto baja y sube la neblina del suelo: 100% la junta en ríos, valles y bosques. 0%: como siempre. Solo con el estilo Fantasía.",
+				"How far the ground mist drops and rises: 100% gathers it in rivers, valleys and forests. 0%: as before. Only with the Fantasy style.",
+				0, 100, () -> 100, 1f),
+			h("Color", "Colour"),
+			pctOf(Fantasy.KEY + ".sunColor", "Oro del sol", "Golden sunlight",
+				"Cuánto más cálida y fuerte es la luz directa del sol de día. 0%: la luz de siempre. Solo con el estilo Fantasía.",
+				"How much warmer and stronger the direct sunlight gets by day. 0%: the usual light. Only with the Fantasy style.",
+				0, 100, () -> 100, 1f),
+			h("Acabado de pintura", "Painted finish"),
+			pctOf(Fantasy.KEY + ".splitTone", "Sombras frías, luces cálidas", "Cool shade, warm light",
+				"Tiñe las sombras de azul-violeta y las luces de dorado, como un pintor que mezcla azul en lo oscuro y ocre en lo claro. "
+					+ "Mantiene el brillo, así que cambia el color y no la exposición. 0%: apagado. Solo con el estilo Fantasía.",
+				"Tints the shadows blue-violet and the highlights gold, the way a painter mixes blue into the darks and ochre into the lights. "
+					+ "Keeps the brightness, so it shifts colour and not exposure. 0% = off. Only with the Fantasy style.",
+				0, 100, () -> 45, 1f),
+			pctOf(Fantasy.KEY + ".shadowLift", "Negros levantados", "Lifted blacks",
+				"Levanta el negro más oscuro hacia un gris de pintura, para que las sombras tengan detalle en vez de aplastarse. "
+					+ "0%: negro puro. Solo con el estilo Fantasía.",
+				"Lifts the darkest black toward a paint-like grey, so shadows keep detail instead of crushing. "
+					+ "0%: pure black. Only with the Fantasy style.",
+				0, 400, () -> 160, 1f),
+			pctOf(Fantasy.KEY + ".bloomVignette", "Borde luminoso", "Glowing border",
+				"El viñeteado no oscurece lo que brilla: una antorcha o una linterna en la orilla de la vista conserva su resplandor. "
+					+ "0%: viñeteado normal. Solo con el estilo Fantasía.",
+				"The vignette spares what glows: a torch or a lantern at the edge of the view keeps its glow. "
+					+ "0%: the usual vignette. Only with the Fantasy style.",
+				0, 100, () -> 70, 1f));
 		page("Clima", "Weather", "Suelo mojado, charcos, nieve, lluvia y relámpagos.", "Wet ground, puddles, snow, rain and lightning.",
 			pct(U + "wetness", "Suelo mojado", "Wet ground", "Qué tan mojado se ve todo con la lluvia.", "How wet things look in the rain.", 0, 200, 100),
 			pct(U + "puddles", "Charcos", "Puddles", "Cuántos charcos se forman.", "How many puddles form.", 0, 200, 100),

@@ -500,10 +500,12 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 		}
 		c = max(lit + add, lo);
 	}
+	float bloomLum = 0.0; // (fantasy) the bloom's radiance here, for the vignette's coupling below
 	if (P.p.y > 0.5) {
 		float3 b = float3(bloom.sample(shadeLinearClamp, in.uv).rgb + bloom0.sample(shadeLinearClamp, in.uv).rgb * half(P.q.x)) * P.p.x;
 		// fog glow: the haze and the canopy mist both soften what is behind them
 		float m = L.bloom.x + (d > 0.0 ? L.bloom.z * (1.0 - shadeLuma(T) * tv) : L.bloom.z * (0.25 + 0.75 * (1.0 - tv)));
+		bloomLum = shadeLuma(max(b, 0.0));
 		c = mix(c, b, saturate(m));
 	}
 	// Purkinje: dim light (scene luminance, not exposed) shifts toward the rods' cool grey
@@ -515,7 +517,15 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 	// vignette (sparing what is bright)
 	float2 r = (in.uv - 0.5) * float2(float(scene.get_width()) / float(scene.get_height()), 1.0);
 	float vr = pow(saturate(length(r) * 1.25), 2.4);
-	c *= 1.0 - L.user0.y * vr * (1.0 - 0.5 * saturate(shadeLuma(c) - 1.0)); // (1.1) user0.y: the vignette (0.12 as released)
+	// (fantasy) the vignette spares the bloom: a painted frame's border glows, it does not darken. Where the bloom here stands out
+	// against the pixel itself (a lantern in a dark corner, a torch at the edge of the view) the vignette is pulled back, so the
+	// glow survives to the edge instead of being cut by the falloff; everywhere else it applies as released.
+	float vigScale = 1.0;
+	if (L.fantasyPost.z > 0.0) {
+		float bloomRel = saturate(bloomLum / max(shadeLuma(c), 1e-4) * 0.5);
+		vigScale = 1.0 - L.fantasyPost.z * bloomRel;
+	}
+	c *= 1.0 - L.user0.y * vr * vigScale * (1.0 - 0.5 * saturate(shadeLuma(c) - 1.0)); // (1.1) user0.y: the vignette (0.12 as released)
 	// vibrance: saturate the less saturated colours more
 	float Y = shadeLuma(c);
 	float mx = max(max(c.r, c.g), c.b), mn = min(min(c.r, c.g), c.b);
@@ -534,7 +544,12 @@ static inline float3 shadeBlackFloor(float3 y, float phi) {
 // The SDR display value -> what main stores: black floor, sRGB, triangular dither (+-1 LSB), debug view 4.
 template <bool LEAN = false>
 static inline float3 shadeFinalEncode(float3 y, float4 position, constant ShadeFinalParams &P, constant ShadeLook &L, float lum) {
-	y = shadeBlackFloor(y, L.grade2.w);
+	// (fantasy) the shadow toe's lift: grade2.w (the black floor phi) scaled up, so the darkest display value sits at a
+	// paint-like grey instead of black. Multiplied rather than replaced so the style composes with the user's own setting,
+	// and applied here (not in shadeDisplay) because the black floor is already outside the LDR<->HDR round trip.
+	y = shadeBlackFloor(y, L.grade2.w * (1.0 + L.fantasyPost.y));
+	// (fantasy) split-tone grade: cool shadows, warm highlights. Lossy by nature, so it lives in the final pass only.
+	y = shadeSplitTone(max(y, 0.0), L.fantasyPost.x);
 	float3 srgb = shadeLinearToSrgbExact(saturate(y));
 	// triangular dither, +-1 LSB
 	float n0 = shadeNoise(position.xy, int(P.p.z)), n1 = shadeNoise(position.xy + 17.0, int(P.p.z) + 7);
