@@ -42,6 +42,29 @@ final class MetalSurface implements GpuSurfaceBackend {
 	 * paces the render thread cleanly without silently dropping/skipping presents. VSync-off is unchanged.
 	 */
 	private static final boolean VSYNC_DIRECT = Boolean.getBoolean("mcopt.metal.vsyncDirect");
+	/**
+	 * (2.0.1g) -Dmcopt.metal.paceMinRatio=0..1 (set to 0.55 by Shade.init unless specified): with VSync off, never let
+	 * mc_pace drop presents when frameInterval >= period * ratio (i.e. near or below display refresh, such as maxFps=120
+	 * on 120 Hz or shaded ~100-150 fps); instead let the presentQueue mailbox deliver every refresh cleanly.
+	 */
+	private static final double PACE_MIN_RATIO = parseNonNegDouble("mcopt.metal.paceMinRatio");
+	/**
+	 * (2.0.1g) -Dmcopt.metal.presentFreshAcquire=true (set by Shade.init unless specified): in presentQueue=acquire, acquire
+	 * the CAMetalDrawable before popping the latest pqHandoff slot and scan all 4 staging slots in pqFill so VSync-off
+	 * presents never stall stale frames or falsely skip.
+	 */
+	private static final boolean PRESENT_FRESH_ACQUIRE = Boolean.getBoolean("mcopt.metal.presentFreshAcquire");
+
+	private static double parseNonNegDouble(String key) {
+		String raw = System.getProperty(key);
+		if (raw == null || raw.isBlank()) return 0.0;
+		try {
+			double v = Double.parseDouble(raw.trim());
+			return v > 0.0 ? Math.min(v, 1.0) : 0.0;
+		} catch (NumberFormatException e) {
+			return 0.0;
+		}
+	}
 	private boolean paced, vsync;
 	/** (1.1.1) the display whose refreshes the pacer follows, as last logged (PACE_FOLLOW), and a frame counter for the check. */
 	private int loggedDisplay, paceFrames, refreshFrames;
@@ -64,6 +87,8 @@ final class MetalSurface implements GpuSurfaceBackend {
 		this.paced = !vsync && PACE;
 		if (PACE_ADAPT) Native.paceAdapt(this.paced ? 1 : 0);
 		if (PACE_FOLLOW) Native.paceFollow(1);
+		if (PACE_MIN_RATIO > 0.0) Native.paceMinRatio(this.paced ? PACE_MIN_RATIO : 0.0);
+		if (PRESENT_FRESH_ACQUIRE) Native.presentFreshAcquire(1);
 		// native shading's XDR output (mcopt.shade.xdr): decided before the layer's format is set; a constant false without shading
 		if (mcopt.metal.shade.Shade.ENABLED) mcopt.metal.shade.dims.ShadeXdr.configure(this.layer);
 		Native.layerConfigure(this.ctx, this.layer, config.width(), config.height(), (vsync || PACE_SYNC && this.paced ? 1 : 0) | DRAWABLES << 8);

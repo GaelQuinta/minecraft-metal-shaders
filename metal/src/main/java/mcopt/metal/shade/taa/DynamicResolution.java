@@ -62,6 +62,17 @@ public final class DynamicResolution {
 	/** The player set mcopt.shade.scaleMin: the hold controller keeps it instead of its own floor. */
 	private static final boolean USER_MIN = System.getProperty("mcopt.shade.scaleMin") != null;
 	private static final double HOLD_FIXED = TaaConfig.clamp(floatProp("mcopt.shade.drsFixed", 0.5f), 0f, 0.9f);
+	/**
+	 * (2.0.1g) Share of single-command-buffer GPU wall-time span (gpuEnd - gpuStart) used as a floor under overlapping-frame
+	 * busy time (mcopt.shade.drsSpanWeight, 0..1, default 0.75; 0 = legacy busy-only). Under VSync at 120 Hz, overlapping frames
+	 * cap busy at 8.33 ms even when each frame spends 12-15 ms on the GPU (causing 35-38 ms latency and late presents); a 0.75
+	 * floor stays quiet during healthy ~9-10.5 ms TBDR overlap (<= 7.9 ms) and triggers step-down once span exceeds ~10.8 ms.
+	 */
+	private static final float SPAN_WEIGHT = TaaConfig.clamp(floatProp("mcopt.shade.drsSpanWeight", 0.75f), 0f, 1f);
+
+	static float spanWeight() {
+		return mcopt.metal.shade.Live.f("mcopt.shade.drsSpanWeight", SPAN_WEIGHT, 0f, 1f);
+	}
 
 	private final float min, max;
 	/** (1.1) mutable: mcopt.shade.drsFps is live ({@link #retarget}). */
@@ -142,17 +153,20 @@ public final class DynamicResolution {
 		double busy = gpuEnd - Math.max(gpuStart, this.lastEnd);
 		this.lastEnd = Math.max(this.lastEnd, gpuEnd);
 		if (this.paused || busy <= 0 || busy > 0.5) return; // unfocused, overlapped entirely, or a stall (loading, a hitch): not the steady cost
+		double span = gpuEnd - gpuStart;
+		float sw = spanWeight();
+		double sample = sw > 0f && span <= 0.5 ? Math.max(busy, span * sw) : busy;
 		if (this.skip > 0) {
 			this.skip--;
 			return;
 		}
 		// (2.0.1 fix) reject single-frame OS/screenshot/GC spikes (>2.5x EMA and >35 ms) unless sustained for 3 frames
-		if (this.samples >= 4 && busy > Math.max(this.average * 2.5, 0.035)) {
+		if (this.samples >= 4 && sample > Math.max(this.average * 2.5, 0.035)) {
 			if (++this.outlierStreak < 3) return;
 		} else {
 			this.outlierStreak = 0;
 		}
-		this.average = this.samples == 0 ? busy : this.average + (busy - this.average) / AVERAGE_FRAMES;
+		this.average = this.samples == 0 ? sample : this.average + (sample - this.average) / AVERAGE_FRAMES;
 		this.samples++;
 	}
 

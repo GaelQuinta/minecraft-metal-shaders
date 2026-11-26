@@ -106,6 +106,11 @@ public final class Shade {
 		// refresh grid follows the display the window is on (MetalSurface.PACE_FOLLOW).
 		if (System.getProperty("mcopt.metal.paceSync") == null) System.setProperty("mcopt.metal.paceSync", "true");
 		if (System.getProperty("mcopt.metal.paceFollow") == null) System.setProperty("mcopt.metal.paceFollow", "true");
+		// (2.0.1g) With VSync off near display refresh (e.g. maxFps=120 on 120 Hz or shaded ~100-150 fps), stop mc_pace from
+		// false-dropping presents on noisy gpuLatency jitter, and acquire drawables before popping pqHandoff in presentQueue=acquire
+		// so every vblank receives the freshest frame with 0 false drops/skips.
+		if (System.getProperty("mcopt.metal.paceMinRatio") == null) System.setProperty("mcopt.metal.paceMinRatio", "0.55");
+		if (System.getProperty("mcopt.metal.presentFreshAcquire") == null) System.setProperty("mcopt.metal.presentFreshAcquire", "true");
 		System.out.println("[mcopt] shade: native shading on (shadows " + SHADOWS + ", " + mcopt.metal.shade.shadow.ShadowConfig.RES + " px, "
 			+ mcopt.metal.shade.shadow.ShadowConfig.DIST + " blocks"
 			+ (DEBUG != 0 ? ", debug view " + DEBUG : "") + ")");
