@@ -325,7 +325,10 @@ static inline TaaOut taauResolve(float2 q, constant TaaParams &p, constant float
 			half outW = curW;
 			if (disocclusion < 0.5h) {
 				half pW = pd.g;
-				half covA = stillPx ? 0.07h : 0.30h;
+				// (2.0.1h) When a falling leaf particle or fast-moving occluder leaves a still pixel so all 4 depth corners
+				// agree on one layer (!isEdgeNow), decay the stale 2-layer depth coverage 3.5x faster (~10 frames vs 48)
+				// so particles don't leave lingering dark god-ray ghosts behind them; static edges stay at 0.07h.
+				half covA = stillPx ? (isEdgeNow ? 0.07h : 0.25h) : 0.30h;
 				if (pTwo) {
 					bool mN = taaSameLayer(cCen, pN);
 					bool mF = !mN && taaSameLayer(cCen, pF);
@@ -337,8 +340,6 @@ static inline TaaOut taauResolve(float2 q, constant TaaParams &p, constant float
 							if (taaSameLayer(cN, outN)) outN = mix(outN, cN, 0.25);
 							if (taaSameLayer(cF, outF)) outF = cF > 60000.0 ? 65000.0 : mix(outF, cF, 0.25);
 						}
-						if (outW > 0.985h) { outF = outN; outW = 1.0h; }
-						else if (outW < 0.015h) { outN = outF; outW = 1.0h; }
 					}
 				} else if (isEdgeNow) {
 					if (taaSameLayer(pN, cN)) {
@@ -351,6 +352,11 @@ static inline TaaOut taauResolve(float2 q, constant TaaParams &p, constant float
 					else { outN = pN; outF = cN; outW = 1.0h - covA; }
 				}
 			}
+			// (2.0.1h) Collapse single-layer coverage across ALL branches (incl. isEdgeNow when pN matched cF with curW=0,
+			// and disoccluded edges): without this, outW=0 with outN=near/outF=far made shade_post treat 100%-far edge pixels
+			// as near on alternating frames, causing 60 Hz black outlines and dark blotches behind god rays.
+			if (outW > 0.985h) { outF = outN; outW = 1.0h; }
+			else if (outW < 0.015h) { outN = outF; outW = 1.0h; }
 			o.depth = half4(half(vdNear), outW, half(outN), half(outF));
 		}
 		// (2.0.1 opt) skip 5-tap Catmull-Rom on full disocclusion, use exact 1-read on still pixels, and use 1 bilinear tap

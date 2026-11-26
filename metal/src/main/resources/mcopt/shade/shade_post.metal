@@ -161,11 +161,15 @@ static inline half3 shadeSharpen(texture2d<half> img, uint2 px, half3 m, half am
 // negative part is scaled by the air ratio uncapped (up to 16): a pixel farther than every texel (a gap between leaves, the far side
 // of a silhouette) gets the final pass's full haze glow, so it needs the full shadowed share of it taken out, not the near texels'
 // (a bright rim on near leaves toward a low sun). The positive part stays capped at 1 (FT2.2: x4 positive extrapolation made rings)
-static inline half3 shadeVlScaled(half3 rgb, half rr, bool airNeg) {
-	return airNeg ? max(rgb, 0.0h) * saturate(rr) + min(rgb, 0.0h) * min(rr, 16.0h) : rgb * saturate(rr);
+// (2.0.1h, mcopt.shade.vl.airNegCap = 1 default; >1 restores FT2.7's uncapped negative extrapolation up to airNegCap)
+// Extrapolating a near shaded leaf/particle texel's negative air-shadow by up to 16x onto a distant pixel punched pitch-black
+// 1-px outlines onto leaves/particles and dark blue-grey blotches inside bright god rays (2.0.1g, Gael 2026-11-25). Capping
+// both positive and negative scaling at 1 (saturate(rr)) keeps near-texel attenuation exact while preventing fake dark holes.
+static inline half3 shadeVlScaled(half3 rgb, half rr, half airNegCap) {
+	return airNegCap > 1.0h ? max(rgb, 0.0h) * saturate(rr) + min(rgb, 0.0h) * min(rr, airNegCap) : rgb * saturate(rr);
 }
 static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, float2 uv, float dist, float maxD, float2 uvScale,
-                                    float mode = 0.0, float tolScale = 1.0, bool airNeg = false) {
+                                    float mode = 0.0, float tolScale = 1.0, half airNegCap = 1.0h) {
 	// the live part of the VL targets (TAAU dynamic resolution: allocated for the largest scale; uvScale = live / allocated)
 	float2 dim = float2(vlT.get_width(), vlT.get_height());
 	uv = min(uv * uvScale, uvScale - 0.5 / dim);
@@ -238,7 +242,7 @@ static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, fl
 				half4 s = sv[j * 2 + i];
 				half sd = j == 0 ? (i == 0 ? dd.w : dd.z) : (i == 0 ? dd.x : dd.y);
 				half bw = (i == 0 ? 1.0h - fr.x : fr.x) * (j == 0 ? 1.0h - fr.y : fr.y) + 1e-3h;
-				ratio += half4(shadeVlScaled(s.rgb, half((min(hd, mD) + 0.5) / (min(float(sd), mD) + 0.5)), airNeg), s.a) * bw;
+				ratio += half4(shadeVlScaled(s.rgb, half((min(hd, mD) + 0.5) / (min(float(sd), mD) + 0.5)), airNegCap), s.a) * bw;
 				bsum += bw;
 			}
 		}
@@ -275,13 +279,13 @@ static inline half4 shadeVlUpsample(texture2d<half> vlT, texture2d<half> vlD, fl
 				half4 s = sv[j * 2 + i];
 				half sd = j == 0 ? (i == 0 ? dd.w : dd.z) : (i == 0 ? dd.x : dd.y);
 				half bw = (i == 0 ? 1.0h - fr.x : fr.x) * (j == 0 ? 1.0h - fr.y : fr.y) + 1e-3h;
-				acc += half4(shadeVlScaled(s.rgb, half((min(hd, mD) + 0.5) / (min(float(sd), mD) + 0.5)), airNeg), s.a) * bw;
+				acc += half4(shadeVlScaled(s.rgb, half((min(hd, mD) + 0.5) / (min(float(sd), mD) + 0.5)), airNegCap), s.a) * bw;
 				bsum += bw;
 			}
 		}
 		return mix(acc / bsum, mean, blendMean);
 	}
-	return mix(half4(shadeVlScaled(bestC.rgb, half((min(hd, mD) + 0.5) / (min(bestD, mD) + 0.5)), airNeg), bestC.a), mean, blendMean);
+	return mix(half4(shadeVlScaled(bestC.rgb, half((min(hd, mD) + 0.5) / (min(bestD, mD) + 0.5)), airNegCap), bestC.a), mean, blendMean);
 }
 
 // Camera-relative world position of the pixel at uv = (pixel + 0.5) / size with reversed-Z depth d. Targets hold GL row
@@ -350,7 +354,7 @@ static __attribute__((noinline)) void shadeHazeTwoLayerCold(float2 uv, float d, 
 
 static __attribute__((noinline)) half4 shadeVlTwoLayerCold(texture2d<half> vlT, texture2d<half> vlD, float2 uv, float3 pNear, float vlFarD,
                                                            float vlNearW, float maxD, float2 vlScale, float upMode, float tolScale,
-                                                           bool airOn, bool airNegSky, constant ShadeFrame &f, thread float3 &pFar) {
+                                                           half airNegCap, bool airNegSky, constant ShadeFrame &f, thread float3 &pFar) {
 	float distNear = length(pNear);
 	bool farSky = vlFarD <= 0.0;
 	float distFar = 1e4;
@@ -359,8 +363,8 @@ static __attribute__((noinline)) half4 shadeVlTwoLayerCold(texture2d<half> vlT, 
 		pFar = shadeWorldFromDepth(uv, vlFarD, f);
 		distFar = length(pFar);
 	}
-	half4 vNear = shadeVlUpsample(vlT, vlD, uv, distNear, maxD, vlScale, upMode, tolScale, airOn);
-	half4 vFar = shadeVlUpsample(vlT, vlD, uv, distFar, maxD, vlScale, upMode, tolScale, airOn && (!farSky || airNegSky));
+	half4 vNear = shadeVlUpsample(vlT, vlD, uv, distNear, maxD, vlScale, upMode, tolScale, airNegCap);
+	half4 vFar = shadeVlUpsample(vlT, vlD, uv, distFar, maxD, vlScale, upMode, tolScale, (!farSky || airNegSky) ? airNegCap : 1.0h);
 	return mix(vFar, vNear, half(vlNearW));
 }
 
@@ -469,7 +473,7 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 		vlFarD = fSky ? 0.0 : (pz > 0.0 ? max(pz / max(vF, 0.01) - p2, 1e-6) : 0.0);
 		bool twoL = !nSky && wN > 0.015 && wN < 0.985 && (fSky || (vF > 8.0 && vF > vN * 1.20 + 0.5));
 		vlNearW = twoL ? wN : 1.0;
-		d = vlNearD;
+		d = twoL ? vlNearD : (wN < 0.5 ? vlFarD : vlNearD);
 	} else {
 #ifdef SHADE_HAZE_EDGE
 		float2 tp = clamp(uv * dsize - 0.5, float2(0.0), dsize - 1.001);
@@ -634,6 +638,7 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 		const int edgeFix = LEAN ? 0 : (P.a.x > 0.0 ? int(P.a.y) : 0);
 		const float upMode = LEAN ? 1.0 : P.q.y;
 		const bool airOn = P.a.x > 0.0;
+		const half airNegCap = LEAN ? 1.0h : (airOn ? max(half(abs(P.a.z)), 1.0h) : 1.0h);
 		const bool airNegSky = !LEAN && (edgeFix & 2) != 0;
 		float3 pNear = wp, pFar = float3(0.0);
 		if (vlEdge && !useTaaDepth) pNear = shadeWorldFromDepth(uv, vlNearD, f);
@@ -642,12 +647,12 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 			if (vlEdge && !vlFarSky) pFar = shadeWorldFromDepth(uv, vlFarD, f);
 			v = 0.0h;
 			for (int k = 0; k < 4; k++) {
-				if (wqq[k] > 0.0) v += shadeVlUpsample(vlT, vlD, uv, dkq[k], P.v.y, vlScale, upMode, P.q.z, airOn && (dkq[k] < 9000.0 || airNegSky)) * half(wqq[k]);
+				if (wqq[k] > 0.0) v += shadeVlUpsample(vlT, vlD, uv, dkq[k], P.v.y, vlScale, upMode, P.q.z, (dkq[k] < 9000.0 || airNegSky) ? airNegCap : 1.0h) * half(wqq[k]);
 			}
 		} else if (vlEdge) {
-			v = shadeVlTwoLayerCold(vlT, vlD, uv, pNear, vlFarD, vlNearW, P.v.y, vlScale, upMode, P.q.z, airOn, airNegSky, f, pFar);
+			v = shadeVlTwoLayerCold(vlT, vlD, uv, pNear, vlFarD, vlNearW, P.v.y, vlScale, upMode, P.q.z, airNegCap, airNegSky, f, pFar);
 		} else {
-			v = shadeVlUpsample(vlT, vlD, uv, d > 0.0 ? length(wp) : 1e4, P.v.y, vlScale, upMode, P.q.z, airOn && (d > 0.0 || airNegSky));
+			v = shadeVlUpsample(vlT, vlD, uv, d > 0.0 ? length(wp) : 1e4, P.v.y, vlScale, upMode, P.q.z, (d > 0.0 || airNegSky) ? airNegCap : 1.0h);
 		}
 		tv = P.v.x > 1.5 ? 1.0 : float(v.a); // (v.x 2: vlT is the history, a = distance; no medium dims the scene: FT2.8 idx 2)
 		// v.rgb < 0 on the sky: the crepuscular shadows (dark rays), floored at 55 % of the pixel

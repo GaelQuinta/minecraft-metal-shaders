@@ -749,15 +749,17 @@ public final class ShadePost {
 		// a (godrays v3): x the VL air mode's floor (0 = off: the light added is negative only over the sky, floored at 0.55)
 		// (a.y, FT2.7 audit idx 47: the air mode's VL read at the haze edge's own keys (1) and its fallbacks' shadowed part uncapped
 		// (2); mcopt.shade.vl.edgeFix, live; 0 by default)
-		// (a.z, FT2.12: mcopt.shade.vl.airClamp, live, 1; 0 = FT2.11) on surfaces the shadows take out at most the sunlit haze glow the
-		// final pass added to the pixel (all of it in full shadow) instead of at most 70 % of the pixel (airFloor)
+		// (a.z, FT2.12 + 2.0.1h: mcopt.shade.vl.airClamp live default 1, mcopt.shade.vl.airNegCap live default 1, 1..16)
+		// Sign of a.z: > 0 = airClamp on, <= 0 = airClamp off. Magnitude |a.z| = negative upsample extrapolation cap (1 = no
+		// negative amplification, eliminates pitch-black leaf outlines and dark blotches inside god rays; 16 = FT2.7..2.0.1g).
+		boolean airClamp = vl && vlAirFloor > 0f && mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.vl.airClamp", 1f) > 0f;
+		float airNegCap = vl && vlAirFloor > 0f ? Math.max(1f, Math.min(16f, mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.vl.airNegCap", 1f))) : 1f;
 		params.putFloat(vl ? vlAirFloor : 0f).putFloat(edgeFix)
-			.putFloat(vl && vlAirFloor > 0f && mcopt.metal.shade.vl.VlConfig.live("mcopt.shade.vl.airClamp", 1f) > 0f ? 1f : 0f)
+			.putFloat(airClamp ? airNegCap : (airNegCap > 1f ? -airNegCap : 0f))
 			.putFloat(fullHdr ? mcopt.metal.shade.dims.ShadeXdr.sceneBrightness() : 0f);
 		params.flip();
-		// (v12-opt + 2.0.1c) the lean final pass compiles with useTaaDepth=true as a constant (dead-code-eliminating depth.gather
-		// and shadeHazeEdgeSlow from the hot 5.9M-pixel path) alongside no debug view, upMode 1, edgeFix 0, and skyHaze off
-		boolean lean = useTaaDepth && !dimsPass && !skyHazeActive && f.debug == 0f && upMode == 1f && (int) edgeFix == 0 && Live.b("mcopt.shade.finalLean", true);
+		// (v12-opt + 2.0.1c + 2.0.1h) the lean final pass compiles with useTaaDepth=true and airNegCap=1 as constants
+		boolean lean = useTaaDepth && !dimsPass && !skyHazeActive && f.debug == 0f && upMode == 1f && (int) edgeFix == 0 && airNegCap <= 1f && Live.b("mcopt.shade.finalLean", true);
 		if (lean != loggedLean) {
 			loggedLean = lean;
 			System.out.println("[mcopt] shade: final pass " + (lean ? "lean (mcopt.shade.finalLean)" : "full"));
