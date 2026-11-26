@@ -690,12 +690,14 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 		if (vlEdge && vlFarSky) lo = mix(loSky, lo, vlNearW);
 		c = max(lit + add, lo);
 	}
+	float bloomLum = 0.0; // (fantasy) the bloom's radiance here, for the vignette's coupling below
 	if (P.p.y > 0.5) {
 		float3 b = float3(bloom.sample(shadeLinearClamp, in.uv).rgb + bloom0.sample(shadeLinearClamp, in.uv).rgb * half(P.q.x)) * P.p.x;
 		// fog glow: the haze and the canopy mist both soften what is behind them
 		float mSky = L.bloom.z * (0.25 + 0.75 * (1.0 - tv));
 		float mTerr = L.bloom.z * (1.0 - shadeLuma(T) * tv);
 		float m = L.bloom.x + ((vlEdge && vlFarSky) ? mix(mSky, mTerr, vlNearW) : (d > 0.0 ? mTerr : mSky));
+		bloomLum = shadeLuma(max(b, 0.0));
 		c = mix(c, b, saturate(m));
 	}
 	// (2.0.1 opt) Purkinje, vignette, vibrance in FP16 on Apple9 dual-issue ALUs (luma/ex kept FP32 for debug/threshold precision)
@@ -711,7 +713,17 @@ static float3 shadeFinalScene(ShadeFsOut in, texture2d<half> scene, texture2d<ha
 	half2 rh = half2((in.uv - 0.5) * float2(float(scene.get_width()) / float(scene.get_height()), 1.0));
 	half vx = saturate(length(rh) * 1.25h);
 	half vr = (vx * vx) * (0.8h * sqrt(vx) + 0.2h);
-	half vig = 1.0h - half(L.user0.y) * vr * (1.0h - 0.5h * saturate(lch - 1.0h)); // (1.1) user0.y: the vignette (0.12 as released)
+	// (fantasy) the vignette spares the bloom: a painted frame's border glows, it does not darken. Where the bloom here stands out
+	// against the pixel itself (a lantern in a dark corner, a torch at the edge of the view) the vignette is pulled back, so the
+	// glow survives to the edge instead of being cut by the falloff; everywhere else it applies as released.
+	// Folded into the 2.0.1 FP16 tail: vigScale scales vr before the falloff, so the shape (and vig, which the vibrance below
+	// reuses to keep its luma consistent) is unchanged when the style is off.
+	half vigScale = 1.0h;
+	if (L.fantasyPost.z > 0.0) {
+		half bloomRel = saturate(half(bloomLum) / max(lch, 1e-4h) * 0.5h);
+		vigScale = 1.0h - half(L.fantasyPost.z) * bloomRel;
+	}
+	half vig = 1.0h - half(L.user0.y) * vr * vigScale * (1.0h - 0.5h * saturate(lch - 1.0h)); // (1.1) user0.y: the vignette (0.12 as released)
 	ch *= vig;
 	// vibrance: saturate the less saturated colours more
 	half Y = lch * vig;
@@ -736,8 +748,15 @@ static inline half3 shadeLinearToSrgbFast(half3 y) {
 // The SDR display value -> what main stores: black floor, sRGB, triangular dither (+-1 LSB), debug view 4.
 template <bool LEAN = false>
 static inline float3 shadeFinalEncode(float3 y, float4 position, constant ShadeFinalParams &P, constant ShadeLook &L, float lum) {
-	y = shadeBlackFloor(y, L.grade2.w);
-	half3 srgb = shadeLinearToSrgbFast(half3(saturate(y)));
+	// (fantasy) the shadow toe's lift: grade2.w (the black floor phi) scaled up, so the darkest display value sits at a
+	// paint-like grey instead of black. Multiplied rather than replaced so the style composes with the user's own setting,
+	// and applied here (not in shadeDisplay) because the black floor is already outside the LDR<->HDR round trip.
+	// Upstream's FP16 tail: 1.0 + fantasyPost.y stays exact (it is a small float either way).
+	y = shadeBlackFloor(y, L.grade2.w * (1.0 + L.fantasyPost.y));
+	half3 yh = half3(saturate(y));
+	// (fantasy) split-tone grade: cool shadows, warm highlights. Lossy by nature, so it lives in the final pass only.
+	if (L.fantasyPost.x > 0.0) yh = half3(shadeSplitTone(float3(yh), L.fantasyPost.x));
+	half3 srgb = shadeLinearToSrgbFast(yh);
 	// (2.0.1 opt) single-IGN triangular dither (+-1 LSB, identical PDF with 1 IGN hash instead of 2)
 	half n = half(shadeNoise(position.xy, int(P.p.z))) * 2.0h - 1.0h;
 	half tri = sign(n) * (1.0h - sqrt(max(1.0h - abs(n), 0.0h)));

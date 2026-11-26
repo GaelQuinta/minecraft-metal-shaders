@@ -88,6 +88,30 @@ static inline float shadeLook2Near(float3 p, constant ShadeLook &L) {
 	return L.look2a.w > 0.0 ? 1.0 - smoothstep(0.5 * L.look2a.w, L.look2a.w, length(p)) : 1.0;
 }
 
+// (fantasy style, Fantasy.java) The diffuse term of a solid surface: max(N.L, 0) with the terminator smoothed by softness 0
+// (the other styles' exact numbers) .. 1 (a smoothstep from -0.25 to 0.75 of N.L, so the day/night line of a hill is a
+// gradient and the shaded side keeps ~15 % of the light instead of none: never crushed to black).
+static inline half shadeSunShape(half nl, float softness) {
+	half base = nl > 0.0h ? (nl + half(0.08)) / half(1.08) : half(0.0);
+	return softness > 0.0 ? mix(base, half(smoothstep(-0.25, 0.75, float(nl))), half(saturate(softness))) : base;
+}
+
+// (fantasy style) The block-light curve F(b) = (2.2 b^7 + 0.55 b^2.4) / 2.75 blended toward a broader falloff (reach 0 = F):
+// a torch keeps more of its energy far from the light, so a lantern's pool is larger and softer and coloured lights read further.
+static inline half shadeBlockCurve(half block, float reach) {
+	half b7 = block * block * block; b7 = b7 * b7 * block;
+	half f = (half(2.2) * b7 + half(0.55) * pow(max(block, half(1e-3)), half(2.4))) * half(1.0 / 2.75);
+	return reach > 0.0 ? mix(f, half(pow(max(float(block), 1e-3), 2.6)), half(saturate(reach))) : f;
+}
+
+// (fantasy style) The sky's fill toward a cool violet-indigo (luminance kept) and a touch stronger, so what the sun doesn't
+// reach reads as twilight instead of grey. w = 0 in the other styles.
+static inline half3 shadeFantasyFill(half3 ambient, constant ShadeLook &L) {
+	if (L.fantasy.y <= 0.0) return ambient;
+	half3 tinted = ambient * half3(0.86h, 0.92h, 1.25h);
+	return mix(ambient, tinted, half(L.fantasy.y)) * half(1.0 + 0.12 * L.fantasy.y);
+}
+
 static float3 shadeLit2(half3 albedo, half3 n, half sky, half block, half shadow, bool thin, bool foliage, constant ShadeFrame &f,
                         constant ShadeLook &L, float look2Near = 1.0) {
 	if (!shadeFeature(L, SHADE_FEATURE_LIGHT_V2)) return shadeLit(albedo, n, sky, block, shadow, thin, foliage, f);
@@ -95,7 +119,7 @@ static float3 shadeLit2(half3 albedo, half3 n, half sky, half block, half shadow
 	half nl = half(dot(float3(n), Ld));
 	half ndl = thin ? half(0.3) + half(0.5) * abs(nl)
 		: foliage ? half(0.25) + half(0.75) * saturate(nl) + half(0.5 * L.user0.z) * saturate(-nl) // (1.1) user0.z: leaves' light through them
-		: (nl > half(0.0) ? (nl + half(0.08)) / half(1.08) : half(0.0));
+		: shadeSunShape(nl, L.fantasy.x); // (fantasy: a soft terminator; 0 = the same max(N.L, 0) as before)
 	half gate = f.flags.z != 0 ? smoothstep(half(0.3), half(0.8), sky) : sky * sky * sky * sky;
 	half3 sun = half3(f.sunColor.xyz);
 	half3 direct = sun * (ndl * shadow * gate);
@@ -105,14 +129,15 @@ static float3 shadeLit2(half3 albedo, half3 n, half sky, half block, half shadow
 	half3 ambient = n.y >= half(0.0) ? mix(side, half3(f.ambientSky.xyz), n.y) : mix(side, half3(f.ambientGround.xyz), -n.y);
 	half g = shadeSkyCurve(sky);
 	ambient *= g * (foliage ? half(1.0 + 0.35 * L.user0.z) : half(1.0)) * half3(L.ambientArt.rgb);
+	if (L.fantasy.y > 0.0) ambient = shadeFantasyFill(ambient, L); // (fantasy: a violet-indigo twilight fill in the shade)
 	// warm fill where the sun doesn't reach: what the sunlit ground and walls around bounce back
 	half3 fill = sun * (half(L.ambientArt.w) * (half(1.0) - shadow * saturate(nl)) * g * g * gate) * half3(L.bounce.rgb);
 	// block light: F(b) = 2.2 b^7 + 0.55 b^2.4 (normalized to 1 at b = 1), a little weaker in daylight
 	// (2.0.1 opt) outdoor pixels with block == 0 skip pow(block, 2.4) + smoothstep completely (exact in FP16)
 	half3 torch = half3(0.0h);
 	if (block > half(0.0)) {
-		half b7 = block * block * block; b7 = b7 * b7 * block;
-		half F = (half(2.2) * b7 + half(0.55) * pow(max(block, half(1e-3)), half(2.4))) * half(1.0 / 2.75);
+		// (fantasy) shadeBlockCurve: with reach 0 it returns exactly the inlined F(b) below, so the other styles are unchanged
+		half F = shadeBlockCurve(block, L.fantasy.z);
 		half day = half(saturate(f.sunDirWorld.w * 4.0 + 0.2));
 		torch = half3(f.ambientBlock.xyz) * F * (half(1.0) - half(0.25) * smoothstep(half(0.5), half(1.0), sky) * day);
 	}
@@ -155,7 +180,7 @@ static half3 shadeLit2Direct(half3 n, half sky, half shadow, bool thin, bool fol
 	half nl = half(dot(float3(n), f.lightDirWorld.xyz));
 	half ndl = thin ? half(0.3) + half(0.5) * abs(nl)
 		: foliage ? half(0.25) + half(0.75) * saturate(nl) + half(0.5 * L.user0.z) * saturate(-nl)
-		: (nl > half(0.0) ? (nl + half(0.08)) / half(1.08) : half(0.0));
+		: shadeSunShape(nl, L.fantasy.x); // (fantasy: the same soft terminator as shadeLit2)
 	half gate = f.flags.z != 0 ? smoothstep(half(0.3), half(0.8), sky) : sky * sky * sky * sky;
 	half3 direct = half3(f.sunColor.xyz) * (ndl * shadow * gate);
 	if (SHADE_CAMERA_UNDERWATER(f)) direct *= half3(0.22h, 0.5h, 0.62h);

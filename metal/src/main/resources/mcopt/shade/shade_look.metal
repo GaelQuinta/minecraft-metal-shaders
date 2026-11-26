@@ -85,6 +85,16 @@ struct ShadeLook {
 	// (1.2.9 look pass, Look2.java; 0 / 1 with mcopt.shade.look2=false)
 	float4 look2a;        // 1104 x the foliage sheen against the sun (shade_m2.metal shadeLit2: x sun colour x shadow x sky gate on plants, half on leaves), y the side faces' extra darkening, z the sheen's share of the plant's hue, w (candidate 4) the distance (blocks) past which the sheen and the side darkening are gone, faded from half of it (0 = everywhere)
 	float4 look2b;        // 1120 rgb the sky's gain (sky_lut.metal: the sky, its reflections and the fog into it), w (candidate 8) the soft shadows' smallest penumbra radius in blocks (mcopt.shade.shadowMinBlur; shade_m2.metal shadeShadow2)
+	// (fantasy style, Fantasy.java; 0 = the other styles' exact numbers) x the soft terminator's softness 0..1 (shade_m2.metal
+	// shadeSunShape: 0 = max(N.L, 0)), y the violet fill the shaded side keeps (shadeLit2), z the block light's extra reach (its
+	// F(b) curve mixed toward a broad falloff), w the split-tone grade's strength 0..1 (shade_post.metal shadeSplitTone: warm
+	// highlights, cool shadows, in display space inside shadeFinalEncode; 0 = off)
+	float4 fantasy;        // 1136
+	// (fantasy style, post) the display-space effects. x the split-tone grade's strength 0..1 (shadeSplitTone: warm highlights,
+	// cool shadows, luma-preserving; 0 = off), y the shadow toe's multiplier on grade2.w (the black floor phi: the darkest
+	// display value, lifted so blacks sit at a paint-like grey instead of black), z the bloom-vignette coupling 0..1 (the
+	// vignette is spared where bloom is bright, so a glowing border keeps its glow), w 0
+	float4 fantasyPost;    // 1152
 };
 
 // ShadeLook.tier.y feature bits
@@ -183,6 +193,37 @@ static inline float3 shadeDisplay(float3 x, constant ShadeLook &L) {
 	c = min(shadeLottes(c, L.tonemap), L.output.x);
 	float3 y = max(shadeRows(L.gradeOut, c), 0.0);
 	return max(y * L.grade3.rgb + L.grade2.rgb, 0.0);
+}
+
+// ---- (fantasy style) split-tone grade ------------------------------------------------------------------------------------
+// A luminance-gated duotone: shadows toward a cool violet-blue, highlights toward a warm gold, mid-grey untouched. This is the
+// one grade that reads as "painted illustration" rather than "photograph with soft light": it is what a painter does by mixing
+// ultramarine into the darks and ochre into the lights instead of using black and white. Luma-preserving (the tint is scaled
+// back to the pixel's own luminance) so it shifts colour without changing exposure or crushing detail.
+//
+// Applied in DISPLAY space, inside shadeFinalEncode, and NOT in shadeDisplay: shadeDisplay must stay exactly invertible
+// (shadeLdrToHdr is its inverse, and the Distant Horizons bridge round-trips every display-referred pixel through the pair at
+// 1.5 LSB). A non-invertible grade there would make the bridge's decode disagree with its encode and bleed colour into DH's
+// terrain. The final pass is the one place a look may be lossy.
+// strength 0 = off (the other styles: 0, and the branch costs one compare).
+static inline float3 shadeSplitTone(float3 y, float strength) {
+	if (strength <= 0.0) return y;
+	// Rec.709 luma inline, not shadeLuma: shade_look.metal is prepended BEFORE shade_common.metal (ShadeMsl.prelude), so
+	// shadeLuma is not declared yet here, and this file also compiles on its own for the game's unshaded pipelines.
+	float l = dot(y, float3(0.2126, 0.7152, 0.0722));
+	// shadows cool, highlights warm; smoothstep so the crossover through mid-grey is gradual (no colour band at 0.5)
+	float sh = 1.0 - smoothstep(0.0, 0.55, l);  // 1 in the darkest tones, 0 by mid-grey
+	float hi = smoothstep(0.45, 1.0, l);        // 0 at mid-grey, 1 in the brightest
+	// The tint is a GAIN on the pixel's own value, not an amount added to it. An additive tint is absolute, so at low
+	// display values (a dark cave, a shadowed tree) it swamps the pixel's own colour while at bright values it is invisible:
+	// the same shadow would grade violet underground and barely at noon, and a channel could be pushed below zero. A gain
+	// keeps the shift proportional to the value, so a tone reads the same at any exposure, and it cannot go negative.
+	float3 gain = 1.0 + float3(-0.18, 0.02, 0.45) * sh + float3(0.22, 0.06, -0.16) * hi;
+	float3 tinted = y * max(gain, 0.0);
+	// keep the pixel's luminance: only the hue may move, so the tone curve's detail survives (a tint would otherwise
+	// brighten or darken it, and the effect would read as a contrast change instead of a colour one)
+	float3 scaled = tinted * (l / max(dot(tinted, float3(0.2126, 0.7152, 0.0722)), 1e-4));
+	return mix(y, max(scaled, 0.0), saturate(strength));
 }
 
 static inline float3 shadeSrgbToLinearExact(float3 c) {

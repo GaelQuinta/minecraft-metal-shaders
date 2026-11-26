@@ -33,7 +33,7 @@ import java.util.Locale;
  * dropped).</li>
  * <li>{@code mcopt.shade.haze} (true): height haze, ground mist, border fog.</li>
  * <li>{@code mcopt.shade.light2} (true): lighting model v2.</li>
- * <li>{@code mcopt.shade.look} (epic): epic, storybook or natural art preset.</li>
+ * <li>{@code mcopt.shade.look} (epic): epic, storybook, natural or fantasy art preset (Fantasy).</li>
  * <li>{@code mcopt.shade.preset} (Shade.PRESET_DEFAULT, balanced): performance, balanced, quality or ultra (Shade.TIER: bloom
  * levels, HDR format and every module's defaults).</li>
  * <li>{@code mcopt.shade.dhBridge} (true): Distant Horizons' passes see a display-referred copy of the HDR sky and their
@@ -62,6 +62,7 @@ public final class ShadeConfig {
 	public static final int LOOK = switch (System.getProperty("mcopt.shade.look", "epic").trim().toLowerCase(Locale.ROOT)) {
 		case "storybook" -> 1;
 		case "natural" -> 2;
+		case "fantasy" -> Fantasy.LOOK;
 		default -> 0;
 	};
 	public static final int TIER = Shade.TIER;
@@ -94,7 +95,7 @@ public final class ShadeConfig {
 
 	static String describe() {
 		return "hdr " + (HDR ? (HDR_FORMAT == 92 ? "rg11b10f" : "rgba16f") : "off") + ", bloom " + BLOOM + ", exposure " + (AUTO_EXPOSURE ? "auto" : "fixed")
-			+ ", pcss " + PCSS + ", sky " + STARS + ", haze " + HAZE + ", light v2 " + LIGHT2 + ", look " + new String[] {"epic", "storybook", "natural"}[LOOK]
+			+ ", pcss " + PCSS + ", sky " + STARS + ", haze " + HAZE + ", light v2 " + LIGHT2 + ", look " + ShadeSettings.LOOKS[LOOK]
 			+ ", preset " + new String[] {"performance", "balanced", "quality", "ultra"}[TIER] + (LOD ? " (mcopt.lod on: no HDR)" : "");
 	}
 }

@@ -34,7 +34,7 @@ import java.util.Map;
  *
  * <ul>
  * <li>{@code mcopt.shade.preset}: performance, balanced, quality, ultra (at the next start).</li>
- * <li>{@code mcopt.shade.look}: epic, storybook, natural.</li>
+ * <li>{@code mcopt.shade.look}: epic, storybook, natural, fantasy (Fantasy).</li>
  * <li>{@code mcopt.shade.ev} (0): brightness in EV, -2..2.</li>
  * <li>{@code mcopt.shade.user.saturation} (100): percent, 0..150 (2x turned a sunset neon orange, v11-s1).</li>
  * <li>{@code mcopt.shade.user.bloom}, {@code .godrays}, {@code .haze} (100): percent, 0..200 (haze: the air's haze only; the
@@ -57,7 +57,8 @@ public final class ShadeSettings {
 		REFLECT = "mcopt.shade.waterReflect";
 
 	public static final String[] PRESETS = {"performance", "balanced", "quality", "ultra"};
-	public static final String[] LOOKS = {"epic", "storybook", "natural"};
+	/** The styles (Fantasy, index 3, is new: Fantasy.LOOK). Every per-style table in ShadeLook has 4 entries, in this order. */
+	public static final String[] LOOKS = {"epic", "storybook", "natural", "fantasy"};
 	public static final int CLOUDS_VOLUMETRIC = 0, CLOUDS_BLOCKY = 1, CLOUDS_VANILLA = 2, CLOUDS_OFF = 3;
 	public static final String[] CLOUD_MODES = {"volumetric", "blocky", "vanilla", "off"};
 	/** In menu order; DimsConfig's codes are 0 off, 1 auto, 2 always, 3 rare. */

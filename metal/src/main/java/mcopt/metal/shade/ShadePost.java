@@ -93,6 +93,22 @@ public final class ShadePost {
 	private static final Matrix4f MOTION_PREV_VP = new Matrix4f();
 	private static final Vector4f MOTION_W = new Vector4f(), MOTION_OLD = new Vector4f();
 
+	/**
+	 * A filter over the resolved frame, before bloom and the tone map: returns a texture holding the same image with its own
+	 * treatment (the Fantasy style's painterly brush), or 0 to keep {@code scene}. Runs after the TAA resolve and the motion blur,
+	 * so it paints what will be shown; its target may be any size, the bloom and the meter follow it.
+	 */
+	public interface PostFilter {
+		long filter(Context c, long scene);
+	}
+
+	private static final List<PostFilter> POST_RESOLVE = new ArrayList<>();
+
+	/** Adds a post-resolve filter (order of registration; lower in the frame than the bloom). */
+	public static synchronized void addPostResolve(PostFilter f) {
+		POST_RESOLVE.add(f);
+	}
+
 	/** Adds a hook run before bloom and the tone map each frame (lower order first). */
 	public static synchronized void addBeforeTonemap(int order, Hook hook) {
 		BEFORE_TONEMAP.add(new Ordered(order, hook));
@@ -254,6 +270,8 @@ public final class ShadePost {
 			MetalBridge.release(bake);
 			ShadeRender.resource(0, milkyWay);
 			MetalHooks.addRedirector(0, ShadePost::redirect);
+			// (fantasy style) the painterly brush's passes: installed here and inert (nothing encoded) until the setting is on
+			ShadePainterly.install();
 			initialized = true;
 			System.out.println("[mcopt] shade: HDR post chain ready (" + ShadeConfig.describe() + "; " + mcopt.metal.shade.dims.DimsConfig.describe() + ")");
 			return true;
@@ -654,6 +672,21 @@ public final class ShadePost {
 		if (blurred != scene) {
 			scene = bloomSource = blurred;
 			if (taa != null) srcU = srcV = 1f;
+		}
+		// (fantasy style) post-resolve filters: the painterly brush paints the finished frame (0 when it is off: nothing encoded)
+		if (!POST_RESOLVE.isEmpty()) {
+			Context pc = new Context(enc, encoder, scene, prev, depth, liveWidth, liveHeight, ShadeConfig.HDR_FORMAT, f, look, width, height);
+			for (PostFilter pf : List.copyOf(POST_RESOLVE)) {
+				try {
+					long filtered = pf.filter(pc, scene);
+					if (filtered != 0 && filtered != scene) {
+						scene = bloomSource = filtered;
+						srcU = srcV = 1f;
+					}
+				} catch (RuntimeException e) {
+					System.out.println("[mcopt] shade: post filter failed: " + e);
+				}
+			}
 		}
 		// the bloom pyramid follows the output image (constant under dynamic resolution)
 		if (scene != hdr[frame & 1]) sizeBloom(ShadeRender.width(scene), ShadeRender.height(scene));

@@ -33,7 +33,8 @@ import org.joml.Matrix4f;
  * Pure maths, no game types: tools can pack it too.
  */
 public final class ShadeLook {
-	public static final int SIZE = 1136;
+	/** Bytes of struct ShadeLook (shade_look.metal); must cover its last field (fantasyPost at 1152 = 1168 bytes). */
+	public static final int SIZE = 1168;
 	// Byte offsets of struct ShadeLook (shade_look.metal).
 	public static final int VIEW_PROJ = 0, PREV_VIEW_PROJ = 64, CELESTIAL = 128, CLOUD_SHADOW_VP = 192, SUN_GEOM = 256, SUN_ART = 272, AMBIENT_ART = 288,
 		BOUNCE = 304, GRADE0 = 320, GRADE1 = 336, GRADE2 = 352, GRADE3 = 368, TONEMAP = 384, OUTPUT = 400, BLOOM = 416, FOG_R = 432, FOG_M = 448,
@@ -43,7 +44,11 @@ public final class ShadeLook {
 		// (1.1) the player's settings the shaders read (ShadeSettings / the settings screen; shade_look.metal user0..3)
 		USER0 = 1024, USER1 = 1040, USER2 = 1056, USER3 = 1072, USER4 = 1088,
 		// (1.2.9 look pass, Look2) the new atmosphere's shader values (shade_look.metal look2a, look2b)
-		LOOK2A = 1104, LOOK2B = 1120;
+		LOOK2A = 1104, LOOK2B = 1120,
+		// (fantasy style, Fantasy) x the soft terminator's softness, y the shaded side's violet fill, z the block light's extra reach
+		FANTASY = 1136,
+		// (fantasy style, post) x the split-tone grade's strength, y the shadow toe's lift, z the bloom-vignette coupling
+		FANTASY_POST = 1152;
 	/** (1.1) Prefix of the player's multipliers (Live: 1 = as released, unless a comment says otherwise). */
 	static final String U = "mcopt.shade.user.";
 
@@ -80,8 +85,8 @@ public final class ShadeLook {
 	private static final float[][] SKY_ROSE = {{-6, 0f}, {-3, 0.32f}, {0, 0.64f}, {4, 0.70f}, {9, 0.56f}, {16, 0.28f}, {26, 0.07f}, {34, 0f}};
 	/** This frame's rose weight (0 by day and in rain). */
 	public float skyRose;
-	/** Rose strength per look (epic, storybook, natural). */
-	private static final float[] ROSE_LOOK = {1f, 1.15f, 0.6f};
+	/** Rose strength per look (epic, storybook, natural, fantasy: a storybook evening keeps the rose). */
+	private static final float[] ROSE_LOOK = {1f, 1.15f, 0.6f, 1.1f};
 	/** (2026-11) The evening rose's default share (mcopt.shade.skyRoseAmount; 1 = M3 to candidate 4). */
 	static final float ROSE_AMOUNT = 0.25f; // (run at-e: 0.25-0.3 keeps a warm hint low down, the upper sky blue as Photon's)
 	/**
@@ -93,10 +98,13 @@ public final class ShadeLook {
 	}
 	private static final int K_GAMMA = 1, K_LIGHT = 2, K_AMB = 3, K_SAT = 6, K_CONTRAST = 7, K_BLOOM = 8, K_VL = 9, K_MIST = 10, K_WB = 11;
 
-	// ---- look presets (bible §3.6): epic, storybook, natural -------------------------------------------------------------
-	private static final float[] PRESET_GAMMA = {1.0f, 1.15f, 0.9f}, PRESET_SAT = {0.08f, 0.14f, 0.02f}, PRESET_CONTRAST = {1.05f, 0.97f, 0.95f},
-		PRESET_BLOOM = {1.0f, 1.25f, 0.8f}, PRESET_LAMBDA = {0.55f, 0.40f, 0.70f}, PRESET_INSET = {0.20f, 0.16f, 0.24f}, PRESET_VL = {1.0f, 1.25f, 0.8f},
-		PRESET_SPECTRUM = {0.6f, 0.9f, 0.3f};
+	// ---- look presets (bible §3.6): epic, storybook, natural, fantasy -----------------------------------------------------
+	// (fantasy, index 3, Fantasy.java: soft warm light and a lilac shade: more saturation than storybook with a softer, lower
+	// contrast curve, so nothing crushes to black; a wide, soft bloom; a slightly lower auto-exposure share so the golden hour holds)
+	private static final float[] PRESET_GAMMA = {1.0f, 1.15f, 0.9f, 1.18f}, PRESET_SAT = {0.08f, 0.14f, 0.02f, 0.17f},
+		PRESET_CONTRAST = {1.05f, 0.97f, 0.95f, 0.93f},
+		PRESET_BLOOM = {1.0f, 1.25f, 0.8f, 1.35f}, PRESET_LAMBDA = {0.55f, 0.40f, 0.70f, 0.45f}, PRESET_INSET = {0.20f, 0.16f, 0.24f, 0.14f},
+		PRESET_VL = {1.0f, 1.25f, 0.8f, 1.3f}, PRESET_SPECTRUM = {0.6f, 0.9f, 0.3f, 0.95f};
 
 	// ---- tuning knobs ----------------------------------------------------------------------------------------------------
 	/** Tone curve anchors: mid-grey in -> out, white point (scene) -> peak (display). */
@@ -306,6 +314,7 @@ public final class ShadeLook {
 		if (f.naturalLighting > 0f) lightK *= 1f + 0.35f * f.naturalLighting;
 		gradeLight(f.sky.light, f.sky.sunLight ? this.chromaGamma : 1f, this.lightMul * lightK);
 		look2Pre(f, rain); // (1.2.9 look pass) the new atmosphere's CPU items (Look2; nothing with mcopt.shade.look2=false)
+		fantasyPre(f, rain); // (fantasy style) the golden light and the low valley mist (nothing with another style)
 		// white balance (mired shift from D65: positive = the image warmer), partial strength
 		float mired = 1e6f / 6504f + this.whiteBalance;
 		float[] target = blackbody(1e6f / Math.max(mired, 20f)), d65 = blackbody(6504f);
@@ -397,7 +406,10 @@ public final class ShadeLook {
 		put4(b, FOG_R, HAZE_SIGMA[0] * haze, HAZE_SIGMA[1] * haze, HAZE_SIGMA[2] * haze, HAZE_H);
 		// (FT2.7, audit idx 49) the mist's albedo goes to 0.6 with the rain as its other terms do, linearly: a step at rain 0.5 cut its
 		// in-scatter (aM / (1 - aM / 2)) by half in one frame, the fog popped darker as the rain came in
-		put4(b, FOG_M, this.mistSigma * 1e-3f * MIST_SCALE, MIST_H * (1f + 2f * this.rainFog), SEA + MIST_BASE, MIST_ALBEDO + (0.6f - MIST_ALBEDO) * f.rain);
+		// (fantasy style) the mist layer sits lower and reaches higher, so valleys, rivers and forest floors gather it and the hills
+		// above stay clear (fantasyMistBase / fantasyMistHeight; 0 / 1 in the other styles)
+		put4(b, FOG_M, this.mistSigma * 1e-3f * MIST_SCALE, MIST_H * (1f + 2f * this.rainFog) * this.fantasyMistHeight,
+			SEA + MIST_BASE + this.fantasyMistBase, MIST_ALBEDO + (0.6f - MIST_ALBEDO) * f.rain);
 		// w: the haze's evening glow, its strength times its bell around the sun's elevation (-1 degree, 2.5 wide): the same for
 		// every pixel, so made here once instead of in shadeHazeInscatter per pixel (2026-10-08 optimisation)
 		double glowBell = Math.exp(-Math.pow((this.elevation + 1.0) / 2.5, 2.0));
@@ -498,6 +510,14 @@ public final class ShadeLook {
 		put4(b, LOOK2A, this.l2Sheen, this.l2Face, Look2.v("sheenHue", 0.75f, 0f, 1f), Look2.v("nearEnd", 80f, 0f, 512f));
 		// w (candidate 8): the soft shadows' smallest penumbra, blocks (mcopt.shade.shadowMinBlur, live; 0 = 1.2.8's crisp contact shadows)
 		put4(b, LOOK2B, this.l2Sky[0], this.l2Sky[1], this.l2Sky[2], Live.f("mcopt.shade.shadowMinBlur", 0.1f, 0f, 0.5f));
+		// (fantasy style, shade_m2.metal) x the soft terminator's softness, y the violet fill the shaded side keeps, z the block
+		// light's extra reach (all 0 with another style: its exact numbers)
+		put4(b, FANTASY, Fantasy.k("softness") * Fantasy.v("terminator", 0.85f, 0f, 1f),
+			Fantasy.k("shadowTint") * Fantasy.v("shadeFill", 0.55f, 0f, 1f), Fantasy.k("blockLight") * Fantasy.v("torchReach", 0.5f, 0f, 1f), 0f);
+		// (fantasy style, post; ShadePainterly and the final pass) x the split-tone grade's strength (0 with another style: their
+		// exact numbers), y the shadow toe's lift (the black floor's multiplier: 1 = as released), z the bloom-vignette coupling
+		put4(b, FANTASY_POST, Fantasy.style() ? Fantasy.pct("splitTone", 0.45f, 0f, 1f) : 0f,
+			Fantasy.style() ? Fantasy.pct("shadowLift", 1.6f, 0f, 4f) : 1f, Fantasy.style() ? Fantasy.pct("bloomVignette", 0.7f, 0f, 1f) : 0f, 0f);
 		mcopt.metal.shade.weather.ShadeWeather.pack(b); // M3 weather: wet, wind, flash
 	}
 
@@ -608,6 +628,31 @@ public final class ShadeLook {
 			float hg = 0.0795775f * (1f - g * g) / (float) Math.pow(Math.max(x, 1e-4f), 1.5);
 			this.l2Sheen = Look2.v("sheenGain", 0.55f, 0f, 4f) * kh * hg * linearStep(-0.8f, -0.2f, mu) * (1f - rain) * smooth(-2f, 4f, e);
 		}
+	}
+
+	// ---- (fantasy style) the golden light and the low valley mist (Fantasy.java; all neutral with another style) -------------
+	/** This frame's extra mist base height (blocks above the usual base) and its scale height's multiplier (1 = as before). */
+	private float fantasyMistBase, fantasyMistHeight = 1f;
+
+	/**
+	 * The fantasy style's CPU items, after the light is graded and before the grade matrices are built: a warmer, slightly stronger
+	 * direct light by day (golden sunlight against the cool shade) and the mist layer's base and height for the valleys. Nothing
+	 * with another style (Fantasy.style() false makes every k 0).
+	 */
+	private void fantasyPre(ShadeFrame f, float rain) {
+		this.fantasyMistBase = 0f;
+		this.fantasyMistHeight = 1f;
+		if (!Fantasy.style()) return;
+		float e = this.elevation;
+		// the golden sunlight: warm the direct light (chroma power keeps its luminance) and lift it a little, by day and clear
+		float day = smooth(-4f, 8f, e) * (1f - rain);
+		float kw = Fantasy.k("sunColor") * day;
+		if (f.sky.sunLight && kw > 0f) gradeLight(f.sky.light, 1f + Fantasy.v("sunGamma", 0.22f, 0f, 0.8f) * kw, 1f + Fantasy.v("sunGain", 0.12f, 0f, 0.6f) * kw);
+		// the low valley mist: the layer's base sits lower (so the mist gathers below the hills) and it reaches higher; the
+		// density keeps following the hour's keyframe (the morning's boost included), so nights and clear noons stay light
+		float km = Fantasy.k("mist");
+		this.fantasyMistBase = -6f * km;
+		this.fantasyMistHeight = 1f + 0.6f * km;
 	}
 
 	// ---- values for modules (volumetric light: its open-air medium follows E06's haze and mist) ---------------------------
